@@ -36,6 +36,11 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+          NDK_BIN="$ANDROID_HOME/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$NDK_BIN" >> $GITHUB_PATH
+          ln -sf "$NDK_BIN/llvm-ranlib" "$NDK_BIN/aarch64-linux-android-ranlib"
+          ln -sf "$NDK_BIN/llvm-ar" "$NDK_BIN/aarch64-linux-android-ar"
+          ln -sf "$NDK_BIN/llvm-as" "$NDK_BIN/aarch64-linux-android-as"
 
       - name: Setup Rust with Android Targets
         uses: dtolnay/rust-toolchain@stable
