@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use git2::{BranchType, Cred, Direction, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
+use std::path::Path;
+use git2::{BranchType, Cred, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
 use similar::{ChangeTag, TextDiff};
 
 use crate::models::{
@@ -319,7 +319,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
             });
             let stash_res = repo.stash_save2(
                 &sig,
-                "GitVault auto-stash during sync",
+                Some("GitVault auto-stash during sync"),
                 Some(git2::StashFlags::INCLUDE_UNTRACKED),
             );
             stash_res.is_ok()
