@@ -1,0 +1,43 @@
+{
+  "name": "gitvault",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-desktop.ps1",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "android:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-android.ps1",
+    "setup:desktop": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-desktop.ps1",
+    "setup:android": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-android.ps1"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "lucide-react": "^1.61.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "^1.2.14",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}

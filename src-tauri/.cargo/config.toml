@@ -1,0 +1,14 @@
+# Cargo configuration for Cross-Platform Desktop & Android compilation
+
+[target.aarch64-linux-android]
+# Linker configured dynamically via NDK toolchain in CI or local scripts
+rustflags = ["-C", "link-arg=-landroid", "-C", "link-arg=-llog"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-landroid", "-C", "link-arg=-llog"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-landroid", "-C", "link-arg=-llog"]
+
+[target.i686-linux-android]
+rustflags = ["-C", "link-arg=-landroid", "-C", "link-arg=-llog"]

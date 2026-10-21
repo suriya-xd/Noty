@@ -1,0 +1,31 @@
+[package]
+name = "gitvault"
+version = "0.1.0"
+description = "GitVault - Native Git-backed Markdown Note-taking App"
+authors = ["GitVault Team"]
+edition = "2021"
+
+[lib]
+name = "gitvault_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+git2 = { version = "0.19", features = ["vendored-openssl"] }
+tokio = { version = "1", features = ["full"] }
+similar = "2.6"
+chrono = "0.4"
+walkdir = "2.5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
