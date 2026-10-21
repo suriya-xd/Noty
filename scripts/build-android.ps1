@@ -38,7 +38,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # 3. Build APK with Tauri
 Write-Host "`n>>> Building Android APK via Tauri v2 CLI..." -ForegroundColor Cyan
-npx tauri android build --apk --target aarch64-linux-android
+npx tauri android build --apk --target aarch64
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[!] Android build failed. See Gradle / NDK logs above." -ForegroundColor Red
     exit 1

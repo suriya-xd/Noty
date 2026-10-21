@@ -261,7 +261,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
     // 1. Fetch remote first to ensure latest remote refs
     let pre_status = fetch_remote(repo_path)?;
 
-    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let mut repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let branch_name = pre_status.branch.clone();
 
     let head_oid = repo.head().ok().and_then(|h| h.target());
