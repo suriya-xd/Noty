@@ -54,8 +54,11 @@ jobs:
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
 
-      - name: Build Android APK (Release)
-        run: npx tauri android build --apk --target aarch64-linux-android
+      - name: Build frontend bundle
+        run: npm run build
+
+      - name: Build Android APK (Debug / Installable)
+        run: npx tauri android build --apk --debug --target aarch64-linux-android
         env:
           NDK_HOME: ${{ env.NDK_HOME }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
