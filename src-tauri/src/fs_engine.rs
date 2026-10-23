@@ -141,10 +141,15 @@ pub fn init_or_open_vault(vault_path_opt: Option<String>) -> Result<VaultInfo, S
     }
 
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("GitVault").to_string();
+    let remote_url = git2::Repository::open(p)
+        .ok()
+        .and_then(|r| r.find_remote("origin").ok())
+        .and_then(|remote| remote.url().map(|s| s.to_string()));
 
     Ok(VaultInfo {
         path: path_str,
         name,
         is_git_repo: true,
+        remote_url,
     })
 }

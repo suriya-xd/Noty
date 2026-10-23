@@ -172,14 +172,131 @@ export function gitVaultPlugin(): Plugin {
               await execAsync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd: vaultPath });
               
               // Push to origin
+              if (!preStatus.remote_url) {
+                return sendError("Committed locally, but no remote 'origin' is configured. Click the Settings icon to link your GitHub repository.");
+              }
+
               try {
-                await execAsync("git push origin main", { cwd: vaultPath });
+                const branch = preStatus.branch || "main";
+                await execAsync(`git push -u origin ${branch}`, { cwd: vaultPath });
               } catch (pushErr: any) {
-                console.warn("Push failed (offline?):", pushErr.message);
+                return sendError(`Committed locally, but failed to push to GitHub: ${pushErr.message}. Check your remote URL and credentials in Settings.`);
               }
 
               const postStatus = await getGitStatus(vaultPath);
               sendJson(postStatus);
+              break;
+            }
+
+            case "get_vault_config": {
+              let remoteUrl: string | null = null;
+              try {
+                const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
+                remoteUrl = rUrl.trim() || null;
+              } catch {}
+
+              let branch = "main";
+              try {
+                const { stdout: b } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
+                branch = b.trim() || "main";
+              } catch {}
+
+              let userName: string | null = null;
+              let userEmail: string | null = null;
+              try {
+                const { stdout: n } = await execAsync("git config user.name", { cwd: vaultPath });
+                userName = n.trim() || null;
+              } catch {}
+              try {
+                const { stdout: e } = await execAsync("git config user.email", { cwd: vaultPath });
+                userEmail = e.trim() || null;
+              } catch {}
+
+              let hasToken = false;
+              try {
+                const { stdout: t } = await execAsync("git config gitvault.token", { cwd: vaultPath });
+                hasToken = Boolean(t.trim());
+              } catch {}
+
+              sendJson({
+                vault_path: vaultPath,
+                remote_url: remoteUrl,
+                branch,
+                user_name: userName,
+                user_email: userEmail,
+                has_token: hasToken,
+              });
+              break;
+            }
+
+            case "set_vault_config": {
+              const cfg = body.config || body;
+              if (cfg.remote_url) {
+                const cleanUrl = cfg.remote_url.trim();
+                let hasOrigin = false;
+                try {
+                  await execAsync("git remote get-url origin", { cwd: vaultPath });
+                  hasOrigin = true;
+                } catch {}
+
+                if (hasOrigin) {
+                  await execAsync(`git remote set-url origin "${cleanUrl}"`, { cwd: vaultPath });
+                } else {
+                  await execAsync(`git remote add origin "${cleanUrl}"`, { cwd: vaultPath });
+                }
+              }
+
+              if (cfg.branch) {
+                const cleanBranch = cfg.branch.trim();
+                try {
+                  await execAsync(`git branch -M "${cleanBranch}"`, { cwd: vaultPath });
+                } catch {}
+              }
+
+              if (cfg.user_name) {
+                await execAsync(`git config user.name "${cfg.user_name.trim()}"`, { cwd: vaultPath });
+              }
+              if (cfg.user_email) {
+                await execAsync(`git config user.email "${cfg.user_email.trim()}"`, { cwd: vaultPath });
+              }
+              if (cfg.github_token !== undefined) {
+                await execAsync(`git config gitvault.token "${cfg.github_token.trim()}"`, { cwd: vaultPath });
+              }
+
+              // Return updated config
+              let remoteUrl: string | null = null;
+              try {
+                const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
+                remoteUrl = rUrl.trim() || null;
+              } catch {}
+
+              let currentBranch = "main";
+              try {
+                const { stdout: b } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
+                currentBranch = b.trim() || "main";
+              } catch {}
+
+              sendJson({
+                vault_path: vaultPath,
+                remote_url: remoteUrl,
+                branch: currentBranch,
+                user_name: cfg.user_name || null,
+                user_email: cfg.user_email || null,
+                has_token: Boolean(cfg.github_token),
+              });
+              break;
+            }
+
+            case "test_remote_connection": {
+              const targetUrl = body.remote_url;
+              if (!targetUrl) return sendError("Remote URL is required", 400);
+
+              try {
+                await execAsync(`git ls-remote "${targetUrl}"`, { cwd: vaultPath });
+                sendJson({ success: true, message: "Successfully connected to GitHub repository!" });
+              } catch (testErr: any) {
+                sendError(`Connection failed: ${testErr.message}`, 400);
+              }
               break;
             }
 
@@ -349,6 +466,18 @@ async function getGitStatus(vaultPath: string) {
     } catch {}
   }
 
+  let remoteUrl: string | null = null;
+  try {
+    const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
+    remoteUrl = rUrl.trim() || null;
+  } catch {}
+
+  let branchName = "main";
+  try {
+    const { stdout: bName } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
+    branchName = bName.trim() || "main";
+  } catch {}
+
   let state = "CleanSynced";
   if (behindCount > 0) {
     state = dirtyCount > 0 ? "DirtyBehind" : "CleanBehind";
@@ -365,8 +494,9 @@ async function getGitStatus(vaultPath: string) {
     dirty_count: dirtyCount,
     behind_count: behindCount,
     ahead_count: aheadCount,
-    branch: "main",
-    remote_name: "origin",
+    branch: branchName,
+    remote_name: remoteUrl ? "origin" : null,
+    remote_url: remoteUrl,
     files: fileStatuses,
     last_synced_at: new Date().toLocaleTimeString(),
   };

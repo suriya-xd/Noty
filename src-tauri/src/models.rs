@@ -25,6 +25,7 @@ pub struct RepoStatusPayload {
     pub ahead_count: usize,
     pub branch: String,
     pub remote_name: Option<String>,
+    pub remote_url: Option<String>,
     pub files: Vec<FileStatus>,
     pub last_synced_at: Option<String>,
 }
@@ -75,4 +76,24 @@ pub struct VaultInfo {
     pub path: String,
     pub name: String,
     pub is_git_repo: bool,
+    pub remote_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VaultConfig {
+    pub vault_path: String,
+    pub remote_url: Option<String>,
+    pub branch: String,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
+    pub has_token: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VaultConfigInput {
+    pub remote_url: Option<String>,
+    pub branch: Option<String>,
+    pub user_name: Option<String>,
+    pub user_email: Option<String>,
+    pub github_token: Option<String>,
 }

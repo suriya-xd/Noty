@@ -3,6 +3,7 @@ import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { GitVaultBridge } from "./services/gitVaultBridge";
 import {
   ConflictFile,
@@ -23,6 +24,9 @@ export default function App() {
   // Conflict modal state
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
   const [conflictedFiles, setConflictedFiles] = useState<ConflictFile[]>([]);
+
+  // Settings modal state
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
 
   // Toast helper
   const showToast = (text: string, type: "success" | "error" | "info" = "info") => {
@@ -63,6 +67,9 @@ export default function App() {
         const info = await GitVaultBridge.initOrOpenVault();
         setVaultPath(info.path);
         await Promise.all([refreshFiles(info.path), refreshStatus(info.path)]);
+        if (!info.remote_url) {
+          showToast("No GitHub remote configured. Click 'Link GitHub' in the top bar to set up sync.", "info");
+        }
       } catch (err) {
         console.error("Vault initialization failed:", err);
         showToast(`Initialization failed: ${err}`, "error");
@@ -271,6 +278,7 @@ export default function App() {
         onSave={handleSaveAndPush}
         onSync={handleSyncAndPull}
         onFetch={handleFetchRemote}
+        onOpenSettings={() => setIsSettingsModalOpen(true)}
         onSimulateState={handleSimulateState}
       />
 
@@ -304,6 +312,17 @@ export default function App() {
         isOpen={isConflictModalOpen}
         onClose={() => setIsConflictModalOpen(false)}
         onApplyResolutions={handleApplyResolutions}
+      />
+
+      {/* Vault Configuration & GitHub Sync Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        vaultPath={vaultPath}
+        onSaved={async () => {
+          showToast("GitHub sync settings saved successfully!", "success");
+          await Promise.all([refreshStatus(vaultPath), refreshFiles(vaultPath)]);
+        }}
       />
 
       {/* Toast Notification Notification Pill */}

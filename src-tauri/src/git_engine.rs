@@ -5,6 +5,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::models::{
     ConflictFile, ConflictHunk, ConflictResolution, FileStatus, RepoStatusPayload, SyncResult, SyncState,
+    VaultConfig, VaultConfigInput,
 };
 
 /// Get the current Git status of the repository, including worktree status
@@ -51,6 +52,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     // 3. Check HEAD vs remote tracking branch
     let head_oid = repo.head().ok().and_then(|h| h.target());
     let (remote_name, remote_oid) = find_remote_tracking_branch(&repo, &branch_name);
+    let remote_url = repo.find_remote("origin").ok().and_then(|r| r.url().map(|s| s.to_string()));
 
     let mut ahead_count = 0usize;
     let mut behind_count = 0usize;
@@ -137,6 +139,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         ahead_count,
         branch: branch_name,
         remote_name,
+        remote_url,
         files: file_statuses,
         last_synced_at: None,
     })
@@ -147,17 +150,7 @@ pub fn fetch_remote(repo_path: &str) -> Result<RepoStatusPayload, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
     if let Ok(mut remote) = repo.find_remote("origin") {
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username_from_url, _allowed_types| {
-            Cred::default().or_else(|_| {
-                Cred::credential_helper(
-                    &git2::Config::open_default().unwrap(),
-                    _url,
-                    username_from_url,
-                )
-            })
-        });
-
+        let callbacks = create_remote_callbacks(&repo);
         let mut fetch_opts = FetchOptions::new();
         fetch_opts.remote_callbacks(callbacks);
 
@@ -230,23 +223,19 @@ pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<
     // Step 4: Attempt push to remote
     let branch_name = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
     if let Ok(mut remote) = repo.find_remote("origin") {
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(|_url, username_from_url, _allowed_types| {
-            Cred::default().or_else(|_| {
-                Cred::credential_helper(
-                    &git2::Config::open_default().unwrap(),
-                    _url,
-                    username_from_url,
-                )
-            })
-        });
-
+        let callbacks = create_remote_callbacks(&repo);
         let mut push_opts = PushOptions::new();
         push_opts.remote_callbacks(callbacks);
 
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-        // Push errors are non-fatal for local save: commits are retained safely as AheadOffline
-        let _ = remote.push(&[&refspec], Some(&mut push_opts));
+        if let Err(e) = remote.push(&[&refspec], Some(&mut push_opts)) {
+            return Err(format!(
+                "Committed locally, but failed to push to GitHub: {}. Please check your credentials or remote URL in Settings.",
+                e
+            ));
+        }
+    } else {
+        return Err("Committed locally, but no remote 'origin' is configured. Click the Settings icon to link your GitHub repository.".to_string());
     }
 
     get_repo_status(repo_path)
@@ -559,4 +548,134 @@ fn find_remote_tracking_branch(repo: &Repository, branch_name: &str) -> (Option<
     }
 
     (None, None)
+}
+
+fn create_remote_callbacks(repo: &Repository) -> RemoteCallbacks<'static> {
+    let mut callbacks = RemoteCallbacks::new();
+    let token_opt = repo
+        .config()
+        .ok()
+        .and_then(|c| c.get_string("gitvault.token").ok());
+
+    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
+        if let Some(ref token) = token_opt {
+            if !token.trim().is_empty() {
+                return Cred::userpass_plaintext("git", token.trim());
+            }
+        }
+        Cred::default().or_else(|_| {
+            Cred::credential_helper(
+                &git2::Config::open_default().unwrap(),
+                _url,
+                username_from_url,
+            )
+        })
+    });
+    callbacks
+}
+
+pub fn get_vault_config(repo_path: &str) -> Result<VaultConfig, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let branch = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
+    let remote_url = repo.find_remote("origin").ok().and_then(|r| r.url().map(|s| s.to_string()));
+
+    let (user_name, user_email, has_token) = if let Ok(config) = repo.config() {
+        let name = config.get_string("user.name").ok();
+        let email = config.get_string("user.email").ok();
+        let token = config.get_string("gitvault.token").ok().map(|t| !t.trim().is_empty()).unwrap_or(false);
+        (name, email, token)
+    } else {
+        (None, None, false)
+    };
+
+    Ok(VaultConfig {
+        vault_path: repo_path.to_string(),
+        remote_url,
+        branch,
+        user_name,
+        user_email,
+        has_token,
+    })
+}
+
+pub fn set_vault_config(repo_path: &str, input: VaultConfigInput) -> Result<VaultConfig, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    // 1. Remote origin URL
+    if let Some(ref url) = input.remote_url {
+        let clean_url = url.trim();
+        if !clean_url.is_empty() {
+            if repo.find_remote("origin").is_ok() {
+                repo.remote_set_url("origin", clean_url)
+                    .map_err(|e| format!("Failed to update remote origin: {}", e))?;
+            } else {
+                repo.remote("origin", clean_url)
+                    .map_err(|e| format!("Failed to add remote origin: {}", e))?;
+            }
+        }
+    }
+
+    // 2. Branch
+    if let Some(ref target_branch) = input.branch {
+        let target = target_branch.trim();
+        if !target.is_empty() {
+            let current = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
+            if current != target {
+                if let Ok(mut branch) = repo.find_branch(&current, BranchType::Local) {
+                    let _ = branch.rename(target, true);
+                } else {
+                    let ref_name = format!("refs/heads/{}", target);
+                    let _ = repo.set_head(&ref_name);
+                }
+            }
+        }
+    }
+
+    // 3. User & Token configs
+    if let Ok(mut config) = repo.config() {
+        if let Some(ref name) = input.user_name {
+            let _ = config.set_str("user.name", name.trim());
+        }
+        if let Some(ref email) = input.user_email {
+            let _ = config.set_str("user.email", email.trim());
+        }
+        if let Some(ref token) = input.github_token {
+            let _ = config.set_str("gitvault.token", token.trim());
+        }
+    }
+
+    get_vault_config(repo_path)
+}
+
+pub fn test_remote_connection(repo_path: &str, remote_url: &str, token: Option<String>) -> Result<String, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let mut remote = repo.remote_anonymous(remote_url).map_err(|e| format!("Invalid remote URL: {}", e))?;
+
+    let saved_token = token.or_else(|| {
+        repo.config().ok().and_then(|c| c.get_string("gitvault.token").ok())
+    });
+
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
+        if let Some(ref t) = saved_token {
+            if !t.trim().is_empty() {
+                return Cred::userpass_plaintext("git", t.trim());
+            }
+        }
+        Cred::default().or_else(|_| {
+            Cred::credential_helper(
+                &git2::Config::open_default().unwrap(),
+                _url,
+                username_from_url,
+            )
+        })
+    });
+
+    let mut fetch_opts = FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+
+    remote.fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
+        .map_err(|e| format!("Failed to reach remote repository: {}", e))?;
+
+    Ok("Successfully connected to GitHub remote repository!".to_string())
 }

@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import {
   Save,
   RefreshCw,
@@ -8,6 +7,7 @@ import {
   Clock,
   Sparkles,
   WifiOff,
+  Settings,
 } from "lucide-react";
 import { RepoStatusPayload, SyncState } from "../types/gitVault";
 
@@ -17,15 +17,17 @@ interface TopBarProps {
   onSave: () => void;
   onSync: () => void;
   onFetch: () => void;
+  onOpenSettings: () => void;
   onSimulateState?: (stateType: string) => void;
 }
 
-export const TopBar: FC<TopBarProps> = ({
+export const TopBar: React.FC<TopBarProps> = ({
   status,
   isLoading,
   onSave,
   onSync,
   onFetch,
+  onOpenSettings,
   onSimulateState,
 }) => {
   const syncState: SyncState = status?.state || "CleanSynced";
@@ -198,6 +200,31 @@ export const TopBar: FC<TopBarProps> = ({
         >
           <Save className="w-3.5 h-3.5" />
           <span>Save</span>
+        </button>
+
+        {/* Link GitHub Prompt (if remote not set) */}
+        {!status?.remote_url && (
+          <button
+            onClick={onOpenSettings}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 transition-all cursor-pointer animate-pulse"
+            title="No GitHub remote repository linked! Click to configure."
+          >
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">Link GitHub</span>
+          </button>
+        )}
+
+        {/* Settings Button */}
+        <button
+          id="btn-settings"
+          onClick={onOpenSettings}
+          className="relative p-2 rounded-lg text-zinc-400 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer"
+          title="Vault & GitHub Sync Settings"
+        >
+          <Settings className="w-3.5 h-3.5" />
+          {!status?.remote_url && (
+            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#161b22]" />
+          )}
         </button>
       </div>
     </header>

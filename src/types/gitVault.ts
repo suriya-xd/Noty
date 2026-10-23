@@ -19,6 +19,7 @@ export interface RepoStatusPayload {
   ahead_count: usize;
   branch: string;
   remote_name: string | null;
+  remote_url: string | null;
   files: FileStatus[];
   last_synced_at?: string;
 }
@@ -65,4 +66,22 @@ export interface VaultInfo {
   path: string;
   name: string;
   is_git_repo: boolean;
+  remote_url: string | null;
+}
+
+export interface VaultConfig {
+  vault_path: string;
+  remote_url: string | null;
+  branch: string;
+  user_name: string | null;
+  user_email: string | null;
+  has_token: boolean;
+}
+
+export interface VaultConfigInput {
+  remote_url?: string;
+  branch?: string;
+  user_name?: string;
+  user_email?: string;
+  github_token?: string;
 }

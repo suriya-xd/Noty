@@ -3,7 +3,7 @@ pub mod git_engine;
 pub mod models;
 
 use models::{
-    ConflictResolution, RepoStatusPayload, SyncResult, VaultEntry, VaultInfo,
+    ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo,
 };
 
 #[tauri::command]
@@ -32,6 +32,25 @@ fn resolve_conflicts(
     resolutions: Vec<ConflictResolution>,
 ) -> Result<RepoStatusPayload, String> {
     git_engine::resolve_conflicts(&repo_path, resolutions)
+}
+
+#[tauri::command]
+fn get_vault_config(repo_path: String) -> Result<VaultConfig, String> {
+    git_engine::get_vault_config(&repo_path)
+}
+
+#[tauri::command]
+fn set_vault_config(repo_path: String, config: VaultConfigInput) -> Result<VaultConfig, String> {
+    git_engine::set_vault_config(&repo_path, config)
+}
+
+#[tauri::command]
+fn test_remote_connection(
+    repo_path: String,
+    remote_url: String,
+    github_token: Option<String>,
+) -> Result<String, String> {
+    git_engine::test_remote_connection(&repo_path, &remote_url, github_token)
 }
 
 #[tauri::command]
@@ -79,6 +98,9 @@ pub fn run() {
             save_and_push,
             sync_and_pull,
             resolve_conflicts,
+            get_vault_config,
+            set_vault_config,
+            test_remote_connection,
             list_vault_files,
             read_file_content,
             write_file_content,

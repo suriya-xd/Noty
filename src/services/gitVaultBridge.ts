@@ -3,6 +3,8 @@ import {
   ConflictResolution,
   RepoStatusPayload,
   SyncResult,
+  VaultConfig,
+  VaultConfigInput,
   VaultEntry,
   VaultInfo,
 } from "../types/gitVault";
@@ -68,6 +70,9 @@ Written locally in GitVault.
 let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
 let mockDirtySet = new Set<string>();
+let mockRemoteUrl: string | null = "https://github.com/suriya-xd/gitvault-sample-vault.git";
+let mockUserName = "GitVault User";
+let mockUserEmail = "vault@gitvault.local";
 
 function computeMockStatus(): RepoStatusPayload {
   const fileStatuses = Object.keys(MOCK_FILES).map((path) => {
@@ -100,7 +105,8 @@ function computeMockStatus(): RepoStatusPayload {
     behind_count: mockRemoteAhead,
     ahead_count: mockAheadOffline,
     branch: "main",
-    remote_name: "origin",
+    remote_name: mockRemoteUrl ? "origin" : null,
+    remote_url: mockRemoteUrl,
     files: fileStatuses,
     last_synced_at: new Date().toLocaleTimeString(),
   };
@@ -226,7 +232,40 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
         path: (args.vault_path as string) || "sample-vault",
         name: "suriya-xd/gitvault-sample-vault",
         is_git_repo: true,
+        remote_url: mockRemoteUrl,
       } as unknown as T;
+    }
+
+    case "get_vault_config": {
+      return {
+        vault_path: (args.repo_path as string) || "sample-vault",
+        remote_url: mockRemoteUrl,
+        branch: "main",
+        user_name: mockUserName,
+        user_email: mockUserEmail,
+        has_token: false,
+      } as unknown as T;
+    }
+
+    case "set_vault_config": {
+      const cfg = (args.config || {}) as VaultConfigInput;
+      if (cfg.remote_url !== undefined) mockRemoteUrl = cfg.remote_url || null;
+      if (cfg.user_name !== undefined) mockUserName = cfg.user_name || "GitVault User";
+      if (cfg.user_email !== undefined) mockUserEmail = cfg.user_email || "vault@gitvault.local";
+      return {
+        vault_path: (args.repo_path as string) || "sample-vault",
+        remote_url: mockRemoteUrl,
+        branch: cfg.branch || "main",
+        user_name: mockUserName,
+        user_email: mockUserEmail,
+        has_token: Boolean(cfg.github_token),
+      } as unknown as T;
+    }
+
+    case "test_remote_connection": {
+      const targetUrl = args.remote_url as string;
+      if (!targetUrl) throw new Error("Remote URL is required");
+      return "Successfully connected to GitHub repository!" as unknown as T;
     }
 
     default:
@@ -265,6 +304,29 @@ export const GitVaultBridge = {
     return invokeTauri<RepoStatusPayload>("resolve_conflicts", {
       repo_path: repoPath,
       resolutions,
+    });
+  },
+
+  getVaultConfig: (repoPath: string): Promise<VaultConfig> => {
+    return invokeTauri<VaultConfig>("get_vault_config", { repo_path: repoPath });
+  },
+
+  setVaultConfig: (repoPath: string, config: VaultConfigInput): Promise<VaultConfig> => {
+    return invokeTauri<VaultConfig>("set_vault_config", {
+      repo_path: repoPath,
+      config,
+    });
+  },
+
+  testRemoteConnection: (
+    repoPath: string,
+    remoteUrl: string,
+    githubToken?: string
+  ): Promise<string> => {
+    return invokeTauri<string>("test_remote_connection", {
+      repo_path: repoPath,
+      remote_url: remoteUrl,
+      github_token: githubToken,
     });
   },
 
