@@ -7,6 +7,7 @@ import {
   Edit2,
   FilePlus,
   Check,
+  Settings,
 } from "lucide-react";
 import { FileStatus, VaultEntry } from "../types/gitVault";
 
@@ -18,6 +19,7 @@ interface SidebarProps {
   onCreateFile: (name: string) => void;
   onDeleteFile: (path: string) => void;
   onRenameFile: (oldPath: string, newPath: string) => void;
+  onOpenSettings: () => void;
 }
 
 export const Sidebar: FC<SidebarProps> = ({
@@ -28,6 +30,7 @@ export const Sidebar: FC<SidebarProps> = ({
   onCreateFile,
   onDeleteFile,
   onRenameFile,
+  onOpenSettings,
 }) => {
   const [isCreating, setIsCreating] = useState(false);
   const [newFileName, setNewFileName] = useState("");
@@ -237,6 +240,19 @@ export const Sidebar: FC<SidebarProps> = ({
           <span className="text-sky-400 font-bold text-xs leading-none">↓</span>
           <span>Remote change incoming</span>
         </div>
+      </div>
+
+      {/* Settings / Account Button at Bottom of Sidebar */}
+      <div className="p-2 border-t border-[#21262d] bg-[#161b22]">
+        <button
+          id="btn-sidebar-settings"
+          onClick={onOpenSettings}
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#21262d] border border-transparent hover:border-[#30363d] transition-all cursor-pointer group"
+          title="Account & Settings (Change connected GitHub account)"
+        >
+          <Settings className="w-4 h-4 text-zinc-400 group-hover:text-sky-400 transition-colors" />
+          <span className="flex-1 text-left font-medium">Settings & Account</span>
+        </button>
       </div>
     </aside>
   );

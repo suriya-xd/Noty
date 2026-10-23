@@ -3,8 +3,9 @@ import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
-import { SettingsModal } from "./components/SettingsModal";
 import { OnboardingModal } from "./components/OnboardingModal";
+import { AccountSettingsModal } from "./components/AccountSettingsModal";
+import { RepoSwitchModal } from "./components/RepoSwitchModal";
 import { GitVaultBridge } from "./services/gitVaultBridge";
 import {
   ConflictFile,
@@ -26,11 +27,10 @@ export default function App() {
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
   const [conflictedFiles, setConflictedFiles] = useState<ConflictFile[]>([]);
 
-  // Settings modal state
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
-
   // Onboarding wizard state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
+  const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState<boolean>(false);
+  const [isRepoSwitchOpen, setIsRepoSwitchOpen] = useState<boolean>(false);
 
   // Toast helper
   const showToast = (text: string, type: "success" | "error" | "info" = "info") => {
@@ -283,7 +283,7 @@ export default function App() {
         onSave={handleSaveAndPush}
         onSync={handleSyncAndPull}
         onFetch={handleFetchRemote}
-        onOpenSettings={() => setIsSettingsModalOpen(true)}
+        onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
         onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onSimulateState={handleSimulateState}
       />
@@ -299,6 +299,7 @@ export default function App() {
           onCreateFile={handleCreateFile}
           onDeleteFile={handleDeleteFile}
           onRenameFile={handleRenameFile}
+          onOpenSettings={() => setIsAccountSettingsOpen(true)}
         />
 
         {/* CodeMirror 6 Markdown Editor */}
@@ -320,19 +321,29 @@ export default function App() {
         onApplyResolutions={handleApplyResolutions}
       />
 
-      {/* Vault Configuration & GitHub Sync Modal */}
-      <SettingsModal
-        isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
+      {/* Account & Settings Modal (Bottom Navigation Bar Gear Icon) */}
+      <AccountSettingsModal
+        isOpen={isAccountSettingsOpen}
+        onClose={() => setIsAccountSettingsOpen(false)}
         vaultPath={vaultPath}
-        onOpenOnboarding={() => setIsOnboardingOpen(true)}
-        onSaved={async () => {
-          showToast("GitHub sync settings saved successfully!", "success");
-          await Promise.all([refreshStatus(vaultPath), refreshFiles(vaultPath)]);
+        onAccountChanged={async () => {
+          await Promise.all([refreshFiles(), refreshStatus()]);
         }}
       />
 
-      {/* GitHub Authentication & Vault Setup Wizard */}
+      {/* Switch Repository Modal (Top Bar Switch Repo button) */}
+      <RepoSwitchModal
+        isOpen={isRepoSwitchOpen}
+        onClose={() => setIsRepoSwitchOpen(false)}
+        defaultVaultPath={vaultPath}
+        onComplete={async (data) => {
+          setVaultPath(data.vaultPath);
+          showToast("Switched repository successfully!", "success");
+          await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
+        }}
+      />
+
+      {/* GitHub Authentication & Vault Setup Wizard (Initial onboarding if not connected) */}
       <OnboardingModal
         isOpen={isOnboardingOpen}
         defaultVaultPath={vaultPath}

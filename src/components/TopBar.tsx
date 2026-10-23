@@ -7,7 +7,6 @@ import {
   Clock,
   Sparkles,
   WifiOff,
-  Settings,
 } from "lucide-react";
 import { RepoStatusPayload, SyncState } from "../types/gitVault";
 
@@ -27,8 +26,8 @@ interface TopBarProps {
   onSave: () => void;
   onSync: () => void;
   onFetch: () => void;
-  onOpenSettings: () => void;
-  onOpenOnboarding?: () => void;
+  onOpenRepoSwitch: () => void;
+  onOpenOnboarding: () => void;
   onSimulateState?: (stateType: string) => void;
 }
 
@@ -38,7 +37,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSave,
   onSync,
   onFetch,
-  onOpenSettings,
+  onOpenRepoSwitch,
   onOpenOnboarding,
   onSimulateState,
 }) => {
@@ -217,38 +216,24 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Link GitHub Prompt (if remote not set) */}
         {!status?.remote_url ? (
           <button
-            onClick={onOpenOnboarding || onOpenSettings}
+            onClick={onOpenOnboarding}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-300 hover:text-white hover:border-amber-400 transition-all cursor-pointer animate-pulse shadow-sm shadow-amber-500/10"
-            title="No GitHub repository linked! Click to open Onboarding Wizard."
+            title="No GitHub repository linked! Click to launch Setup Wizard."
           >
             <GithubIcon className="w-3.5 h-3.5" />
             <span>Connect GitHub</span>
           </button>
         ) : (
-          onOpenOnboarding && (
-            <button
-              onClick={onOpenOnboarding}
-              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer"
-              title="Switch or create GitHub repository"
-            >
-              <GithubIcon className="w-3.5 h-3.5 text-sky-400" />
-              <span>Switch Repo</span>
-            </button>
-          )
+          <button
+            id="btn-switch-repo"
+            onClick={onOpenRepoSwitch}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer"
+            title="Switch repository or create new repository"
+          >
+            <GithubIcon className="w-3.5 h-3.5 text-sky-400" />
+            <span>Switch Repo</span>
+          </button>
         )}
-
-        {/* Settings Button */}
-        <button
-          id="btn-settings"
-          onClick={onOpenSettings}
-          className="relative p-2 rounded-lg text-zinc-400 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer"
-          title="Vault & GitHub Sync Settings"
-        >
-          <Settings className="w-3.5 h-3.5" />
-          {!status?.remote_url && (
-            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-[#161b22]" />
-          )}
-        </button>
       </div>
     </header>
   );

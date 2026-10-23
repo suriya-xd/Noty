@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { FC } from "react";
 import { EditorState } from "@codemirror/state";
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine } from "@codemirror/view";
+import {
+  EditorView,
+  keymap,
+  highlightActiveLine,
+} from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
-import { FileText, HardDrive } from "lucide-react";
+import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
+import { FileText, HardDrive, Sparkles } from "lucide-react";
+import {
+  obsidianLivePreviewPlugin,
+  obsidianTheme,
+} from "./obsidianLivePreview";
 
 interface EditorProps {
   filePath: string | null;
@@ -13,6 +22,22 @@ interface EditorProps {
   onDebouncedSave: (filePath: string, content: string) => void;
   debounceMs?: number;
 }
+
+const markdownHighlightStyle = HighlightStyle.define([
+  { tag: tags.strong, fontWeight: "bold", color: "#ffffff" },
+  { tag: tags.emphasis, fontStyle: "italic", color: "#e2e8f0" },
+  { tag: tags.link, color: "#38bdf8", textDecoration: "underline" },
+  {
+    tag: tags.monospace,
+    color: "#7dd3fc",
+    backgroundColor: "rgba(22, 27, 34, 0.8)",
+    padding: "1px 4px",
+    borderRadius: "4px",
+  },
+  { tag: tags.keyword, color: "#38bdf8" },
+  { tag: tags.atom, color: "#a78bfa" },
+  { tag: tags.meta, color: "#64748b" },
+]);
 
 export const Editor: FC<EditorProps> = ({
   filePath,
@@ -28,22 +53,21 @@ export const Editor: FC<EditorProps> = ({
   const [charCount, setCharCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<"synced" | "saving">("synced");
 
-  // Track latest content and path for callback
   const latestContentRef = useRef(initialContent);
   const latestPathRef = useRef(filePath);
 
   useEffect(() => {
     latestPathRef.current = filePath;
-  }, [filePath]);
+    latestContentRef.current = initialContent;
+    updateStats(initialContent);
+  }, [filePath, initialContent]);
 
-  // Compute stats
   const updateStats = (text: string) => {
     setCharCount(text.length);
     const words = text.trim() ? text.trim().split(/\s+/).length : 0;
     setWordCount(words);
   };
 
-  // Schedule debounced disk write
   const scheduleSave = useCallback(
     (newContent: string) => {
       latestContentRef.current = newContent;
@@ -63,11 +87,9 @@ export const Editor: FC<EditorProps> = ({
     [onDebouncedSave, debounceMs]
   );
 
-  // Initialize CodeMirror 6 instance
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Cleanup previous view
     if (editorViewRef.current) {
       editorViewRef.current.destroy();
       editorViewRef.current = null;
@@ -76,16 +98,15 @@ export const Editor: FC<EditorProps> = ({
     latestContentRef.current = initialContent;
     updateStats(initialContent);
 
-    // Create CodeMirror State
     const startState = EditorState.create({
       doc: initialContent,
       extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
         highlightActiveLine(),
         history(),
         markdown(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
+        obsidianLivePreviewPlugin,
+        obsidianTheme,
         keymap.of([...defaultKeymap, ...historyKeymap]),
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
@@ -111,7 +132,7 @@ export const Editor: FC<EditorProps> = ({
       }
       view.destroy();
     };
-  }, [filePath]); // Recreate or switch when active note changes
+  }, [filePath]);
 
   if (!filePath) {
     return (
@@ -126,13 +147,20 @@ export const Editor: FC<EditorProps> = ({
   return (
     <div className="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden">
       {/* Editor Header / Breadcrumbs */}
-      <div className="h-10 border-b border-[#21262d] px-4 flex items-center justify-between bg-[#161b22]/40 text-xs">
+      <div className="h-10 border-b border-[#21262d] px-6 flex items-center justify-between bg-[#161b22]/40 text-xs shrink-0 select-none">
         <div className="flex items-center gap-2 font-mono text-zinc-300">
           <FileText className="w-3.5 h-3.5 text-sky-400" />
           <span className="font-semibold text-white">{filePath}</span>
         </div>
 
         <div className="flex items-center gap-3 text-zinc-400 text-[11px]">
+          <div className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-300 font-sans">
+            <Sparkles className="w-3 h-3 text-sky-400" />
+            <span>Live Preview</span>
+          </div>
+
+          <div className="h-3 w-[1px] bg-[#30363d] hidden md:block" />
+
           <div className="flex items-center gap-1.5">
             <HardDrive className="w-3 h-3 text-zinc-500" />
             <span
@@ -142,19 +170,22 @@ export const Editor: FC<EditorProps> = ({
                   : "text-zinc-400"
               }
             >
-              {saveStatus === "saving" ? "Writing to disk (500ms)..." : "Saved to disk (dirty worktree)"}
+              {saveStatus === "saving" ? "Saving..." : "Saved"}
             </span>
           </div>
 
-          <div className="h-3 w-[1px] bg-[#30363d]" />
+          <div className="h-3 w-[1px] bg-[#30363d] hidden sm:block" />
 
-          <span>{wordCount} words</span>
-          <span>{charCount} chars</span>
+          <span className="hidden sm:inline">{wordCount} words</span>
+          <span className="hidden sm:inline">{charCount} chars</span>
         </div>
       </div>
 
-      {/* CodeMirror Mounting Container */}
-      <div ref={containerRef} className="flex-1 overflow-auto" />
+      {/* Obsidian-Style Single Live Preview Document Canvas */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-y-auto selection:bg-sky-500/25"
+      />
     </div>
   );
 };
