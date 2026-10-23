@@ -1,7 +1,9 @@
 pub mod fs_engine;
 pub mod git_engine;
+pub mod github_auth;
 pub mod models;
 
+use github_auth::{DeviceCodeResponse, DeviceTokenResponse};
 use models::{
     ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo,
 };
@@ -54,6 +56,25 @@ fn test_remote_connection(
 }
 
 #[tauri::command]
+fn connect_vault(
+    vault_path: String,
+    remote_url: String,
+    branch: Option<String>,
+    github_token: Option<String>,
+    user_name: Option<String>,
+    user_email: Option<String>,
+) -> Result<RepoStatusPayload, String> {
+    git_engine::connect_vault(
+        &vault_path,
+        &remote_url,
+        branch,
+        github_token,
+        user_name,
+        user_email,
+    )
+}
+
+#[tauri::command]
 fn list_vault_files(vault_path: String) -> Result<Vec<VaultEntry>, String> {
     fs_engine::list_vault_files(&vault_path)
 }
@@ -88,6 +109,19 @@ fn init_or_open_vault(vault_path: Option<String>) -> Result<VaultInfo, String> {
     fs_engine::init_or_open_vault(vault_path)
 }
 
+#[tauri::command]
+fn github_start_device_flow(client_id: Option<String>) -> Result<DeviceCodeResponse, String> {
+    github_auth::start_device_flow(client_id)
+}
+
+#[tauri::command]
+fn github_poll_device_token(
+    client_id: Option<String>,
+    device_code: String,
+) -> Result<DeviceTokenResponse, String> {
+    github_auth::poll_device_token(client_id, device_code)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -101,13 +135,16 @@ pub fn run() {
             get_vault_config,
             set_vault_config,
             test_remote_connection,
+            connect_vault,
             list_vault_files,
             read_file_content,
             write_file_content,
             create_file,
             delete_file,
             rename_file,
-            init_or_open_vault
+            init_or_open_vault,
+            github_start_device_flow,
+            github_poll_device_token
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitVault application");

@@ -34,7 +34,8 @@ export function gitVaultPlugin(): Plugin {
           }
         }
 
-        const defaultVaultPath = path.resolve(process.cwd(), "sample-vault");
+        const userHome = process.env.USERPROFILE || process.env.HOME || process.cwd();
+        const defaultVaultPath = path.join(userHome, "GitVault");
         const vaultPath = body.repo_path || body.vault_path || defaultVaultPath;
 
         const sendJson = (data: any, statusCode = 200) => {
@@ -52,10 +53,34 @@ export function gitVaultPlugin(): Plugin {
         try {
           switch (endpoint) {
             case "init_or_open_vault": {
+              if (!fs.existsSync(vaultPath)) {
+                fs.mkdirSync(vaultPath, { recursive: true });
+              }
+              const gitDir = path.join(vaultPath, ".git");
+              const isGit = fs.existsSync(gitDir);
+              if (!isGit) {
+                try {
+                  await execAsync("git init", { cwd: vaultPath });
+                } catch {}
+              }
+
+              let remoteUrl: string | null = null;
+              try {
+                const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
+                remoteUrl = rUrl.trim() || null;
+              } catch {}
+
+              let repoName = path.basename(vaultPath);
+              if (remoteUrl) {
+                const match = remoteUrl.match(/[:/]([^/:]+\/[^/:]+?)(?:\.git)?$/);
+                if (match) repoName = match[1];
+              }
+
               sendJson({
                 path: vaultPath,
-                name: "suriya-xd/gitvault-sample-vault",
-                is_git_repo: fs.existsSync(path.join(vaultPath, ".git")),
+                name: repoName,
+                is_git_repo: true,
+                remote_url: remoteUrl,
               });
               break;
             }
@@ -297,6 +322,161 @@ export function gitVaultPlugin(): Plugin {
               } catch (testErr: any) {
                 sendError(`Connection failed: ${testErr.message}`, 400);
               }
+              break;
+            }
+
+            case "github_start_device_flow": {
+              const clientId = body.client_id || "Ov23liegRfd4WTYsq3Cf";
+              try {
+                const formBody = new URLSearchParams({
+                  client_id: clientId,
+                  scope: "repo,read:user,user:email",
+                });
+                const res = await fetch("https://github.com/login/device/code", {
+                  method: "POST",
+                  headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                  },
+                  body: formBody.toString(),
+                });
+                const data = await res.json();
+                sendJson(data);
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                sendError(`Device flow initiation failed: ${msg}`, 500);
+              }
+              break;
+            }
+
+            case "github_poll_device_token": {
+              const clientId = body.client_id || "Ov23liegRfd4WTYsq3Cf";
+              const deviceCode = body.device_code;
+              if (!deviceCode) {
+                return sendError("device_code is required", 400);
+              }
+              try {
+                const formBody = new URLSearchParams({
+                  client_id: clientId,
+                  device_code: deviceCode,
+                  grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+                });
+                const res = await fetch("https://github.com/login/oauth/access_token", {
+                  method: "POST",
+                  headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                  },
+                  body: formBody.toString(),
+                });
+                const data = await res.json();
+                if (data.access_token) {
+                  sendJson({
+                    status: "approved",
+                    access_token: data.access_token,
+                    token_type: data.token_type,
+                    scope: data.scope,
+                  });
+                } else if (data.error === "authorization_pending") {
+                  sendJson({
+                    status: "pending",
+                    interval: data.interval || 5,
+                    error_description: data.error_description,
+                  });
+                } else if (data.error === "slow_down") {
+                  sendJson({
+                    status: "slow_down",
+                    interval: data.interval || 10,
+                    error_description: data.error_description,
+                  });
+                } else if (data.error === "expired_token") {
+                  sendJson({
+                    status: "expired",
+                    error_description: data.error_description || "Device code expired.",
+                  });
+                } else if (data.error === "access_denied") {
+                  sendJson({
+                    status: "denied",
+                    error_description: data.error_description || "Access denied by user.",
+                  });
+                } else {
+                  sendJson({
+                    status: "error",
+                    error_description: data.error_description || data.error || "Unknown error",
+                  });
+                }
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                sendError(`Device flow polling failed: ${msg}`, 500);
+              }
+              break;
+            }
+
+            case "connect_vault": {
+              const targetPath = body.vault_path || vaultPath;
+              const remoteUrl = body.remote_url;
+              const branch = body.branch || "main";
+              const token = body.github_token;
+              const userName = body.user_name;
+              const userEmail = body.user_email;
+
+              if (!remoteUrl) {
+                return sendError("Remote URL is required to connect vault", 400);
+              }
+
+              if (!fs.existsSync(targetPath)) {
+                fs.mkdirSync(targetPath, { recursive: true });
+              }
+
+              const gitDir = path.join(targetPath, ".git");
+              if (!fs.existsSync(gitDir)) {
+                await execAsync("git init", { cwd: targetPath });
+              }
+
+              // Configure origin
+              let hasOrigin = false;
+              try {
+                await execAsync("git remote get-url origin", { cwd: targetPath });
+                hasOrigin = true;
+              } catch {}
+
+              if (hasOrigin) {
+                await execAsync(`git remote set-url origin "${remoteUrl}"`, { cwd: targetPath });
+              } else {
+                await execAsync(`git remote add origin "${remoteUrl}"`, { cwd: targetPath });
+              }
+
+              if (userName) await execAsync(`git config user.name "${userName}"`, { cwd: targetPath });
+              if (userEmail) await execAsync(`git config user.email "${userEmail}"`, { cwd: targetPath });
+              if (token) await execAsync(`git config gitvault.token "${token}"`, { cwd: targetPath });
+
+              // Fetch from origin
+              try {
+                await execAsync("git fetch origin", { cwd: targetPath });
+                try {
+                  await execAsync(`git checkout -B ${branch} origin/${branch}`, { cwd: targetPath });
+                } catch {
+                  await execAsync(`git branch -M ${branch}`, { cwd: targetPath });
+                }
+              } catch (e) {
+                console.warn("fetch failed during connect:", e);
+                await execAsync(`git branch -M ${branch}`, { cwd: targetPath });
+              }
+
+              // If no markdown notes exist, create initial Welcome note
+              const welcomePath = path.join(targetPath, "Welcome.md");
+              const files = fs.readdirSync(targetPath);
+              const hasNotes = files.some((f) => f.endsWith(".md"));
+              if (!hasNotes && !fs.existsSync(welcomePath)) {
+                fs.writeFileSync(
+                  welcomePath,
+                  `# Welcome to GitVault\n\nYour vault is now connected to GitHub repository: \`${remoteUrl}\`.\n\n- Every note is written locally to disk\n- Hit **Save** to stage, commit, and push directly to GitHub\n`,
+                  "utf-8"
+                );
+              }
+
+              const status = await getGitStatus(targetPath);
+              sendJson(status);
               break;
             }
 

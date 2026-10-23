@@ -24,7 +24,7 @@ export default defineConfig(() => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**", "**/sample-vault/.git/**"],
+      ignored: ["**/src-tauri/**", "**/.git/**"],
     },
   },
 }));

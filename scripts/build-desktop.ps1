@@ -11,7 +11,16 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 2. Build Tauri desktop bundle
+# 2. Check Rust & Cargo Prerequisites
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    Write-Host "`n[!] Rust toolchain ('cargo') was not found in your PATH." -ForegroundColor Red
+    Write-Host "    Tauri requires Rust to compile native Windows desktop binaries." -ForegroundColor Yellow
+    Write-Host "    Please download and run the official Rust installer: https://win.rustup.rs/" -ForegroundColor Cyan
+    Write-Host "    After installation, restart your terminal and re-run this command." -ForegroundColor Gray
+    exit 1
+}
+
+# 3. Build Tauri desktop bundle
 Write-Host "`n>>> Building Tauri native desktop installer..." -ForegroundColor Cyan
 npx tauri build
 if ($LASTEXITCODE -ne 0) {

@@ -4,6 +4,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { OnboardingModal } from "./components/OnboardingModal";
 import { GitVaultBridge } from "./services/gitVaultBridge";
 import {
   ConflictFile,
@@ -27,6 +28,9 @@ export default function App() {
 
   // Settings modal state
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+
+  // Onboarding wizard state
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
 
   // Toast helper
   const showToast = (text: string, type: "success" | "error" | "info" = "info") => {
@@ -68,7 +72,8 @@ export default function App() {
         setVaultPath(info.path);
         await Promise.all([refreshFiles(info.path), refreshStatus(info.path)]);
         if (!info.remote_url) {
-          showToast("No GitHub remote configured. Click 'Link GitHub' in the top bar to set up sync.", "info");
+          setIsOnboardingOpen(true);
+          showToast("Welcome to GitVault! Please connect your GitHub repository to get started.", "info");
         }
       } catch (err) {
         console.error("Vault initialization failed:", err);
@@ -279,6 +284,7 @@ export default function App() {
         onSync={handleSyncAndPull}
         onFetch={handleFetchRemote}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
+        onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onSimulateState={handleSimulateState}
       />
 
@@ -319,10 +325,24 @@ export default function App() {
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         vaultPath={vaultPath}
+        onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onSaved={async () => {
           showToast("GitHub sync settings saved successfully!", "success");
           await Promise.all([refreshStatus(vaultPath), refreshFiles(vaultPath)]);
         }}
+      />
+
+      {/* GitHub Authentication & Vault Setup Wizard */}
+      <OnboardingModal
+        isOpen={isOnboardingOpen}
+        defaultVaultPath={vaultPath}
+        onComplete={async (data) => {
+          setVaultPath(data.vaultPath);
+          setIsOnboardingOpen(false);
+          showToast("Vault successfully connected to GitHub!", "success");
+          await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
+        }}
+        onCancel={() => setIsOnboardingOpen(false)}
       />
 
       {/* Toast Notification Notification Pill */}

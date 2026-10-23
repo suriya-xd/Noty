@@ -14,6 +14,7 @@ import {
   Save,
   X,
   Radio,
+  Sparkles,
 } from "lucide-react";
 import { GitVaultBridge } from "../services/gitVaultBridge";
 import { VaultConfig } from "../types/gitVault";
@@ -33,6 +34,7 @@ interface SettingsModalProps {
   onClose: () => void;
   vaultPath: string;
   onSaved: (newConfig: VaultConfig) => void;
+  onOpenOnboarding?: () => void;
 }
 
 export const SettingsModal: FC<SettingsModalProps> = ({
@@ -40,6 +42,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({
   onClose,
   vaultPath,
   onSaved,
+  onOpenOnboarding,
 }) => {
   const [remoteUrl, setRemoteUrl] = useState("");
   const [branch, setBranch] = useState("main");
@@ -179,6 +182,35 @@ export const SettingsModal: FC<SettingsModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSave} className="p-6 space-y-5">
+            {/* Quick launch onboarding wizard */}
+            {onOpenOnboarding && (
+              <div className="p-3.5 bg-gradient-to-r from-sky-950/40 via-indigo-950/30 to-purple-950/30 border border-sky-500/30 rounded-xl flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center shrink-0 text-sky-400">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-white">
+                      Repository Setup Wizard
+                    </div>
+                    <div className="text-[11px] text-zinc-400">
+                      Authenticate with GitHub to pick an existing repo or create a new one.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenOnboarding();
+                  }}
+                  className="shrink-0 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-medium shadow-md shadow-sky-600/30 transition-all cursor-pointer"
+                >
+                  Launch Wizard
+                </button>
+              </div>
+            )}
+
             {/* Local Vault Path */}
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5 flex items-center gap-1.5">

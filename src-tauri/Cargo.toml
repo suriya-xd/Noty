@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["full"] }
 similar = "2.6"
 chrono = "0.4"
 walkdir = "2.5"
+ureq = { version = "2.10", default-features = false, features = ["native-tls", "json"] }
 
 # Desktop (Windows, macOS, Linux): use native TLS (Schannel on Windows, SecureTransport on macOS, OpenSSL on Linux)
 [target.'cfg(not(target_os = "android"))'.dependencies]

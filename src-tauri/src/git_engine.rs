@@ -679,3 +679,74 @@ pub fn test_remote_connection(repo_path: &str, remote_url: &str, token: Option<S
 
     Ok("Successfully connected to GitHub remote repository!".to_string())
 }
+
+pub fn connect_vault(
+    repo_path: &str,
+    remote_url: &str,
+    branch: Option<String>,
+    token: Option<String>,
+    user_name: Option<String>,
+    user_email: Option<String>,
+) -> Result<RepoStatusPayload, String> {
+    let p = Path::new(repo_path);
+    if !p.exists() {
+        std::fs::create_dir_all(p).map_err(|e| format!("Failed to create vault directory: {}", e))?;
+    }
+
+    let repo = if !p.join(".git").exists() {
+        Repository::init(p).map_err(|e| format!("Failed to init git: {}", e))?
+    } else {
+        Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?
+    };
+
+    // Configure origin
+    let clean_url = remote_url.trim();
+    if repo.find_remote("origin").is_ok() {
+        repo.remote_set_url("origin", clean_url)
+            .map_err(|e| format!("Failed to set remote url: {}", e))?;
+    } else {
+        repo.remote("origin", clean_url)
+            .map_err(|e| format!("Failed to add remote: {}", e))?;
+    }
+
+    if let Ok(mut config) = repo.config() {
+        if let Some(ref name) = user_name {
+            let _ = config.set_str("user.name", name.trim());
+        }
+        if let Some(ref email) = user_email {
+            let _ = config.set_str("user.email", email.trim());
+        }
+        if let Some(ref t) = token {
+            let _ = config.set_str("gitvault.token", t.trim());
+        }
+    }
+
+    let target_branch = branch.unwrap_or_else(|| "main".to_string());
+    let _ = fetch_remote(repo_path);
+
+    // Fast forward if remote branch exists and local HEAD is empty
+    let (_, remote_oid) = find_remote_tracking_branch(&repo, &target_branch);
+    if let Some(r_oid) = remote_oid {
+        if repo.head().is_err() {
+            let _ = fast_forward_to_commit(&repo, &target_branch, r_oid);
+        }
+    }
+
+    // If still no markdown notes exist, create initial Welcome note
+    let welcome = p.join("Welcome.md");
+    if !welcome.exists() {
+        let entries = std::fs::read_dir(p).ok();
+        let has_md = entries
+            .map(|e| e.filter_map(|r| r.ok()).any(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("md")))
+            .unwrap_or(false);
+        if !has_md {
+            let welcome_content = format!(
+                "# Welcome to GitVault\n\nYour vault is now connected to GitHub repository: `{}`.\n\n- Every note is written locally to disk\n- Hit **Save** to stage, commit, and push directly to GitHub\n",
+                clean_url
+            );
+            let _ = std::fs::write(welcome, welcome_content);
+        }
+    }
+
+    get_repo_status(repo_path)
+}

@@ -85,3 +85,51 @@ export interface VaultConfigInput {
   user_email?: string;
   github_token?: string;
 }
+
+export interface GitHubUser {
+  login: string;
+  name: string | null;
+  avatar_url: string;
+  email: string | null;
+  html_url: string;
+}
+
+export interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  html_url: string;
+  clone_url: string;
+  default_branch: string;
+  description: string | null;
+  updated_at: string;
+}
+
+export interface ConnectVaultInput {
+  vault_path: string;
+  remote_url: string;
+  branch?: string;
+  github_token?: string;
+  user_name?: string;
+  user_email?: string;
+}
+
+export interface DeviceCodeResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface DeviceTokenResponse {
+  status: "approved" | "pending" | "slow_down" | "expired" | "denied" | "error";
+  access_token?: string;
+  token_type?: string;
+  scope?: string;
+  interval?: number;
+  error_description?: string;
+}
+
+

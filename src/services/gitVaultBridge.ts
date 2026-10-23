@@ -1,6 +1,9 @@
 import {
   ConflictFile,
   ConflictResolution,
+  ConnectVaultInput,
+  DeviceCodeResponse,
+  DeviceTokenResponse,
   RepoStatusPayload,
   SyncResult,
   VaultConfig,
@@ -25,7 +28,7 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
     }
   }
 
-  // In browser dev mode: call Vite dev server API to interact with real Git and sample-vault!
+  // In browser dev mode: call Vite dev server API to interact with real Git vault!
   try {
     const res = await fetch(`/api/gitvault/${cmd}`, {
       method: "POST",
@@ -47,30 +50,18 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
 // In-Memory Mock Store for Browser Preview & Visual Testing
 // ---------------------------------------------------------------------------
 const MOCK_FILES: Record<string, string> = {
-  "README.md": `# gitvault-sample-vault
-GitVault - Private Test Vault
+  "Welcome.md": `# Welcome to GitVault
 
-Connected to GitHub repository: \`suriya-xd/gitvault-sample-vault\`
-- **Remote**: \`https://github.com/suriya-xd/gitvault-sample-vault.git\`
-- **Branch**: \`main\`
-`,
-  "FirstNote.md": `# My First Vault Note
-
-Written locally in GitVault.
+GitVault is your local-first Markdown note-taking app with native GitHub repository integration.
 - 500ms debounced disk auto-save
-- Directly dirties Git worktree without committing
-`,
-  "ConflictTest.md": `# Project Roadmap
-- Milestone 1: Core Engine
-- Milestone 2: LOCAL UPDATE (Added Offline Local-First Worktree)
-- Milestone 3: Platform Release
+- Real-time Git sync state
 `,
 };
 
 let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
 let mockDirtySet = new Set<string>();
-let mockRemoteUrl: string | null = "https://github.com/suriya-xd/gitvault-sample-vault.git";
+let mockRemoteUrl: string | null = null;
 let mockUserName = "GitVault User";
 let mockUserEmail = "vault@gitvault.local";
 
@@ -228,9 +219,15 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     }
 
     case "init_or_open_vault": {
+      const p = (args.vault_path as string) || "GitVault";
+      let repoName = "GitVault";
+      if (mockRemoteUrl) {
+        const match = mockRemoteUrl.match(/[:/]([^/:]+\/[^/:]+?)(?:\.git)?$/);
+        if (match) repoName = match[1];
+      }
       return {
-        path: (args.vault_path as string) || "sample-vault",
-        name: "suriya-xd/gitvault-sample-vault",
+        path: p,
+        name: repoName,
         is_git_repo: true,
         remote_url: mockRemoteUrl,
       } as unknown as T;
@@ -238,7 +235,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "get_vault_config": {
       return {
-        vault_path: (args.repo_path as string) || "sample-vault",
+        vault_path: (args.repo_path as string) || "GitVault",
         remote_url: mockRemoteUrl,
         branch: "main",
         user_name: mockUserName,
@@ -253,13 +250,21 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       if (cfg.user_name !== undefined) mockUserName = cfg.user_name || "GitVault User";
       if (cfg.user_email !== undefined) mockUserEmail = cfg.user_email || "vault@gitvault.local";
       return {
-        vault_path: (args.repo_path as string) || "sample-vault",
+        vault_path: (args.repo_path as string) || "GitVault",
         remote_url: mockRemoteUrl,
         branch: cfg.branch || "main",
         user_name: mockUserName,
         user_email: mockUserEmail,
         has_token: Boolean(cfg.github_token),
       } as unknown as T;
+    }
+
+    case "connect_vault": {
+      const remoteUrl = args.remote_url as string;
+      mockRemoteUrl = remoteUrl;
+      if (args.user_name) mockUserName = args.user_name as string;
+      if (args.user_email) mockUserEmail = args.user_email as string;
+      return computeMockStatus() as unknown as T;
     }
 
     case "test_remote_connection": {
@@ -318,6 +323,17 @@ export const GitVaultBridge = {
     });
   },
 
+  connectVault: (input: ConnectVaultInput): Promise<RepoStatusPayload> => {
+    return invokeTauri<RepoStatusPayload>("connect_vault", {
+      vault_path: input.vault_path,
+      remote_url: input.remote_url,
+      branch: input.branch,
+      github_token: input.github_token,
+      user_name: input.user_name,
+      user_email: input.user_email,
+    });
+  },
+
   testRemoteConnection: (
     repoPath: string,
     remoteUrl: string,
@@ -327,6 +343,19 @@ export const GitVaultBridge = {
       repo_path: repoPath,
       remote_url: remoteUrl,
       github_token: githubToken,
+    });
+  },
+
+  startDeviceFlow: (clientId?: string): Promise<DeviceCodeResponse> => {
+    return invokeTauri<DeviceCodeResponse>("github_start_device_flow", {
+      client_id: clientId,
+    });
+  },
+
+  pollDeviceToken: (deviceCode: string, clientId?: string): Promise<DeviceTokenResponse> => {
+    return invokeTauri<DeviceTokenResponse>("github_poll_device_token", {
+      device_code: deviceCode,
+      client_id: clientId,
     });
   },
 
