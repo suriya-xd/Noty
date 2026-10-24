@@ -85,6 +85,14 @@ pub fn create_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
     std::fs::write(&full_path, initial_content).map_err(|e| format!("Failed to create file: {}", e))
 }
 
+pub fn create_folder(vault_path: &str, rel_path: &str) -> Result<(), String> {
+    let full_path = Path::new(vault_path).join(rel_path);
+    if full_path.exists() {
+        return Err("Folder already exists".to_string());
+    }
+    std::fs::create_dir_all(&full_path).map_err(|e| format!("Failed to create folder: {}", e))
+}
+
 pub fn delete_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
     let full_path = Path::new(vault_path).join(rel_path);
     if !full_path.exists() {

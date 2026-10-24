@@ -7,6 +7,8 @@ import {
   Clock,
   Sparkles,
   WifiOff,
+  FolderOpen,
+  ChevronDown,
 } from "lucide-react";
 import { RepoStatusPayload, SyncState } from "../types/gitVault";
 
@@ -23,6 +25,7 @@ const GithubIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5
 interface TopBarProps {
   status: RepoStatusPayload | null;
   isLoading: boolean;
+  vaultPath?: string;
   onSave: () => void;
   onSync: () => void;
   onFetch: () => void;
@@ -34,6 +37,7 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({
   status,
   isLoading,
+  vaultPath,
   onSave,
   onSync,
   onFetch,
@@ -43,6 +47,11 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const syncState: SyncState = status?.state || "CleanSynced";
 
+  // Derive vault display name
+  const vaultName = vaultPath
+    ? vaultPath.split(/[/\\]/).filter(Boolean).pop() || "personal-vault"
+    : "personal-vault";
+
   // Derive Status Pill appearance based on the 5 distinct states
   const getStatusBadge = () => {
     switch (syncState) {
@@ -51,7 +60,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           bg: "bg-emerald-950/60 border-emerald-500/40 text-emerald-400",
           dot: "bg-emerald-400 shadow-[0_0_8px_#34d399]",
           icon: <CheckCircle2 className="w-3.5 h-3.5" />,
-          label: "Up to date",
+          label: "Synced",
           desc: "Local vault in sync with GitHub",
         };
       case "DirtySynced":
@@ -59,7 +68,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           bg: "bg-amber-950/60 border-amber-500/40 text-amber-400",
           dot: "bg-amber-400 shadow-[0_0_8px_#fbbf24] animate-pulse",
           icon: <Clock className="w-3.5 h-3.5" />,
-          label: `Unsaved changes (${status?.dirty_count || 1})`,
+          label: `Unsaved (${status?.dirty_count || 1})`,
           desc: "Edits written to disk. Click Save to stage & commit.",
         };
       case "CleanBehind":
@@ -75,7 +84,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           bg: "bg-orange-950/60 border-orange-500/40 text-orange-400",
           dot: "bg-orange-400 shadow-[0_0_8px_#fb923c] animate-pulse",
           icon: <AlertTriangle className="w-3.5 h-3.5" />,
-          label: "Out of sync + Unsaved edits",
+          label: "Dirty Behind",
           desc: "Remote has changes & you have local edits. Click Sync to 3-way merge.",
         };
       case "AheadOffline":
@@ -83,7 +92,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           bg: "bg-purple-950/60 border-purple-500/40 text-purple-400",
           dot: "bg-purple-400 shadow-[0_0_8px_#c084fc]",
           icon: <WifiOff className="w-3.5 h-3.5" />,
-          label: `Saved locally (${status?.ahead_count || 1} offline)`,
+          label: `Ahead (+${status?.ahead_count || 1} offline)`,
           desc: "Committed offline. Push will resume when online.",
         };
     }
@@ -92,37 +101,54 @@ export const TopBar: React.FC<TopBarProps> = ({
   const badge = getStatusBadge();
 
   // Button active / disabled states per SPEC.md
-  // 1. CleanSynced: Save Disabled, Sync Disabled
-  // 2. DirtySynced: Save Active, Sync Disabled
-  // 3. CleanBehind: Save Disabled, Sync Active
-  // 4. DirtyBehind: Save Blocked (Sync first), Sync Active
-  // 5. AheadOffline: Save/Push Active
   const canSave = syncState === "DirtySynced" || syncState === "AheadOffline";
   const canSync = syncState === "CleanBehind" || syncState === "DirtyBehind";
 
   return (
-    <header className="h-14 border-b border-[#30363d] bg-[#161b22]/90 backdrop-blur-md px-4 flex items-center justify-between z-20 select-none">
-      {/* Left: App Title & Branch */}
+    <header className="h-14 border-b border-[#30363d]/70 bg-[#161b22]/95 backdrop-blur-xl px-4 flex items-center justify-between z-20 select-none">
+      {/* Left: Desktop Controls, Branding & Vault / Branch */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md shadow-sky-500/20">
-            <Sparkles className="w-4 h-4 text-white" />
-          </div>
-          <span className="font-semibold text-sm tracking-wide text-white">GitVault</span>
+        {/* Subtle desktop window dots */}
+        <div className="flex items-center gap-1.5 mr-1">
+          <span className="w-2.5 h-2.5 rounded-full bg-red-500/40 hover:bg-red-500 transition-colors cursor-pointer" />
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-500/40 hover:bg-amber-500 transition-colors cursor-pointer" />
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/40 hover:bg-emerald-500 transition-colors cursor-pointer" />
         </div>
 
         <div className="h-4 w-[1px] bg-[#30363d]" />
 
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#21262d] text-xs font-mono text-zinc-300 border border-[#30363d]">
-          <GitBranch className="w-3.5 h-3.5 text-zinc-400" />
-          <span>{status?.branch || "main"}</span>
+        {/* Noty Brand */}
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md shadow-sky-500/20">
+            <Sparkles className="w-4 h-4 text-white" />
+          </div>
+          <span className="font-headline font-bold text-sm tracking-tight text-white">Noty</span>
+        </div>
+
+        <div className="h-4 w-[1px] bg-[#30363d]" />
+
+        {/* Vault Switcher Pill */}
+        <button
+          onClick={onOpenRepoSwitch}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-[#30363d] text-xs font-mono text-zinc-300 border border-[#30363d] transition-colors cursor-pointer group"
+          title="Switch Active Vault"
+        >
+          <FolderOpen className="w-3.5 h-3.5 text-sky-400 group-hover:scale-105 transition-transform" />
+          <span className="font-medium text-white">{vaultName}</span>
+          <ChevronDown className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300" />
+        </button>
+
+        {/* Git Branch & Ahead/Behind Badges */}
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] text-xs font-mono text-zinc-300 border border-[#30363d]">
+          <GitBranch className="w-3.5 h-3.5 text-purple-400" />
+          <span className="font-medium">{status?.branch || "main"}</span>
           {status?.ahead_count ? (
-            <span className="ml-1 text-[10px] px-1 bg-purple-500/30 text-purple-300 rounded font-semibold">
+            <span className="ml-0.5 text-[10px] px-1 bg-purple-500/25 text-purple-300 rounded font-semibold" title={`${status.ahead_count} commits ahead of remote`}>
               +{status.ahead_count}
             </span>
           ) : null}
           {status?.behind_count ? (
-            <span className="ml-1 text-[10px] px-1 bg-sky-500/30 text-sky-300 rounded font-semibold">
+            <span className="ml-0.5 text-[10px] px-1 bg-sky-500/25 text-sky-300 rounded font-semibold" title={`${status.behind_count} commits behind remote`}>
               -{status.behind_count}
             </span>
           ) : null}

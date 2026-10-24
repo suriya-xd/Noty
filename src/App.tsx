@@ -6,6 +6,9 @@ import { ConflictResolverModal } from "./components/ConflictResolverModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { AccountSettingsModal } from "./components/AccountSettingsModal";
 import { RepoSwitchModal } from "./components/RepoSwitchModal";
+import { MobileShell } from "./components/mobile/MobileShell";
+import { MobileConflictView } from "./components/mobile/MobileConflictView";
+import { MobileOnboardingView } from "./components/mobile/MobileOnboardingView";
 import { GitVaultBridge } from "./services/gitVaultBridge";
 import {
   ConflictFile,
@@ -37,6 +40,19 @@ export default function App() {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 4000);
   };
+
+  // Responsive device view detection (Mobile vs Desktop)
+  const [isMobile, setIsMobile] = useState<boolean>(
+    () => typeof window !== "undefined" && window.innerWidth < 768
+  );
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // 1. Refresh repository and file status
   const refreshStatus = useCallback(async (path = vaultPath) => {
@@ -97,10 +113,10 @@ export default function App() {
   // 4. File selection and reading
   const handleSelectFile = async (relPath: string) => {
     try {
-      setActiveFilePath(relPath);
       const fullPath = `${vaultPath}/${relPath}`;
       const content = await GitVaultBridge.readFileContent(fullPath);
       setActiveFileContent(content);
+      setActiveFilePath(relPath);
     } catch (err) {
       console.error("Failed to read file:", err);
       showToast(`Error reading file: ${err}`, "error");
@@ -112,6 +128,7 @@ export default function App() {
     try {
       const fullPath = `${vaultPath}/${relPath}`;
       await GitVaultBridge.writeFileContent(fullPath, newContent);
+      setActiveFileContent(newContent);
       // Immediately refresh Git status to show the dirty worktree indicator (`•`)
       await refreshStatus();
     } catch (err) {
@@ -196,7 +213,7 @@ export default function App() {
     }
   };
 
-  // 10. File Management (Create, Delete, Rename)
+  // 10. File & Folder Management (Create, Delete, Rename)
   const handleCreateFile = async (name: string) => {
     try {
       await GitVaultBridge.createFile(vaultPath, name);
@@ -208,17 +225,27 @@ export default function App() {
     }
   };
 
+  const handleCreateFolder = async (folderPath: string) => {
+    try {
+      await GitVaultBridge.createFolder(vaultPath, folderPath);
+      await Promise.all([refreshFiles(), refreshStatus()]);
+      showToast(`Created folder "${folderPath}"`, "success");
+    } catch (err) {
+      showToast(`Failed to create folder: ${err}`, "error");
+    }
+  };
+
   const handleDeleteFile = async (relPath: string) => {
     try {
       await GitVaultBridge.deleteFile(vaultPath, relPath);
-      if (activeFilePath === relPath) {
+      if (activeFilePath === relPath || (activeFilePath && activeFilePath.startsWith(relPath + "/"))) {
         setActiveFilePath(null);
         setActiveFileContent("");
       }
       await Promise.all([refreshFiles(), refreshStatus()]);
       showToast(`Deleted ${relPath}`, "info");
     } catch (err) {
-      showToast(`Failed to delete file: ${err}`, "error");
+      showToast(`Failed to delete: ${err}`, "error");
     }
   };
 
@@ -227,6 +254,8 @@ export default function App() {
       await GitVaultBridge.renameFile(vaultPath, oldPath, newPath);
       if (activeFilePath === oldPath) {
         setActiveFilePath(newPath);
+      } else if (activeFilePath && activeFilePath.startsWith(oldPath + "/")) {
+        setActiveFilePath(newPath + activeFilePath.slice(oldPath.length));
       }
       await Promise.all([refreshFiles(), refreshStatus()]);
       showToast(`Renamed to ${newPath}`, "success");
@@ -276,52 +305,121 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0d1117] text-white select-none">
-      {/* Top Bar with Live Git Status Pill & Save/Sync Actions */}
-      <TopBar
-        status={status}
-        isLoading={isLoading}
-        onSave={handleSaveAndPush}
-        onSync={handleSyncAndPull}
-        onFetch={handleFetchRemote}
-        onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
-        onOpenOnboarding={() => setIsOnboardingOpen(true)}
-        onSimulateState={handleSimulateState}
-      />
-
-      {/* Main Workspace (Sidebar + CodeMirror Editor) */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar File Tree with Live Git Status Badges */}
-        <Sidebar
-          files={files}
-          fileStatuses={status?.files || []}
-          activeFilePath={activeFilePath}
-          onSelectFile={handleSelectFile}
-          onCreateFile={handleCreateFile}
-          onDeleteFile={handleDeleteFile}
-          onRenameFile={handleRenameFile}
-          onOpenSettings={() => setIsAccountSettingsOpen(true)}
-        />
-
-        {/* CodeMirror 6 Markdown Editor */}
-        <main className="flex-1 flex flex-col h-full overflow-hidden">
-          <Editor
-            filePath={activeFilePath}
-            initialContent={activeFileContent}
+      {isMobile ? (
+        // ================= ANDROID MOBILE LAYOUT (STITCH REDESIGN) =================
+        <>
+          <MobileShell
+            vaultPath={vaultPath}
+            files={files}
+            status={status}
+            activeFilePath={activeFilePath}
+            activeFileContent={activeFileContent}
+            isLoading={isLoading}
+            onSelectFile={handleSelectFile}
             onDebouncedSave={handleDebouncedSave}
-            debounceMs={500}
+            onCreateFile={handleCreateFile}
+            onCreateFolder={handleCreateFolder}
+            onDeleteFile={handleDeleteFile}
+            onRenameFile={handleRenameFile}
+            onSave={handleSaveAndPush}
+            onSync={handleSyncAndPull}
+            onFetch={handleFetchRemote}
+            onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
+            onOpenOnboarding={() => setIsOnboardingOpen(true)}
+            onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+            onSimulateState={handleSimulateState}
           />
-        </main>
-      </div>
 
-      {/* Visual 3-Way Conflict Resolver Modal */}
-      <ConflictResolverModal
-        conflicts={conflictedFiles}
-        isOpen={isConflictModalOpen}
-        onClose={() => setIsConflictModalOpen(false)}
-        onApplyResolutions={handleApplyResolutions}
-      />
 
-      {/* Account & Settings Modal (Bottom Navigation Bar Gear Icon) */}
+          {/* Android Conflict Resolution View */}
+          <MobileConflictView
+            conflicts={conflictedFiles}
+            isOpen={isConflictModalOpen}
+            onClose={() => setIsConflictModalOpen(false)}
+            onApplyResolutions={handleApplyResolutions}
+          />
+
+          {/* Android GitHub Onboarding Wizard */}
+          <MobileOnboardingView
+            isOpen={isOnboardingOpen}
+            defaultVaultPath={vaultPath}
+            onComplete={async (data) => {
+              setVaultPath(data.vaultPath);
+              setIsOnboardingOpen(false);
+              showToast("Vault successfully connected to GitHub!", "success");
+              await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
+            }}
+            onCancel={() => setIsOnboardingOpen(false)}
+          />
+        </>
+      ) : (
+        // ================= DESKTOP WORKSPACE LAYOUT =================
+        <>
+          {/* Top Bar with Live Git Status Pill & Save/Sync Actions */}
+          <TopBar
+            status={status}
+            isLoading={isLoading}
+            vaultPath={vaultPath}
+            onSave={handleSaveAndPush}
+            onSync={handleSyncAndPull}
+            onFetch={handleFetchRemote}
+            onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
+            onOpenOnboarding={() => setIsOnboardingOpen(true)}
+            onSimulateState={handleSimulateState}
+          />
+
+          {/* Main Workspace (Sidebar + CodeMirror Editor) */}
+          <div className="flex-1 flex overflow-hidden">
+            {/* Sidebar File Tree with Live Git Status Badges */}
+            <Sidebar
+              vaultPath={vaultPath}
+              files={files}
+              fileStatuses={status?.files || []}
+              activeFilePath={activeFilePath}
+              onSelectFile={handleSelectFile}
+              onCreateFile={handleCreateFile}
+              onCreateFolder={handleCreateFolder}
+              onDeleteFile={handleDeleteFile}
+              onRenameFile={handleRenameFile}
+              onOpenSettings={() => setIsAccountSettingsOpen(true)}
+            />
+
+            {/* CodeMirror 6 Markdown Editor */}
+            <main className="flex-1 flex flex-col h-full overflow-hidden">
+              <Editor
+                filePath={activeFilePath}
+                initialContent={activeFileContent}
+                onDebouncedSave={handleDebouncedSave}
+                onRenameFile={handleRenameFile}
+                debounceMs={500}
+              />
+            </main>
+          </div>
+
+          {/* Visual 3-Way Conflict Resolver Modal */}
+          <ConflictResolverModal
+            conflicts={conflictedFiles}
+            isOpen={isConflictModalOpen}
+            onClose={() => setIsConflictModalOpen(false)}
+            onApplyResolutions={handleApplyResolutions}
+          />
+
+          {/* GitHub Authentication & Vault Setup Wizard (Desktop) */}
+          <OnboardingModal
+            isOpen={isOnboardingOpen}
+            defaultVaultPath={vaultPath}
+            onComplete={async (data) => {
+              setVaultPath(data.vaultPath);
+              setIsOnboardingOpen(false);
+              showToast("Vault successfully connected to GitHub!", "success");
+              await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
+            }}
+            onCancel={() => setIsOnboardingOpen(false)}
+          />
+        </>
+      )}
+
+      {/* Shared Modals for both layouts */}
       <AccountSettingsModal
         isOpen={isAccountSettingsOpen}
         onClose={() => setIsAccountSettingsOpen(false)}
@@ -331,7 +429,6 @@ export default function App() {
         }}
       />
 
-      {/* Switch Repository Modal (Top Bar Switch Repo button) */}
       <RepoSwitchModal
         isOpen={isRepoSwitchOpen}
         onClose={() => setIsRepoSwitchOpen(false)}
@@ -343,20 +440,7 @@ export default function App() {
         }}
       />
 
-      {/* GitHub Authentication & Vault Setup Wizard (Initial onboarding if not connected) */}
-      <OnboardingModal
-        isOpen={isOnboardingOpen}
-        defaultVaultPath={vaultPath}
-        onComplete={async (data) => {
-          setVaultPath(data.vaultPath);
-          setIsOnboardingOpen(false);
-          showToast("Vault successfully connected to GitHub!", "success");
-          await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
-        }}
-        onCancel={() => setIsOnboardingOpen(false)}
-      />
-
-      {/* Toast Notification Notification Pill */}
+      {/* Toast Notification Pill */}
       {toastMessage && (
         <div
           className={`fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-medium flex items-center gap-2 transition-all transform animate-bounce ${

@@ -95,6 +95,11 @@ fn create_file(vault_path: String, rel_path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn create_folder(vault_path: String, rel_path: String) -> Result<(), String> {
+    fs_engine::create_folder(&vault_path, &rel_path)
+}
+
+#[tauri::command]
 fn delete_file(vault_path: String, rel_path: String) -> Result<(), String> {
     fs_engine::delete_file(&vault_path, &rel_path)
 }
@@ -140,6 +145,7 @@ pub fn run() {
             read_file_content,
             write_file_content,
             create_file,
+            create_folder,
             delete_file,
             rename_file,
             init_or_open_vault,

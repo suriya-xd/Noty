@@ -58,6 +58,8 @@ GitVault is your local-first Markdown note-taking app with native GitHub reposit
 `,
 };
 
+const MOCK_FOLDERS = new Set<string>();
+
 let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
 let mockDirtySet = new Set<string>();
@@ -113,13 +115,29 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     }
 
     case "list_vault_files": {
-      const entries: VaultEntry[] = Object.keys(MOCK_FILES).map((p) => ({
-        path: p,
-        name: p.split("/").pop() || p,
-        is_directory: false,
-        size_bytes: MOCK_FILES[p].length,
-        modified_ms: Date.now(),
-      }));
+      const entries: VaultEntry[] = [];
+      for (const folder of MOCK_FOLDERS) {
+        entries.push({
+          path: folder,
+          name: folder.split("/").pop() || folder,
+          is_directory: true,
+          size_bytes: 0,
+          modified_ms: Date.now(),
+        });
+      }
+      for (const p of Object.keys(MOCK_FILES)) {
+        entries.push({
+          path: p,
+          name: p.split("/").pop() || p,
+          is_directory: false,
+          size_bytes: MOCK_FILES[p].length,
+          modified_ms: Date.now(),
+        });
+      }
+      entries.sort((a, b) => {
+        if (a.is_directory !== b.is_directory) return b.is_directory ? 1 : -1;
+        return a.path.localeCompare(b.path);
+      });
       return entries as unknown as T;
     }
 
@@ -140,24 +158,64 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "create_file": {
       const relPath = args.rel_path as string;
-      MOCK_FILES[relPath] = `# ${relPath.replace(".md", "")}\n\nStart writing your note...\n`;
+      const title = relPath.split("/").pop()?.replace(".md", "") || "Untitled";
+      MOCK_FILES[relPath] = `# ${title}\n\nStart writing your note...\n`;
       mockDirtySet.add(relPath);
+      return undefined as unknown as T;
+    }
+
+    case "create_folder": {
+      const relPath = args.rel_path as string;
+      MOCK_FOLDERS.add(relPath);
       return undefined as unknown as T;
     }
 
     case "delete_file": {
       const relPath = args.rel_path as string;
+      MOCK_FOLDERS.delete(relPath);
       delete MOCK_FILES[relPath];
       mockDirtySet.delete(relPath);
+      for (const k of Object.keys(MOCK_FILES)) {
+        if (k.startsWith(relPath + "/")) {
+          delete MOCK_FILES[k];
+          mockDirtySet.delete(k);
+        }
+      }
+      for (const f of Array.from(MOCK_FOLDERS)) {
+        if (f.startsWith(relPath + "/")) {
+          MOCK_FOLDERS.delete(f);
+        }
+      }
       return undefined as unknown as T;
     }
 
     case "rename_file": {
       const oldPath = args.old_path as string;
       const newPath = args.new_path as string;
+      if (MOCK_FOLDERS.has(oldPath)) {
+        MOCK_FOLDERS.delete(oldPath);
+        MOCK_FOLDERS.add(newPath);
+        for (const f of Array.from(MOCK_FOLDERS)) {
+          if (f.startsWith(oldPath + "/")) {
+            MOCK_FOLDERS.delete(f);
+            MOCK_FOLDERS.add(newPath + f.slice(oldPath.length));
+          }
+        }
+        for (const k of Object.keys(MOCK_FILES)) {
+          if (k.startsWith(oldPath + "/")) {
+            const content = MOCK_FILES[k];
+            delete MOCK_FILES[k];
+            MOCK_FILES[newPath + k.slice(oldPath.length)] = content;
+          }
+        }
+      }
       if (MOCK_FILES[oldPath] !== undefined) {
         MOCK_FILES[newPath] = MOCK_FILES[oldPath];
         delete MOCK_FILES[oldPath];
+        if (mockDirtySet.has(oldPath)) {
+          mockDirtySet.delete(oldPath);
+          mockDirtySet.add(newPath);
+        }
       }
       return undefined as unknown as T;
     }
@@ -373,6 +431,10 @@ export const GitVaultBridge = {
 
   createFile: (vaultPath: string, relPath: string): Promise<void> => {
     return invokeTauri<void>("create_file", { vault_path: vaultPath, rel_path: relPath });
+  },
+
+  createFolder: (vaultPath: string, relPath: string): Promise<void> => {
+    return invokeTauri<void>("create_folder", { vault_path: vaultPath, rel_path: relPath });
   },
 
   deleteFile: (vaultPath: string, relPath: string): Promise<void> => {

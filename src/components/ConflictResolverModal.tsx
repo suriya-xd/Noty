@@ -65,12 +65,31 @@ export const ConflictResolverModal: FC<ConflictResolverModalProps> = ({
     }));
   };
 
+  const handleAcceptAllLocal = () => {
+    const updated: Record<string, { type: "local" | "remote" | "custom"; content: string }> = {};
+    for (const f of conflicts) {
+      updated[f.path] = { type: "local", content: f.local_content };
+    }
+    setResolutions(updated);
+  };
+
+  const handleAcceptAllRemote = () => {
+    const updated: Record<string, { type: "local" | "remote" | "custom"; content: string }> = {};
+    for (const f of conflicts) {
+      updated[f.path] = { type: "remote", content: f.remote_content };
+    }
+    setResolutions(updated);
+  };
+
   const handleCustomChange = (path: string, newContent: string) => {
     setResolutions((prev) => ({
       ...prev,
       [path]: { type: "custom", content: newContent },
     }));
   };
+
+  const resolvedCount = Object.values(resolutions).filter((r) => r.type === "local" || r.type === "remote").length;
+  const progressPercent = Math.round((resolvedCount / Math.max(1, conflicts.length)) * 100);
 
   const handleFinalize = () => {
     const list: ConflictResolution[] = Object.entries(resolutions).map(([path, res]) => ({
@@ -82,41 +101,94 @@ export const ConflictResolverModal: FC<ConflictResolverModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-6 animate-fadeIn">
-      <div className="w-full max-w-5xl h-[85vh] bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-100">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-6 animate-fadeIn">
+      <div className="w-full max-w-6xl h-[88vh] bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl flex flex-col overflow-hidden text-zinc-100">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[#30363d] flex items-center justify-between bg-[#0d1117]/80">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-orange-500/20 text-orange-400 border border-orange-500/30 flex items-center justify-center">
-              <GitMerge className="w-4 h-4" />
+        <div className="px-6 py-4 border-b border-[#30363d] flex flex-col gap-3 bg-[#0d1117]/90">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500/20 via-amber-500/10 to-sky-500/20 text-orange-400 border border-orange-500/40 flex items-center justify-center shadow-sm">
+                <GitMerge className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="font-headline font-semibold text-base text-white flex items-center gap-2">
+                  Resolve Conflicting Changes
+                  <span className="text-xs font-mono font-medium text-orange-400 px-2 py-0.5 rounded-full bg-orange-950/60 border border-orange-500/30">
+                    {conflicts.length} Conflicted File(s)
+                  </span>
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Changes from GitHub remote conflict with your local edits. Select which version to keep or combine directly.
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className="font-semibold text-sm text-white flex items-center gap-2">
-                Visual 3-Way Conflict Resolver
-                <span className="text-xs font-normal text-orange-400 px-2 py-0.5 rounded-full bg-orange-950/60 border border-orange-500/30">
-                  {conflicts.length} Conflicted File(s)
-                </span>
-              </h2>
-              <p className="text-xs text-zinc-400">
-                In-memory merge detected line-level collisions between your dirty worktree and origin/main.
-              </p>
+
+            {/* Branch Context Trio */}
+            <div className="hidden md:flex items-center gap-2 bg-[#0d1117] px-3 py-1.5 rounded-lg border border-[#30363d] text-xs font-mono">
+              <div className="flex items-center gap-1.5 text-amber-400">
+                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                <span>Ours (HEAD)</span>
+              </div>
+              <span className="text-zinc-500">↔</span>
+              <div className="flex items-center gap-1.5 text-zinc-400">
+                <span className="w-2 h-2 rounded-full bg-zinc-500"></span>
+                <span>Base</span>
+              </div>
+              <span className="text-zinc-500">↔</span>
+              <div className="flex items-center gap-1.5 text-sky-400">
+                <span className="w-2 h-2 rounded-full bg-sky-400"></span>
+                <span>Theirs (Remote)</span>
+              </div>
             </div>
+
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-[#30363d] text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg hover:bg-[#30363d] text-zinc-400 hover:text-white transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {/* Batch Action Bar */}
+          <div className="flex items-center justify-between border-t border-[#21262d] pt-2.5 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-400 font-mono text-[11px] uppercase tracking-wider font-semibold mr-1">
+                Batch Apply:
+              </span>
+              <button
+                type="button"
+                onClick={handleAcceptAllLocal}
+                className="px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-amber-950/40 text-amber-300 border border-amber-500/30 font-medium transition-colors cursor-pointer"
+              >
+                Keep All My Edits
+              </button>
+              <button
+                type="button"
+                onClick={handleAcceptAllRemote}
+                className="px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-sky-950/40 text-sky-300 border border-sky-500/30 font-medium transition-colors cursor-pointer"
+              >
+                Keep All Cloud Edits
+              </button>
+            </div>
+
+            <div className="text-[11px] font-mono text-zinc-400 flex items-center gap-2">
+              <span>{resolvedCount} of {conflicts.length} resolved</span>
+              <div className="w-24 h-1.5 rounded-full bg-[#21262d] overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-sky-500 transition-all duration-300"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Content Area */}
         <div className="flex-1 flex overflow-hidden">
           {/* File Selector Sidebar */}
-          <div className="w-56 border-r border-[#30363d] bg-[#0d1117] p-3 flex flex-col">
-            <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">
-              Conflicted Files
+          <div className="w-60 border-r border-[#30363d] bg-[#0d1117] p-3 flex flex-col">
+            <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2 font-mono">
+              Conflicted Files ({conflicts.length})
             </div>
             <div className="flex-1 overflow-y-auto space-y-1">
               {conflicts.map((file, idx) => {
@@ -127,14 +199,20 @@ export const ConflictResolverModal: FC<ConflictResolverModalProps> = ({
                   <button
                     key={file.path}
                     onClick={() => setActiveFileIndex(idx)}
-                    className={`w-full text-left px-2.5 py-2 rounded-lg text-xs font-mono flex items-center justify-between transition-colors ${
+                    className={`w-full text-left px-2.5 py-2 rounded-lg text-xs font-mono flex items-center justify-between transition-colors cursor-pointer ${
                       isSelected
                         ? "bg-orange-950/60 text-orange-200 border border-orange-500/40"
                         : "text-zinc-400 hover:bg-[#161b22] hover:text-zinc-200"
                     }`}
                   >
                     <span className="truncate">{file.path}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#21262d] text-zinc-300 capitalize">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${
+                      resType === "local"
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                        : resType === "remote"
+                        ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                        : "bg-[#21262d] text-zinc-300"
+                    }`}>
                       {resType}
                     </span>
                   </button>

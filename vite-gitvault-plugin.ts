@@ -90,21 +90,37 @@ export function gitVaultPlugin(): Plugin {
                 return sendJson([]);
               }
               const entries: any[] = [];
-              const items = fs.readdirSync(vaultPath, { withFileTypes: true });
-              for (const item of items) {
-                if (item.name.startsWith(".") || item.name === "node_modules" || item.name === "target") {
-                  continue;
+              const scanDir = (dir: string, baseRel: string = "") => {
+                const items = fs.readdirSync(dir, { withFileTypes: true });
+                for (const item of items) {
+                  if (item.name.startsWith(".") || item.name === "node_modules" || item.name === "target" || item.name === "dist") {
+                    continue;
+                  }
+                  const relPath = baseRel ? `${baseRel}/${item.name}` : item.name;
+                  const fullPath = path.join(dir, item.name);
+                  try {
+                    const stat = fs.statSync(fullPath);
+                    const isDir = item.isDirectory();
+                    entries.push({
+                      path: relPath,
+                      name: item.name,
+                      is_directory: isDir,
+                      size_bytes: stat.size,
+                      modified_ms: stat.mtimeMs,
+                    });
+                    if (isDir) {
+                      scanDir(fullPath, relPath);
+                    }
+                  } catch {}
                 }
-                const fullPath = path.join(vaultPath, item.name);
-                const stat = fs.statSync(fullPath);
-                entries.push({
-                  path: item.name,
-                  name: item.name,
-                  is_directory: item.isDirectory(),
-                  size_bytes: stat.size,
-                  modified_ms: stat.mtimeMs,
-                });
-              }
+              };
+              scanDir(vaultPath);
+              entries.sort((a, b) => {
+                if (a.is_directory !== b.is_directory) {
+                  return b.is_directory ? 1 : -1;
+                }
+                return a.path.localeCompare(b.path);
+              });
               sendJson(entries);
               break;
             }
@@ -144,7 +160,16 @@ export function gitVaultPlugin(): Plugin {
               const dir = path.dirname(fullPath);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
               if (!fs.existsSync(fullPath)) {
-                fs.writeFileSync(fullPath, `# ${body.rel_path.replace(".md", "")}\n\n`, "utf-8");
+                fs.writeFileSync(fullPath, `# ${body.rel_path.split("/").pop()?.replace(".md", "") || "Untitled"}\n\n`, "utf-8");
+              }
+              sendJson({ success: true });
+              break;
+            }
+
+            case "create_folder": {
+              const fullPath = path.join(vaultPath, body.rel_path);
+              if (!fs.existsSync(fullPath)) {
+                fs.mkdirSync(fullPath, { recursive: true });
               }
               sendJson({ success: true });
               break;
@@ -153,7 +178,11 @@ export function gitVaultPlugin(): Plugin {
             case "delete_file": {
               const fullPath = path.join(vaultPath, body.rel_path);
               if (fs.existsSync(fullPath)) {
-                fs.unlinkSync(fullPath);
+                if (fs.statSync(fullPath).isDirectory()) {
+                  fs.rmSync(fullPath, { recursive: true, force: true });
+                } else {
+                  fs.unlinkSync(fullPath);
+                }
               }
               sendJson({ success: true });
               break;
@@ -163,6 +192,10 @@ export function gitVaultPlugin(): Plugin {
               const oldPath = path.join(vaultPath, body.old_path);
               const newPath = path.join(vaultPath, body.new_path);
               if (fs.existsSync(oldPath)) {
+                const parentDir = path.dirname(newPath);
+                if (!fs.existsSync(parentDir)) {
+                  fs.mkdirSync(parentDir, { recursive: true });
+                }
                 fs.renameSync(oldPath, newPath);
               }
               sendJson({ success: true });
