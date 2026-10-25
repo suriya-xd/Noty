@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
+import { CanvasView } from "./components/canvas/CanvasView";
+import { Dashboard } from "./components/Dashboard";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { AccountSettingsModal } from "./components/AccountSettingsModal";
@@ -16,6 +18,9 @@ import {
   RepoStatusPayload,
   VaultEntry,
 } from "./types/gitVault";
+import { vaultIndex } from "./utils/wikilinks/vaultIndex";
+import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
+import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
 
 export default function App() {
   const [vaultPath, setVaultPath] = useState<string>("/vault");
@@ -70,9 +75,25 @@ export default function App() {
       const list = await GitVaultBridge.listVaultFiles(path);
       setFiles(list);
 
-      // Default to first file if none selected
-      if (!activeFilePath && list.length > 0) {
-        handleSelectFile(list[0].path);
+      // Re-index vault files in memory
+      vaultIndex.reindex(list.map((f) => f.path));
+
+      // Asynchronously populate backlinks graph for all markdown & canvas files
+      list.forEach((entry) => {
+        if (!entry.is_directory && (entry.path.endsWith(".md") || entry.path.endsWith(".canvas"))) {
+          GitVaultBridge.readFileContent(`${path}/${entry.path}`)
+            .then((content) => backlinksGraph.updateFileLinks(entry.path, content))
+            .catch(() => {});
+        }
+      });
+
+      // If currently active file no longer exists or is a directory, reset to dashboard
+      if (activeFilePath) {
+        const stillExists = list.some((f) => f.path === activeFilePath && !f.is_directory);
+        if (!stillExists) {
+          setActiveFilePath(null);
+          setActiveFileContent("");
+        }
       }
     } catch (err) {
       console.error("Failed to list vault files:", err);
@@ -112,11 +133,22 @@ export default function App() {
 
   // 4. File selection and reading
   const handleSelectFile = async (relPath: string) => {
+    if (!relPath) {
+      setActiveFilePath(null);
+      setActiveFileContent("");
+      return;
+    }
+    // Prevent opening directories as notes
+    const entry = files.find((f) => f.path === relPath);
+    if (entry?.is_directory) {
+      return;
+    }
     try {
       const fullPath = `${vaultPath}/${relPath}`;
       const content = await GitVaultBridge.readFileContent(fullPath);
       setActiveFileContent(content);
       setActiveFilePath(relPath);
+      backlinksGraph.updateFileLinks(relPath, content);
     } catch (err) {
       console.error("Failed to read file:", err);
       showToast(`Error reading file: ${err}`, "error");
@@ -129,6 +161,7 @@ export default function App() {
       const fullPath = `${vaultPath}/${relPath}`;
       await GitVaultBridge.writeFileContent(fullPath, newContent);
       setActiveFileContent(newContent);
+      backlinksGraph.updateFileLinks(relPath, newContent);
       // Immediately refresh Git status to show the dirty worktree indicator (`•`)
       await refreshStatus();
     } catch (err) {
@@ -238,6 +271,9 @@ export default function App() {
   const handleDeleteFile = async (relPath: string) => {
     try {
       await GitVaultBridge.deleteFile(vaultPath, relPath);
+      vaultIndex.remove(relPath);
+      backlinksGraph.removeFileLinks(relPath);
+
       if (activeFilePath === relPath || (activeFilePath && activeFilePath.startsWith(relPath + "/"))) {
         setActiveFilePath(null);
         setActiveFileContent("");
@@ -251,14 +287,27 @@ export default function App() {
 
   const handleRenameFile = async (oldPath: string, newPath: string) => {
     try {
-      await GitVaultBridge.renameFile(vaultPath, oldPath, newPath);
+      const result = await renameFileWithWikilinks(oldPath, newPath, {
+        readFile: (filePath) => GitVaultBridge.readFileContent(`${vaultPath}/${filePath}`),
+        writeFile: (filePath, content) => GitVaultBridge.writeFileContent(`${vaultPath}/${filePath}`, content),
+        renameFile: (oldP, newP) => GitVaultBridge.renameFile(vaultPath, oldP, newP),
+      });
+
       if (activeFilePath === oldPath) {
         setActiveFilePath(newPath);
       } else if (activeFilePath && activeFilePath.startsWith(oldPath + "/")) {
         setActiveFilePath(newPath + activeFilePath.slice(oldPath.length));
       }
       await Promise.all([refreshFiles(), refreshStatus()]);
-      showToast(`Renamed to ${newPath}`, "success");
+
+      if (result.totalLinksUpdated > 0) {
+        showToast(
+          `Renamed to ${newPath} & updated ${result.totalLinksUpdated} wikilink${result.totalLinksUpdated === 1 ? "" : "s"} across ${result.affectedFiles.length} note${result.affectedFiles.length === 1 ? "" : "s"}!`,
+          "success"
+        );
+      } else {
+        showToast(`Renamed to ${newPath}`, "success");
+      }
     } catch (err) {
       showToast(`Failed to rename: ${err}`, "error");
     }
@@ -366,9 +415,13 @@ export default function App() {
             onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
             onOpenOnboarding={() => setIsOnboardingOpen(true)}
             onSimulateState={handleSimulateState}
+            onGoToDashboard={() => {
+              setActiveFilePath(null);
+              setActiveFileContent("");
+            }}
           />
 
-          {/* Main Workspace (Sidebar + CodeMirror Editor) */}
+          {/* Main Workspace (Sidebar + CodeMirror Editor / Dashboard) */}
           <div className="flex-1 flex overflow-hidden">
             {/* Sidebar File Tree with Live Git Status Badges */}
             <Sidebar
@@ -384,15 +437,48 @@ export default function App() {
               onOpenSettings={() => setIsAccountSettingsOpen(true)}
             />
 
-            {/* CodeMirror 6 Markdown Editor */}
+            {/* CodeMirror 6 Markdown Editor OR Dashboard when no note is opened */}
             <main className="flex-1 flex flex-col h-full overflow-hidden">
-              <Editor
-                filePath={activeFilePath}
-                initialContent={activeFileContent}
-                onDebouncedSave={handleDebouncedSave}
-                onRenameFile={handleRenameFile}
-                debounceMs={500}
-              />
+              {activeFilePath ? (
+                activeFilePath.endsWith(".canvas") ? (
+                  <CanvasView
+                    filePath={activeFilePath}
+                    initialContent={activeFileContent}
+                    vaultPath={vaultPath}
+                    vaultFiles={files}
+                    onDebouncedSave={handleDebouncedSave}
+                    onOpenFile={handleSelectFile}
+                    onClose={() => {
+                      setActiveFilePath(null);
+                      setActiveFileContent("");
+                    }}
+                  />
+                ) : (
+                  <Editor
+                    filePath={activeFilePath}
+                    initialContent={activeFileContent}
+                    onDebouncedSave={handleDebouncedSave}
+                    onRenameFile={handleRenameFile}
+                    onOpenFile={handleSelectFile}
+                    onCreateFile={handleCreateFile}
+                    onClose={() => {
+                      setActiveFilePath(null);
+                      setActiveFileContent("");
+                    }}
+                    debounceMs={500}
+                  />
+                )
+              ) : (
+                <Dashboard
+                  vaultPath={vaultPath}
+                  files={files}
+                  fileStatuses={status?.files || []}
+                  onSelectFile={handleSelectFile}
+                  onCreateFile={handleCreateFile}
+                  onCreateFolder={handleCreateFolder}
+                  status={status}
+                />
+              )}
             </main>
           </div>
 

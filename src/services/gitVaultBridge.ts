@@ -158,8 +158,12 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "create_file": {
       const relPath = args.rel_path as string;
-      const title = relPath.split("/").pop()?.replace(".md", "") || "Untitled";
-      MOCK_FILES[relPath] = `# ${title}\n\nStart writing your note...\n`;
+      if (relPath.endsWith(".canvas")) {
+        MOCK_FILES[relPath] = JSON.stringify({ nodes: [], edges: [] }, null, 2);
+      } else {
+        const title = relPath.split("/").pop()?.replace(".md", "") || "Untitled";
+        MOCK_FILES[relPath] = `# ${title}\n\nStart writing your note...\n`;
+      }
       mockDirtySet.add(relPath);
       return undefined as unknown as T;
     }

@@ -32,6 +32,7 @@ interface TopBarProps {
   onOpenRepoSwitch: () => void;
   onOpenOnboarding: () => void;
   onSimulateState?: (stateType: string) => void;
+  onGoToDashboard?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -44,6 +45,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenRepoSwitch,
   onOpenOnboarding,
   onSimulateState,
+  onGoToDashboard,
 }) => {
   const syncState: SyncState = status?.state || "CleanSynced";
 
@@ -107,7 +109,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <header className="h-14 border-b border-[#30363d]/70 bg-[#161b22]/95 backdrop-blur-xl px-4 flex items-center justify-between z-20 select-none">
       {/* Left: Desktop Controls, Branding & Vault / Branch */}
-      <div className="flex items-center gap-3">
+      <div className="flex-1 flex items-center gap-3">
         {/* Subtle desktop window dots */}
         <div className="flex items-center gap-1.5 mr-1">
           <span className="w-2.5 h-2.5 rounded-full bg-red-500/40 hover:bg-red-500 transition-colors cursor-pointer" />
@@ -118,12 +120,17 @@ export const TopBar: React.FC<TopBarProps> = ({
         <div className="h-4 w-[1px] bg-[#30363d]" />
 
         {/* Noty Brand */}
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md shadow-sky-500/20">
+        <button
+          type="button"
+          onClick={onGoToDashboard}
+          title="Return to Dashboard"
+          className="flex items-center gap-2 group cursor-pointer border-none bg-transparent p-0 text-left"
+        >
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md shadow-sky-500/20 group-hover:scale-105 transition-transform">
             <Sparkles className="w-4 h-4 text-white" />
           </div>
-          <span className="font-headline font-bold text-sm tracking-tight text-white">Noty</span>
-        </div>
+          <span className="font-headline font-bold text-sm tracking-tight text-white group-hover:text-sky-300 transition-colors">Noty</span>
+        </button>
 
         <div className="h-4 w-[1px] bg-[#30363d]" />
 
@@ -155,8 +162,28 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </div>
 
-      {/* Middle: Live Sync Status Pill */}
-      <div className="flex items-center gap-2">
+      {/* Middle: Live Sync Status Pill Flanked by Sync & Save Icon Buttons */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        {/* Sync Icon Button (Left of Pill) */}
+        <button
+          id="btn-sync"
+          onClick={canSync ? onSync : onFetch}
+          disabled={isLoading}
+          title={
+            canSync
+              ? "Pull changes from origin/main"
+              : "Fetch latest refs from remote"
+          }
+          className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+            canSync
+              ? "text-sky-400 hover:text-sky-300 hover:bg-sky-500/15"
+              : "text-zinc-400 hover:text-zinc-200 hover:bg-[#21262d]"
+          }`}
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+        </button>
+
+        {/* Live Sync Status Pill */}
         <div
           title={badge.desc}
           className={`flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium transition-all duration-300 ${badge.bg}`}
@@ -165,18 +192,30 @@ export const TopBar: React.FC<TopBarProps> = ({
           <span>{badge.label}</span>
         </div>
 
+        {/* Save Icon Button (Right of Pill) */}
         <button
-          onClick={onFetch}
-          disabled={isLoading}
-          title="Fetch latest refs from remote"
-          className="p-1.5 rounded-md hover:bg-[#21262d] text-zinc-400 hover:text-zinc-200 transition-colors"
+          id="btn-save"
+          onClick={onSave}
+          disabled={!canSave || isLoading}
+          className={`p-1.5 rounded-md transition-colors ${
+            canSave
+              ? "text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/15 cursor-pointer active:scale-95"
+              : "text-zinc-600 hover:text-zinc-600 cursor-not-allowed"
+          }`}
+          title={
+            canSave
+              ? "Stage all files (`git add -A`), commit, and push to origin/main"
+              : syncState === "DirtyBehind"
+              ? "Blocked: Remote is ahead! Please Sync first."
+              : "Save disabled: worktree is already clean"
+          }
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+          <Save className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Right: Manual Save & Sync Actions */}
-      <div className="flex items-center gap-2">
+      {/* Right: State Simulation & Repo Actions */}
+      <div className="flex-1 flex items-center justify-end gap-2">
         {/* Simulation testing menu (for quick state testing) */}
         {onSimulateState && (
           <select
@@ -196,48 +235,6 @@ export const TopBar: React.FC<TopBarProps> = ({
             <option value="conflict_trigger">💥 Trigger 3-Way Conflict</option>
           </select>
         )}
-
-        {/* Sync Button */}
-        <button
-          id="btn-sync"
-          onClick={onSync}
-          disabled={!canSync || isLoading}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-            canSync
-              ? "bg-sky-600 hover:bg-sky-500 text-white shadow-lg shadow-sky-600/25 cursor-pointer active:scale-95"
-              : "bg-[#21262d] text-zinc-500 border border-[#30363d] cursor-not-allowed"
-          }`}
-          title={
-            canSync
-              ? "Pull changes from origin/main"
-              : "Sync disabled: repository is not behind remote"
-          }
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-          <span>Sync</span>
-        </button>
-
-        {/* Save Button */}
-        <button
-          id="btn-save"
-          onClick={onSave}
-          disabled={!canSave || isLoading}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-            canSave
-              ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/25 cursor-pointer active:scale-95"
-              : "bg-[#21262d] text-zinc-500 border border-[#30363d] cursor-not-allowed"
-          }`}
-          title={
-            canSave
-              ? "Stage all files (`git add -A`), commit, and push to origin/main"
-              : syncState === "DirtyBehind"
-              ? "Blocked: Remote is ahead! Please Sync first."
-              : "Save disabled: worktree is already clean"
-          }
-        >
-          <Save className="w-3.5 h-3.5" />
-          <span>Save</span>
-        </button>
 
         {/* Link GitHub Prompt (if remote not set) */}
         {!status?.remote_url ? (

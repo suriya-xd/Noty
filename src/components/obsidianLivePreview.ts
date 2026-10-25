@@ -7,6 +7,7 @@ import {
   ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
+import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 
 // Interactive Checkbox Widget
 class CheckboxWidget extends WidgetType {
@@ -85,6 +86,53 @@ interface InlineSpan {
 function collectInlineSpans(text: string, lineFrom: number): InlineSpan[] {
   const spans: InlineSpan[] = [];
   const occupied = new Array(text.length).fill(false);
+
+  // 1. Wikilinks (processed first before markdown inline markup)
+  const wikilinkRegex = /\[\[([^[\]#|\r\n]+?)(?:#([^[\]|\r\n]+?))?(?:\|([^[\]\r\n]+?))?\]\]/g;
+  let wm: RegExpExecArray | null;
+  while ((wm = wikilinkRegex.exec(text)) !== null) {
+    const start = wm.index;
+    const end = start + wm[0].length;
+    let hasClash = false;
+    for (let i = start; i < end; i++) {
+      if (occupied[i]) {
+        hasClash = true;
+        break;
+      }
+    }
+    if (hasClash) continue;
+    for (let i = start; i < end; i++) occupied[i] = true;
+
+    const target = wm[1].trim();
+    const header = wm[2]?.trim();
+    const alias = wm[3]?.trim();
+    const isResolved = Boolean(vaultIndex.resolve(target));
+
+    const deco = Decoration.mark({
+      class: isResolved
+        ? "cm-md-wikilink text-sky-400 underline underline-offset-2 decoration-sky-500/40 font-medium cursor-pointer hover:text-sky-300"
+        : "cm-md-wikilink-unresolved text-zinc-400 border-b border-dashed border-zinc-500/80 font-medium cursor-pointer hover:text-amber-300",
+      attributes: {
+        "data-wikilink-target": target,
+        ...(header ? { "data-wikilink-header": header } : {}),
+        title: isResolved
+          ? `Click to open ${target}${header ? ` > ${header}` : ""}`
+          : `Click to create ${target}`,
+      },
+    });
+
+    if (alias) {
+      spans.push({ from: lineFrom + start, to: lineFrom + start + 2, deco: hideDeco });
+      const pipePos = wm[0].indexOf("|");
+      spans.push({ from: lineFrom + start + 2, to: lineFrom + start + pipePos + 1, deco: hideDeco });
+      spans.push({ from: lineFrom + start + pipePos + 1, to: lineFrom + end - 2, deco });
+      spans.push({ from: lineFrom + end - 2, to: lineFrom + end, deco: hideDeco });
+    } else {
+      spans.push({ from: lineFrom + start, to: lineFrom + start + 2, deco: hideDeco });
+      spans.push({ from: lineFrom + start + 2, to: lineFrom + end - 2, deco });
+      spans.push({ from: lineFrom + end - 2, to: lineFrom + end, deco: hideDeco });
+    }
+  }
 
   const findMatches = (
     regex: RegExp,
@@ -519,5 +567,26 @@ export const obsidianTheme = EditorView.theme({
     paddingRight: "16px !important",
     lineHeight: "1.6 !important",
     color: "#7dd3fc !important",
+  },
+
+  // Wikilinks
+  ".cm-md-wikilink": {
+    cursor: "pointer !important",
+    color: "#38bdf8 !important",
+    textDecoration: "underline !important",
+    textUnderlineOffset: "3px !important",
+    "&:hover": {
+      color: "#7dd3fc !important",
+      textDecorationColor: "#7dd3fc !important",
+    },
+  },
+  ".cm-md-wikilink-unresolved": {
+    cursor: "pointer !important",
+    color: "#94a3b8 !important",
+    borderBottom: "1px dashed #64748b !important",
+    "&:hover": {
+      color: "#fcd34d !important",
+      borderColor: "#f59e0b !important",
+    },
   },
 });

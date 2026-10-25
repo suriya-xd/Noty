@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { RepoStatusPayload, VaultEntry } from "../../types/gitVault";
 import { Editor } from "../Editor";
+import { CanvasView } from "../canvas/CanvasView";
 import {
   CustomOrderMap,
   SortMode,
@@ -875,13 +876,24 @@ export const MobileShell: FC<MobileShellProps> = ({
             {/* Note Editor Area */}
             <div className="flex-1 overflow-hidden relative">
               {activeFilePath ? (
-                <Editor
-                  filePath={activeFilePath}
-                  initialContent={activeFileContent}
-                  onDebouncedSave={onDebouncedSave}
-                  onRenameFile={onRenameFile}
-                  debounceMs={500}
-                />
+                activeFilePath.endsWith(".canvas") ? (
+                  <CanvasView
+                    filePath={activeFilePath}
+                    initialContent={activeFileContent}
+                    vaultPath={vaultPath}
+                    vaultFiles={files}
+                    onDebouncedSave={onDebouncedSave}
+                    onOpenFile={onSelectFile}
+                  />
+                ) : (
+                  <Editor
+                    filePath={activeFilePath}
+                    initialContent={activeFileContent}
+                    onDebouncedSave={onDebouncedSave}
+                    onRenameFile={onRenameFile}
+                    debounceMs={500}
+                  />
+                )
               ) : (
                 <div className="flex flex-col items-center justify-center h-full p-6 text-center space-y-3">
                   <div className="w-12 h-12 rounded-full bg-[#161b22] flex items-center justify-center text-sky-400">

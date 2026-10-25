@@ -160,7 +160,10 @@ export function gitVaultPlugin(): Plugin {
               const dir = path.dirname(fullPath);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
               if (!fs.existsSync(fullPath)) {
-                fs.writeFileSync(fullPath, `# ${body.rel_path.split("/").pop()?.replace(".md", "") || "Untitled"}\n\n`, "utf-8");
+                const initialContent = body.rel_path.endsWith(".canvas")
+                  ? JSON.stringify({ nodes: [], edges: [] }, null, 2)
+                  : `# ${body.rel_path.split("/").pop()?.replace(".md", "") || "Untitled"}\n\n`;
+                fs.writeFileSync(fullPath, initialContent, "utf-8");
               }
               sendJson({ success: true });
               break;

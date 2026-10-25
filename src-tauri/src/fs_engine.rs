@@ -78,10 +78,14 @@ pub fn create_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
     if let Some(parent) = full_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let initial_content = format!("# {}\n\nCreated on {}\n", 
-        full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled"),
-        chrono::Local::now().format("%B %d, %Y")
-    );
+    let initial_content = if rel_path.ends_with(".canvas") {
+        "{\n  \"nodes\": [],\n  \"edges\": []\n}\n".to_string()
+    } else {
+        format!("# {}\n\nCreated on {}\n", 
+            full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled"),
+            chrono::Local::now().format("%B %d, %Y")
+        )
+    };
     std::fs::write(&full_path, initial_content).map_err(|e| format!("Failed to create file: {}", e))
 }
 

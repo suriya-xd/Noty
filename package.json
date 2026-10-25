@@ -14,7 +14,10 @@
     "android:dev": "tauri android dev",
     "android:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-android.ps1",
     "setup:desktop": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-desktop.ps1",
-    "setup:android": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-android.ps1"
+    "setup:android": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-android.ps1",
+    "test:wikilinks": "npx tsx ./scripts/test-wikilinks.ts",
+    "test:canvas": "npx tsx ./scripts/test-canvas.ts",
+    "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -39,6 +42,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
+    "tsx": "^4.19.3",
     "vite": "^8.0.16"
   },
   "optionalDependencies": {

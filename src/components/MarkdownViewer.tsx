@@ -3,10 +3,15 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
+import { WikiLink } from "./WikiLink";
+import { transformWikiLinksToMarkdown } from "../utils/wikilinks/wikilinkParser";
 
 interface MarkdownViewerProps {
   content: string;
   className?: string;
+  currentFilePath?: string;
+  onNavigateFile?: (filePath: string, header?: string) => void;
+  onCreateFile?: (newFilePath: string) => void;
 }
 
 const CodeBlock: FC<{ children: React.ReactNode; className?: string }> = ({
@@ -53,7 +58,12 @@ const CodeBlock: FC<{ children: React.ReactNode; className?: string }> = ({
 export const MarkdownViewer: FC<MarkdownViewerProps> = ({
   content,
   className = "",
+  currentFilePath,
+  onNavigateFile,
+  onCreateFile,
 }) => {
+  const transformedContent = transformWikiLinksToMarkdown(content);
+
   return (
     <div
       className={`markdown-viewer text-zinc-200 text-sm leading-relaxed ${className}`}
@@ -115,16 +125,37 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
           ),
           li: ({ children }) => <li className="leading-relaxed">{children}</li>,
           hr: () => <hr className="my-6 border-[#30363d]" />,
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors"
-            >
-              {children}
-            </a>
-          ),
+          a: ({ href, children }) => {
+            if (href?.startsWith("wikilink:")) {
+              const rawUri = href.slice("wikilink:".length);
+              const [encodedTarget, query] = rawUri.split("?");
+              const target = decodeURIComponent(encodedTarget || "");
+              const searchParams = new URLSearchParams(query || "");
+              const header = searchParams.get("header") || undefined;
+
+              return (
+                <WikiLink
+                  target={target}
+                  header={header}
+                  alias={String(children)}
+                  sourcePath={currentFilePath}
+                  onNavigate={onNavigateFile}
+                  onCreate={onCreateFile}
+                />
+              );
+            }
+
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors"
+              >
+                {children}
+              </a>
+            );
+          },
           code: ({ className, children, ...props }) => {
             const isMultiLine = String(children).includes("\n");
             if (isMultiLine) {
@@ -167,7 +198,7 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
           },
         }}
       >
-        {content}
+        {transformedContent}
       </ReactMarkdown>
     </div>
   );

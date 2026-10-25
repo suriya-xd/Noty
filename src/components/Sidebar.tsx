@@ -12,13 +12,14 @@ import {
   X,
   ChevronRight,
   ChevronDown,
-  ChevronUp,
   Settings,
   GripVertical,
   ArrowDownToLine,
   ArrowUpDown,
   Sparkles,
   RotateCcw,
+  LayoutDashboard,
+  LayoutGrid,
 } from "lucide-react";
 import { FileStatus, VaultEntry } from "../types/gitVault";
 import {
@@ -31,7 +32,6 @@ import {
   getParentPath,
   getItemName,
   reorderItem,
-  moveItemStep,
   renameInCustomOrder,
   sortTreeNodes,
 } from "../utils/customOrder";
@@ -49,7 +49,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-interface TreeNode {
+export interface TreeNode {
   path: string;
   name: string;
   isDirectory: boolean;
@@ -57,7 +57,7 @@ interface TreeNode {
 }
 
 interface CreatingState {
-  type: "file" | "folder";
+  type: "file" | "folder" | "canvas";
   parentPath: string; // "" for root, or "folder/subfolder"
 }
 
@@ -67,7 +67,7 @@ interface DropIndicator {
 }
 
 // Build hierarchical tree from flat VaultEntry list
-function buildFileTree(entries: VaultEntry[]): TreeNode[] {
+export function buildFileTree(entries: VaultEntry[]): TreeNode[] {
   const rootNodes: TreeNode[] = [];
   const nodeMap = new Map<string, TreeNode>();
 
@@ -107,7 +107,7 @@ function buildFileTree(entries: VaultEntry[]): TreeNode[] {
 }
 
 // Count total note files within a node
-function countNotes(node: TreeNode): number {
+export function countNotes(node: TreeNode): number {
   if (!node.isDirectory) return 1;
   return node.children.reduce((acc, child) => acc + countNotes(child), 0);
 }
@@ -162,7 +162,7 @@ export const Sidebar: FC<SidebarProps> = ({
     });
   };
 
-  const handleStartCreate = (type: "file" | "folder", parentPath = "") => {
+  const handleStartCreate = (type: "file" | "folder" | "canvas", parentPath = "") => {
     setCreating({ type, parentPath });
     setCreatingValue("");
     if (parentPath) {
@@ -183,8 +183,12 @@ export const Sidebar: FC<SidebarProps> = ({
     }
 
     const raw = creatingValue.trim();
-    if (creating.type === "file") {
-      const finalName = raw.endsWith(".md") ? raw : `${raw}.md`;
+    if (creating.type === "canvas") {
+      const finalName = raw.endsWith(".canvas") ? raw : `${raw}.canvas`;
+      const fullPath = creating.parentPath ? `${creating.parentPath}/${finalName}` : finalName;
+      onCreateFile(fullPath);
+    } else if (creating.type === "file") {
+      const finalName = raw.endsWith(".md") || raw.endsWith(".canvas") ? raw : `${raw}.md`;
       const fullPath = creating.parentPath ? `${creating.parentPath}/${finalName}` : finalName;
       onCreateFile(fullPath);
     } else {
@@ -209,7 +213,15 @@ export const Sidebar: FC<SidebarProps> = ({
     }
 
     const parent = oldPath.includes("/") ? oldPath.substring(0, oldPath.lastIndexOf("/")) : "";
-    const finalName = !isDirectory && !clean.endsWith(".md") ? `${clean}.md` : clean;
+    const isCanvas = oldPath.endsWith(".canvas");
+    let finalName = clean;
+    if (!isDirectory) {
+      if (isCanvas && !clean.endsWith(".canvas")) {
+        finalName = `${clean}.canvas`;
+      } else if (!isCanvas && !clean.endsWith(".md") && !clean.endsWith(".canvas")) {
+        finalName = `${clean}.md`;
+      }
+    }
     const newPath = parent ? `${parent}/${finalName}` : finalName;
 
     onRenameFile(oldPath, newPath);
@@ -364,24 +376,6 @@ export const Sidebar: FC<SidebarProps> = ({
     }
   };
 
-  const handleMoveStep = (
-    node: TreeNode,
-    direction: "up" | "down",
-    siblingNodes: TreeNode[]
-  ) => {
-    const parent = getParentPath(node.path);
-    const siblingNames = siblingNodes.map((s) => s.name);
-
-    if (sortMode !== "custom") {
-      setSortMode("custom");
-      saveSortMode(vaultPath, "custom");
-    }
-
-    const updated = moveItemStep(customOrder, parent, siblingNames, node.name, direction);
-    setCustomOrder(updated);
-    saveCustomOrder(vaultPath, updated);
-  };
-
   // Status lookup for badges
   const getFileBadge = (relPath: string) => {
     const status = fileStatuses.find(
@@ -427,6 +421,7 @@ export const Sidebar: FC<SidebarProps> = ({
     if (!creating || creating.parentPath !== parentPath) return null;
 
     const isFolder = creating.type === "folder";
+    const isCanvas = creating.type === "canvas";
     return (
       <form
         onSubmit={handleCreateSubmit}
@@ -435,13 +430,21 @@ export const Sidebar: FC<SidebarProps> = ({
         <div className="flex items-center gap-1.5">
           {isFolder ? (
             <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          ) : isCanvas ? (
+            <LayoutGrid className="w-3.5 h-3.5 text-purple-400 shrink-0" />
           ) : (
             <FileText className="w-3.5 h-3.5 text-sky-400 shrink-0" />
           )}
           <input
             type="text"
             autoFocus
-            placeholder={isFolder ? "Folder name..." : "Note name (e.g. Ideas)..."}
+            placeholder={
+              isFolder
+                ? "Folder name..."
+                : isCanvas
+                ? "Canvas name (e.g. Roadmap)..."
+                : "Note name (e.g. Ideas)..."
+            }
             value={creatingValue}
             onChange={(e) => setCreatingValue(e.target.value)}
             onKeyDown={(e) => {
@@ -479,8 +482,6 @@ export const Sidebar: FC<SidebarProps> = ({
   const renderTreeNode = (node: TreeNode, depth = 0, siblingNodes: TreeNode[] = tree) => {
     const isRenaming = renamingPath === node.path;
     const isBeingDragged = draggedPath === node.path;
-    const isFirst = siblingNodes[0]?.path === node.path;
-    const isLast = siblingNodes[siblingNodes.length - 1]?.path === node.path;
     const showDropBefore = dropIndicator?.targetPath === node.path && dropIndicator.position === "before";
     const showDropAfter = dropIndicator?.targetPath === node.path && dropIndicator.position === "after";
     const isDragInside = dropIndicator?.targetPath === node.path && dropIndicator.position === "inside";
@@ -580,34 +581,6 @@ export const Sidebar: FC<SidebarProps> = ({
 
               {/* Quick actions on hover */}
               <div className="hidden group-hover:flex items-center gap-0.5">
-                {/* Move Up / Move Down buttons */}
-                <button
-                  title={isFirst ? "Top item" : "Move up"}
-                  disabled={isFirst}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleMoveStep(node, "up", siblingNodes);
-                  }}
-                  className={`p-1 transition-colors ${
-                    isFirst ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                  }`}
-                >
-                  <ChevronUp className="w-3 h-3" />
-                </button>
-                <button
-                  title={isLast ? "Bottom item" : "Move down"}
-                  disabled={isLast}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleMoveStep(node, "down", siblingNodes);
-                  }}
-                  className={`p-1 transition-colors ${
-                    isLast ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                  }`}
-                >
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-
                 <button
                   title="New Note inside folder"
                   onClick={() => handleStartCreate("file", node.path)}
@@ -720,11 +693,19 @@ export const Sidebar: FC<SidebarProps> = ({
             {/* Drag handle */}
             <GripVertical className="w-3 h-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
 
-            <FileText
-              className={`w-3.5 h-3.5 shrink-0 ${
-                isActive ? "text-sky-400" : "text-zinc-500 group-hover:text-zinc-400"
-              }`}
-            />
+            {node.name.endsWith(".canvas") ? (
+              <LayoutGrid
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  isActive ? "text-purple-400" : "text-purple-400/80 group-hover:text-purple-300"
+                }`}
+              />
+            ) : (
+              <FileText
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  isActive ? "text-sky-400" : "text-zinc-500 group-hover:text-zinc-400"
+                }`}
+              />
+            )}
 
             {isRenaming ? (
               <input
@@ -752,34 +733,6 @@ export const Sidebar: FC<SidebarProps> = ({
 
             {/* Quick action buttons on hover */}
             <div className="hidden group-hover:flex items-center gap-0.5">
-              {/* Move Up / Move Down buttons */}
-              <button
-                title={isFirst ? "Top item" : "Move up"}
-                disabled={isFirst}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleMoveStep(node, "up", siblingNodes);
-                }}
-                className={`p-1 transition-colors ${
-                  isFirst ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                }`}
-              >
-                <ChevronUp className="w-3 h-3" />
-              </button>
-              <button
-                title={isLast ? "Bottom item" : "Move down"}
-                disabled={isLast}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleMoveStep(node, "down", siblingNodes);
-                }}
-                className={`p-1 transition-colors ${
-                  isLast ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                }`}
-              >
-                <ChevronDown className="w-3 h-3" />
-              </button>
-
               <button
                 title="Rename note"
                 onClick={() => {
@@ -849,6 +802,17 @@ export const Sidebar: FC<SidebarProps> = ({
             className="p-1.5 rounded-md text-zinc-400 hover:text-amber-400 hover:bg-[#21262d] border border-transparent hover:border-[#30363d] transition-all cursor-pointer active:scale-95"
           >
             <FolderPlus className="w-4 h-4" />
+          </button>
+
+          {/* New Canvas Icon Button */}
+          <button
+            id="btn-sidebar-new-canvas"
+            onClick={() => handleStartCreate("canvas", "")}
+            title="New Canvas Board"
+            aria-label="New Canvas Board"
+            className="p-1.5 rounded-md text-zinc-400 hover:text-purple-400 hover:bg-[#21262d] border border-transparent hover:border-[#30363d] transition-all cursor-pointer active:scale-95"
+          >
+            <LayoutGrid className="w-4 h-4" />
           </button>
 
           {/* New Note / Page Icon Button */}
@@ -933,6 +897,23 @@ export const Sidebar: FC<SidebarProps> = ({
             </div>
           </>
         )}
+      </div>
+
+      {/* Dashboard Item */}
+      <div className="px-2 pt-2 pb-1 border-b border-[#21262d]">
+        <button
+          type="button"
+          onClick={() => onSelectFile("")}
+          className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
+            !activeFilePath
+              ? "bg-sky-500/15 text-sky-300 border border-sky-500/30 shadow-sm"
+              : "text-zinc-400 hover:bg-[#161b22] hover:text-zinc-200 border border-transparent"
+          }`}
+          title="Open Vault Dashboard"
+        >
+          <LayoutDashboard className={`w-3.5 h-3.5 ${!activeFilePath ? "text-sky-400" : "text-zinc-500"}`} />
+          <span>Dashboard</span>
+        </button>
       </div>
 
       {/* Root Inline Create Form */}
