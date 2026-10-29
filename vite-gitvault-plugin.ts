@@ -17,8 +17,16 @@ export function gitVaultPlugin(): Plugin {
 
         const endpoint = req.url.replace("/api/gitvault/", "").split("?")[0];
 
-        // Parse JSON body
+        // Parse JSON body or URL query parameters
         let body: Record<string, any> = {};
+        if (req.url && req.url.includes("?")) {
+          try {
+            const urlObj = new URL(req.url, "http://localhost");
+            for (const [key, val] of urlObj.searchParams.entries()) {
+              body[key] = val;
+            }
+          } catch {}
+        }
         if (req.method === "POST") {
           try {
             const chunks: Buffer[] = [];
@@ -27,7 +35,8 @@ export function gitVaultPlugin(): Plugin {
             }
             const rawBody = Buffer.concat(chunks).toString();
             if (rawBody.trim()) {
-              body = JSON.parse(rawBody);
+              const parsed = JSON.parse(rawBody);
+              body = { ...body, ...parsed };
             }
           } catch (e) {
             console.error("Failed to parse request body:", e);
@@ -125,18 +134,58 @@ export function gitVaultPlugin(): Plugin {
               break;
             }
 
+            case "raw":
             case "read_file_content": {
               let targetPath = body.full_path || body.path || "";
               if (!targetPath) return sendError("Missing file path", 400);
               if (!path.isAbsolute(targetPath)) {
                 targetPath = path.join(vaultPath, targetPath);
               }
-              if (fs.existsSync(targetPath)) {
-                const content = fs.readFileSync(targetPath, "utf-8");
-                sendJson(content);
-              } else {
-                sendJson("");
+              if (!fs.existsSync(targetPath)) {
+                if (endpoint === "raw" || req.method === "GET") {
+                  res.statusCode = 404;
+                  return res.end("File not found");
+                }
+                return sendJson("");
               }
+
+              const ext = path.extname(targetPath).toLowerCase();
+              const mimeMap: Record<string, string> = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+                ".ico": "image/x-icon",
+              };
+
+              // If it's the raw endpoint, or a GET request, or an image file: serve binary with correct mime
+              if (endpoint === "raw" || req.method === "GET" || mimeMap[ext]) {
+                const mime = mimeMap[ext] || "application/octet-stream";
+                const buf = fs.readFileSync(targetPath);
+                res.statusCode = 200;
+                res.setHeader("Content-Type", mime);
+                res.setHeader("Cache-Control", "public, max-age=3600");
+                return res.end(buf);
+              }
+
+              const content = fs.readFileSync(targetPath, "utf-8");
+              sendJson(content);
+              break;
+            }
+
+            case "save_image_file": {
+              let relPath = body.rel_path;
+              const base64Data = body.data_base64;
+              if (!relPath || !base64Data) return sendError("Missing rel_path or data_base64", 400);
+              const targetPath = path.isAbsolute(relPath) ? relPath : path.join(vaultPath, relPath);
+              const dir = path.dirname(targetPath);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              const pureBase64 = base64Data.replace(/^data:[^;]+;base64,/, "");
+              fs.writeFileSync(targetPath, Buffer.from(pureBase64, "base64"));
+              sendJson({ success: true, path: relPath });
               break;
             }
 

@@ -9,6 +9,7 @@ import {
   ArrowUpToLine,
   ArrowDownToLine,
   Palette,
+  Image as ImageIcon,
 } from "lucide-react";
 import { CanvasColor, CanvasPresetColor } from "../../types/canvas";
 import { PRESET_COLOR_MAP } from "../../utils/canvas/parser";
@@ -25,6 +26,7 @@ interface CanvasContextMenuProps {
   onClose: () => void;
   onAddTextNode: () => void;
   onAddFileNode: () => void;
+  onAddImageNode: () => void;
   onAddLinkNode: () => void;
   onAddGroupNode: () => void;
   onDuplicateNode?: () => void;
@@ -39,6 +41,7 @@ export const CanvasContextMenu: FC<CanvasContextMenuProps> = ({
   onClose,
   onAddTextNode,
   onAddFileNode,
+  onAddImageNode,
   onAddLinkNode,
   onAddGroupNode,
   onDuplicateNode,
@@ -72,6 +75,13 @@ export const CanvasContextMenu: FC<CanvasContextMenuProps> = ({
             >
               <FilePlus className="w-4 h-4 text-amber-400" />
               <span>Add Note from Vault</span>
+            </button>
+            <button
+              onClick={() => { onAddImageNode(); onClose(); }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-zinc-200 hover:text-white hover:bg-[#21262d] transition-colors cursor-pointer text-left"
+            >
+              <ImageIcon className="w-4 h-4 text-purple-400" />
+              <span>Add Image</span>
             </button>
             <button
               onClick={() => { onAddLinkNode(); onClose(); }}

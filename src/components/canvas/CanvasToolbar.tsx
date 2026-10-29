@@ -17,6 +17,7 @@ import {
   ArrowDownToLine,
   Palette,
   Crosshair,
+  Image as ImageIcon,
 } from "lucide-react";
 import { CanvasColor, CanvasPresetColor } from "../../types/canvas";
 import { PRESET_COLOR_MAP } from "../../utils/canvas/parser";
@@ -38,6 +39,7 @@ interface CanvasToolbarProps {
   onRedo: () => void;
   onAddTextNode: () => void;
   onAddFileNode: () => void;
+  onAddImageNode: () => void;
   onAddLinkNode: () => void;
   onAddGroupNode: () => void;
   onDeleteSelected: () => void;
@@ -64,6 +66,7 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
   onRedo,
   onAddTextNode,
   onAddFileNode,
+  onAddImageNode,
   onAddLinkNode,
   onAddGroupNode,
   onDeleteSelected,
@@ -174,6 +177,15 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
         >
           <FilePlus className="w-3.5 h-3.5 text-amber-400" />
           <span>Note</span>
+        </button>
+
+        <button
+          onClick={onAddImageNode}
+          title="Add Image to Canvas"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-purple-300 hover:bg-[#21262d] transition-colors cursor-pointer font-medium"
+        >
+          <ImageIcon className="w-3.5 h-3.5 text-purple-400" />
+          <span>Image</span>
         </button>
 
         <button

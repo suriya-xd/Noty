@@ -127,6 +127,11 @@ fn github_poll_device_token(
     github_auth::poll_device_token(client_id, device_code)
 }
 
+#[tauri::command]
+fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
+    fs_engine::save_image_file(&vault_path, &rel_path, data)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -150,7 +155,8 @@ pub fn run() {
             rename_file,
             init_or_open_vault,
             github_start_device_flow,
-            github_poll_device_token
+            github_poll_device_token,
+            save_image_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitVault application");

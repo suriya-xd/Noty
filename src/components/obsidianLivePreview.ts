@@ -1,4 +1,4 @@
-import { RangeSetBuilder } from "@codemirror/state";
+import { RangeSetBuilder, Facet } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -8,6 +8,16 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
+import { resolveImageUrl } from "../services/gitVaultBridge";
+
+export interface LivePreviewConfig {
+  vaultPath: string;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
+}
+
+export const livePreviewConfigFacet = Facet.define<LivePreviewConfig, LivePreviewConfig>({
+  combine: (values) => values[values.length - 1] || { vaultPath: "" },
+});
 
 // Interactive Checkbox Widget
 class CheckboxWidget extends WidgetType {
@@ -58,6 +68,74 @@ class HrWidget extends WidgetType {
   }
 }
 
+// Interactive Live Preview Image Card Widget
+class ImageWidget extends WidgetType {
+  constructor(
+    readonly src: string,
+    readonly alt: string,
+    readonly onPreview?: (src: string, alt?: string) => void
+  ) {
+    super();
+  }
+
+  eq(other: ImageWidget) {
+    return other.src === this.src && other.alt === this.alt;
+  }
+
+  toDOM(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-md-image-card my-3 block select-none max-w-full";
+
+    const inner = document.createElement("div");
+    inner.className =
+      "relative inline-block max-w-full rounded-xl overflow-hidden border border-[#30363d] bg-[#161b22] hover:border-purple-500/60 shadow-lg hover:shadow-purple-500/10 transition-all cursor-pointer group";
+
+    const img = document.createElement("img");
+    img.src = this.src;
+    img.alt = this.alt;
+    img.className =
+      "max-h-[460px] max-w-full object-contain rounded-xl block bg-[#0d1117]/60 group-hover:scale-[1.01] transition-transform duration-200";
+    img.loading = "lazy";
+
+    // Overlay on hover
+    const overlay = document.createElement("div");
+    overlay.className =
+      "absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none";
+    overlay.innerHTML = `
+      <span class="px-3 py-1.5 bg-[#161b22]/90 border border-purple-500/40 rounded-lg shadow-xl backdrop-blur-md flex items-center gap-1.5 text-purple-200 text-xs font-medium">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-purple-400"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>
+        <span>Click to Preview</span>
+      </span>
+    `;
+
+    inner.appendChild(img);
+    inner.appendChild(overlay);
+
+    inner.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.onPreview) {
+        this.onPreview(this.src, this.alt);
+      }
+    };
+
+    wrap.appendChild(inner);
+
+    if (this.alt) {
+      const caption = document.createElement("div");
+      caption.className = "text-center text-[11px] text-zinc-400 mt-1.5 font-mono italic";
+      caption.textContent = this.alt;
+      wrap.appendChild(caption);
+    }
+
+    return wrap;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 // Line Decorations
 const h1Line = Decoration.line({ class: "cm-md-line cm-md-h1" });
 const h2Line = Decoration.line({ class: "cm-md-line cm-md-h2" });
@@ -83,12 +161,89 @@ interface InlineSpan {
   deco: Decoration;
 }
 
-function collectInlineSpans(text: string, lineFrom: number): InlineSpan[] {
+function collectInlineSpans(
+  text: string,
+  lineFrom: number,
+  isCursorOnLine: boolean,
+  selection: EditorView["state"]["selection"],
+  vaultPath: string,
+  onPreviewImage?: (src: string, alt?: string) => void
+): InlineSpan[] {
   const spans: InlineSpan[] = [];
   const occupied = new Array(text.length).fill(false);
 
-  // 1. Wikilinks (processed first before markdown inline markup)
-  const wikilinkRegex = /\[\[([^[\]#|\r\n]+?)(?:#([^[\]|\r\n]+?))?(?:\|([^[\]\r\n]+?))?\]\]/g;
+  // 1. Obsidian Image Embeds: ![[image.png]] or ![[image.png|Alt Text]]
+  const obsidianImgRegex = /!\[\[([^[\]#|\r\n]+?)(?:\|([^[\]\r\n]+?))?\]\]/g;
+  let oim: RegExpExecArray | null;
+  while ((oim = obsidianImgRegex.exec(text)) !== null) {
+    const start = oim.index;
+    const end = start + oim[0].length;
+    let hasClash = false;
+    for (let i = start; i < end; i++) {
+      if (occupied[i]) {
+        hasClash = true;
+        break;
+      }
+    }
+    if (hasClash) continue;
+    for (let i = start; i < end; i++) occupied[i] = true;
+
+    const rawTarget = oim[1].trim();
+    const alt = oim[2]?.trim() || rawTarget.split("/").pop() || "";
+    const resolved = resolveImageUrl(rawTarget, vaultPath);
+
+    const isCursorInside = selection.ranges.some(
+      (r) => r.from <= lineFrom + end && r.to >= lineFrom + start
+    );
+
+    if (!isCursorInside) {
+      spans.push({
+        from: lineFrom + start,
+        to: lineFrom + end,
+        deco: Decoration.replace({
+          widget: new ImageWidget(resolved, alt, onPreviewImage),
+        }),
+      });
+    }
+  }
+
+  // 2. Standard Markdown Images: ![alt](url_or_path)
+  const mdImgRegex = /!\[([^\]]*?)\]\(([^)\r\n]+?)\)/g;
+  let mim: RegExpExecArray | null;
+  while ((mim = mdImgRegex.exec(text)) !== null) {
+    const start = mim.index;
+    const end = start + mim[0].length;
+    let hasClash = false;
+    for (let i = start; i < end; i++) {
+      if (occupied[i]) {
+        hasClash = true;
+        break;
+      }
+    }
+    if (hasClash) continue;
+    for (let i = start; i < end; i++) occupied[i] = true;
+
+    const alt = mim[1].trim();
+    const rawSrc = mim[2].trim();
+    const resolved = resolveImageUrl(rawSrc, vaultPath);
+
+    const isCursorInside = selection.ranges.some(
+      (r) => r.from <= lineFrom + end && r.to >= lineFrom + start
+    );
+
+    if (!isCursorInside) {
+      spans.push({
+        from: lineFrom + start,
+        to: lineFrom + end,
+        deco: Decoration.replace({
+          widget: new ImageWidget(resolved, alt, onPreviewImage),
+        }),
+      });
+    }
+  }
+
+  // 3. Wikilinks (processed after images to avoid matching ![[ as [[)
+  const wikilinkRegex = /(?<!\!)\[\[([^[\]#|\r\n]+?)(?:#([^[\]|\r\n]+?))?(?:\|([^[\]\r\n]+?))?\]\]/g;
   let wm: RegExpExecArray | null;
   while ((wm = wikilinkRegex.exec(text)) !== null) {
     const start = wm.index;
@@ -134,58 +289,61 @@ function collectInlineSpans(text: string, lineFrom: number): InlineSpan[] {
     }
   }
 
-  const findMatches = (
-    regex: RegExp,
-    markerLen: number,
-    contentDeco: Decoration
-  ) => {
-    let m: RegExpExecArray | null;
-    regex.lastIndex = 0;
-    while ((m = regex.exec(text)) !== null) {
-      const start = m.index;
-      const end = start + m[0].length;
+  // 4. Inline text formatting (bold, italic, code, strike) only when cursor is NOT on the line
+  if (!isCursorOnLine) {
+    const findMatches = (
+      regex: RegExp,
+      markerLen: number,
+      contentDeco: Decoration
+    ) => {
+      let m: RegExpExecArray | null;
+      regex.lastIndex = 0;
+      while ((m = regex.exec(text)) !== null) {
+        const start = m.index;
+        const end = start + m[0].length;
 
-      let hasClash = false;
-      for (let i = start; i < end; i++) {
-        if (occupied[i]) {
-          hasClash = true;
-          break;
+        let hasClash = false;
+        for (let i = start; i < end; i++) {
+          if (occupied[i]) {
+            hasClash = true;
+            break;
+          }
         }
+        if (hasClash) continue;
+
+        for (let i = start; i < end; i++) occupied[i] = true;
+
+        const innerLen = m[1].length;
+        // Hide opening marker
+        spans.push({
+          from: lineFrom + start,
+          to: lineFrom + start + markerLen,
+          deco: hideDeco,
+        });
+        // Style formatted content
+        spans.push({
+          from: lineFrom + start + markerLen,
+          to: lineFrom + start + markerLen + innerLen,
+          deco: contentDeco,
+        });
+        // Hide closing marker
+        spans.push({
+          from: lineFrom + end - markerLen,
+          to: lineFrom + end,
+          deco: hideDeco,
+        });
       }
-      if (hasClash) continue;
+    };
 
-      for (let i = start; i < end; i++) occupied[i] = true;
-
-      const innerLen = m[1].length;
-      // Hide opening marker
-      spans.push({
-        from: lineFrom + start,
-        to: lineFrom + start + markerLen,
-        deco: hideDeco,
-      });
-      // Style formatted content
-      spans.push({
-        from: lineFrom + start + markerLen,
-        to: lineFrom + start + markerLen + innerLen,
-        deco: contentDeco,
-      });
-      // Hide closing marker
-      spans.push({
-        from: lineFrom + end - markerLen,
-        to: lineFrom + end,
-        deco: hideDeco,
-      });
-    }
-  };
-
-  // Inline code (highest priority)
-  findMatches(/`([^`\n]+)`/g, 1, inlineCodeDeco);
-  // Bold (**text**)
-  findMatches(/\*\*([^*\n]+)\*\*/g, 2, boldDeco);
-  // Strikethrough (~~text~~)
-  findMatches(/~~([^~\n]+)~~/g, 2, strikeDeco);
-  // Italic (*text*)
-  findMatches(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, 1, italicDeco);
+    // Inline code (highest priority)
+    findMatches(/`([^`\n]+)`/g, 1, inlineCodeDeco);
+    // Bold (**text**)
+    findMatches(/\*\*([^*\n]+)\*\*/g, 2, boldDeco);
+    // Strikethrough (~~text~~)
+    findMatches(/~~([^~\n]+)~~/g, 2, strikeDeco);
+    // Italic (*text*)
+    findMatches(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, 1, italicDeco);
+  }
 
   spans.sort((a, b) => a.from - b.from);
   return spans;
@@ -195,6 +353,7 @@ function buildLivePreviewDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const doc = view.state.doc;
   const selection = view.state.selection;
+  const config = view.state.facet(livePreviewConfigFacet);
 
   let insideCodeBlock = false;
 
@@ -321,10 +480,16 @@ function buildLivePreviewDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 6. Inline Formatting on regular text lines (bold, italic, code, strikethrough)
-      // When cursor is NOT on this line, hide formatting characters (** * ~~ `) and style the text!
-      if (!isCursorOnLine && text.length > 0) {
-        const inlineSpans = collectInlineSpans(text, line.from);
+      // 6. Inline Formatting & Images
+      if (text.length > 0) {
+        const inlineSpans = collectInlineSpans(
+          text,
+          line.from,
+          isCursorOnLine,
+          selection,
+          config.vaultPath,
+          config.onPreviewImage
+        );
         for (const span of inlineSpans) {
           builder.add(span.from, span.to, span.deco);
         }
@@ -589,4 +754,17 @@ export const obsidianTheme = EditorView.theme({
       borderColor: "#f59e0b !important",
     },
   },
+
+  // Live Preview Image Cards
+  ".cm-md-image-card": {
+    display: "block !important",
+    maxWidth: "100% !important",
+    margin: "16px 0 !important",
+  },
+  ".cm-md-image-card img": {
+    borderRadius: "12px !important",
+    maxWidth: "100% !important",
+    boxShadow: "0 4px 20px rgba(0, 0, 0, 0.4) !important",
+  },
 });
+

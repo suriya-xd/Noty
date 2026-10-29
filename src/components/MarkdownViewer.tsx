@@ -1,10 +1,11 @@
 import type { FC } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, Maximize2 } from "lucide-react";
 import { useState } from "react";
 import { WikiLink } from "./WikiLink";
 import { transformWikiLinksToMarkdown } from "../utils/wikilinks/wikilinkParser";
+import { resolveImageUrl } from "../services/gitVaultBridge";
 
 interface MarkdownViewerProps {
   content: string;
@@ -12,6 +13,8 @@ interface MarkdownViewerProps {
   currentFilePath?: string;
   onNavigateFile?: (filePath: string, header?: string) => void;
   onCreateFile?: (newFilePath: string) => void;
+  vaultPath?: string;
+  onPreviewImage?: (src: string, alt?: string) => void;
 }
 
 const CodeBlock: FC<{ children: React.ReactNode; className?: string }> = ({
@@ -61,6 +64,8 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
   currentFilePath,
   onNavigateFile,
   onCreateFile,
+  vaultPath = "",
+  onPreviewImage,
 }) => {
   const transformedContent = transformWikiLinksToMarkdown(content);
 
@@ -195,6 +200,40 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
               );
             }
             return <input type={type} {...props} />;
+          },
+          img: ({ src, alt }) => {
+            const resolved = resolveImageUrl(src || "", vaultPath);
+            return (
+              <span className="relative group my-3 inline-block max-w-full select-none">
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onPreviewImage) {
+                      onPreviewImage(resolved, alt || "");
+                    }
+                  }}
+                  className="relative rounded-xl overflow-hidden border border-[#30363d] bg-[#161b22] hover:border-purple-500/60 shadow-lg hover:shadow-purple-500/10 transition-all cursor-pointer inline-block"
+                >
+                  <img
+                    src={resolved}
+                    alt={alt}
+                    className="max-h-[460px] max-w-full object-contain rounded-xl block bg-[#0d1117]/60 group-hover:scale-[1.01] transition-transform duration-200"
+                    loading="lazy"
+                  />
+                  <span className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                    <span className="px-3 py-1.5 bg-[#161b22]/90 border border-purple-500/40 rounded-lg shadow-xl backdrop-blur-md flex items-center gap-1.5 text-purple-200 text-xs font-medium">
+                      <Maximize2 className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Click to Preview</span>
+                    </span>
+                  </span>
+                </span>
+                {alt && (
+                  <span className="block text-center text-xs text-zinc-400 mt-1 font-mono italic">
+                    {alt}
+                  </span>
+                )}
+              </span>
+            );
           },
         }}
       >

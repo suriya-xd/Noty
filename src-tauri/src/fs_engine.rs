@@ -168,3 +168,12 @@ pub fn init_or_open_vault(vault_path_opt: Option<String>) -> Result<VaultInfo, S
         remote_url,
     })
 }
+
+pub fn save_image_file(vault_path: &str, rel_path: &str, data: Vec<u8>) -> Result<(), String> {
+    let full_path = Path::new(vault_path).join(rel_path);
+    if let Some(parent) = full_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&full_path, data).map_err(|e| format!("Failed to save image file: {}", e))
+}
+

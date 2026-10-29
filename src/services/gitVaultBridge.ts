@@ -156,6 +156,14 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       return undefined as unknown as T;
     }
 
+    case "save_image_file": {
+      const relPath = args.rel_path as string;
+      const base64Data = (args.data_base64 as string) || "";
+      MOCK_FILES[relPath] = base64Data;
+      mockDirtySet.add(relPath);
+      return undefined as unknown as T;
+    }
+
     case "create_file": {
       const relPath = args.rel_path as string;
       if (relPath.endsWith(".canvas")) {
@@ -457,6 +465,25 @@ export const GitVaultBridge = {
     return invokeTauri<VaultInfo>("init_or_open_vault", { vault_path: vaultPath });
   },
 
+  saveImageFile: async (
+    vaultPath: string,
+    relPath: string,
+    dataBase64: string,
+    rawBytes?: Uint8Array
+  ): Promise<void> => {
+    const bytesArray = rawBytes ? Array.from(rawBytes) : undefined;
+    await invokeTauri<void>("save_image_file", {
+      vault_path: vaultPath,
+      rel_path: relPath,
+      data_base64: dataBase64,
+      data: bytesArray,
+    });
+  },
+
+  resolveImageUrl: (src: string, vaultPath: string): string => {
+    return resolveImageUrl(src, vaultPath);
+  },
+
   // Test Simulation Triggers (for verifying all 5 states and 3-way conflicts in UI)
   simulateRemoteAhead: (aheadCount = 1) => {
     mockRemoteAhead = aheadCount;
@@ -471,3 +498,34 @@ export const GitVaultBridge = {
     mockDirtySet.clear();
   },
 };
+
+export function resolveImageUrl(src: string, vaultPath: string): string {
+  if (!src) return "";
+  if (
+    src.startsWith("http://") ||
+    src.startsWith("https://") ||
+    src.startsWith("data:") ||
+    src.startsWith("blob:")
+  ) {
+    return src;
+  }
+
+  const cleanSrc = src.replace(/^\/+/, "");
+
+  if (isTauriEnvironment()) {
+    try {
+      const { convertFileSrc } =
+        (window as unknown as { __TAURI__?: { core?: { convertFileSrc: (path: string) => string } } })
+          .__TAURI__?.core || {};
+      if (typeof convertFileSrc === "function") {
+        const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
+        return convertFileSrc(full);
+      }
+    } catch {}
+  }
+
+  // Vite dev server raw file serving
+  const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
+  return `/api/gitvault/raw?full_path=${encodeURIComponent(full)}`;
+}
+

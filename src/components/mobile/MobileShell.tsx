@@ -73,6 +73,8 @@ interface MobileShellProps {
   onOpenOnboarding: () => void;
   onOpenAccountSettings: () => void;
   onSimulateState?: (state: string) => void;
+  onRefreshFiles?: () => Promise<void>;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
 }
 
 interface TreeNode {
@@ -144,6 +146,8 @@ export const MobileShell: FC<MobileShellProps> = ({
   onOpenRepoSwitch,
   onOpenAccountSettings,
   onSimulateState,
+  onRefreshFiles,
+  onPreviewImage,
 }) => {
   const [activeTab, setActiveTab] = useState<"notes" | "vault" | "sync" | "settings">("notes");
   const [searchQuery, setSearchQuery] = useState("");
@@ -884,6 +888,8 @@ export const MobileShell: FC<MobileShellProps> = ({
                     vaultFiles={files}
                     onDebouncedSave={onDebouncedSave}
                     onOpenFile={onSelectFile}
+                    onRefreshFiles={onRefreshFiles}
+                    onPreviewImage={onPreviewImage}
                   />
                 ) : (
                   <Editor
@@ -891,6 +897,12 @@ export const MobileShell: FC<MobileShellProps> = ({
                     initialContent={activeFileContent}
                     onDebouncedSave={onDebouncedSave}
                     onRenameFile={onRenameFile}
+                    onOpenFile={onSelectFile}
+                    onCreateFile={onCreateFile}
+                    vaultPath={vaultPath}
+                    vaultFiles={files}
+                    onRefreshFiles={onRefreshFiles}
+                    onPreviewImage={onPreviewImage}
                     debounceMs={500}
                   />
                 )

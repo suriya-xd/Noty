@@ -37,6 +37,8 @@ import { CanvasEdgeLayer } from "./CanvasEdgeLayer";
 import { CanvasToolbar } from "./CanvasToolbar";
 import { CanvasContextMenu, ContextMenuState } from "./CanvasContextMenu";
 import { CanvasAddNoteModal } from "./CanvasAddNoteModal";
+import { InsertImageModal } from "../InsertImageModal";
+import { GitVaultBridge } from "../../services/gitVaultBridge";
 import { VaultEntry } from "../../types/gitVault";
 
 interface CanvasViewProps {
@@ -47,6 +49,8 @@ interface CanvasViewProps {
   onDebouncedSave: (filePath: string, content: string) => void;
   onOpenFile?: (path: string) => void;
   onClose?: () => void;
+  onRefreshFiles?: () => Promise<void>;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
 }
 
 export const CanvasView: FC<CanvasViewProps> = ({
@@ -57,6 +61,8 @@ export const CanvasView: FC<CanvasViewProps> = ({
   onDebouncedSave,
   onOpenFile,
   onClose,
+  onRefreshFiles,
+  onPreviewImage,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -189,8 +195,9 @@ export const CanvasView: FC<CanvasViewProps> = ({
   // Context Menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
-  // Add Note Modal
+  // Add Note & Image Modals
   const [isAddNoteModalOpen, setIsAddNoteModalOpen] = useState(false);
+  const [isAddImageModalOpen, setIsAddImageModalOpen] = useState(false);
   const addNoteTargetWorldPos = useRef<Point>({ x: 100, y: 100 });
 
   // Map of nodes by ID for fast edge lookup
@@ -722,8 +729,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const droppedPath = e.dataTransfer.getData("text/plain");
-    if (!droppedPath || !containerRef.current) return;
+    if (!containerRef.current) return;
 
     const rect = containerRef.current.getBoundingClientRect();
     const worldPt = screenToWorld(
@@ -731,7 +737,36 @@ export const CanvasView: FC<CanvasViewProps> = ({
       viewport
     );
 
-    addNodeAtPosition("file", worldPt, { file: droppedPath });
+    // If an image file is dragged and dropped from OS/desktop
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+      if (file) {
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const relPath = `assets/${safeName}`;
+        file.arrayBuffer().then((buf) => {
+          const reader = new FileReader();
+          reader.onload = async (ev) => {
+            const base64 = ev.target?.result as string;
+            await GitVaultBridge.saveImageFile(vaultPath, relPath, base64, new Uint8Array(buf));
+            if (onRefreshFiles) await onRefreshFiles();
+            addNodeAtPosition("file", worldPt, { file: relPath, width: 360, height: 260 });
+          };
+          reader.readAsDataURL(file);
+        });
+        return;
+      }
+    }
+
+    const droppedPath = e.dataTransfer.getData("text/plain");
+    if (!droppedPath) return;
+
+    const ext = droppedPath.split(".").pop()?.toLowerCase() || "";
+    const isImg = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"].includes(ext);
+
+    addNodeAtPosition("file", worldPt, {
+      file: droppedPath,
+      ...(isImg ? { width: 360, height: 260 } : {}),
+    });
   };
 
   // --------------------------------------------------------------------------
@@ -1029,6 +1064,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
                 }));
               }}
               onOpenFile={onOpenFile}
+              onPreviewImage={onPreviewImage}
             />
           );
         })}
@@ -1120,6 +1156,14 @@ export const CanvasView: FC<CanvasViewProps> = ({
           addNoteTargetWorldPos.current = center;
           setIsAddNoteModalOpen(true);
         }}
+        onAddImageNode={() => {
+          const center = screenToWorld(
+            { x: viewportSize.width / 2 - 180, y: viewportSize.height / 2 - 130 },
+            viewport
+          );
+          addNoteTargetWorldPos.current = center;
+          setIsAddImageModalOpen(true);
+        }}
         onAddLinkNode={() => {
           const url = prompt("Enter web URL:", "https://");
           if (url && url.trim()) {
@@ -1155,6 +1199,9 @@ export const CanvasView: FC<CanvasViewProps> = ({
           onAddFileNode={() => {
             setIsAddNoteModalOpen(true);
           }}
+          onAddImageNode={() => {
+            setIsAddImageModalOpen(true);
+          }}
           onAddLinkNode={() => {
             const url = prompt("Enter web URL:", "https://");
             if (url && url.trim()) {
@@ -1180,6 +1227,23 @@ export const CanvasView: FC<CanvasViewProps> = ({
         onSelectNote={(notePath) => {
           addNodeAtPosition("file", addNoteTargetWorldPos.current, { file: notePath });
         }}
+      />
+
+      {/* Add Image Modal */}
+      <InsertImageModal
+        isOpen={isAddImageModalOpen}
+        vaultPath={vaultPath}
+        vaultFiles={vaultFiles}
+        onClose={() => setIsAddImageModalOpen(false)}
+        onInsertImage={(imagePathOrUrl) => {
+          addNodeAtPosition("file", addNoteTargetWorldPos.current, {
+            file: imagePathOrUrl,
+            width: 360,
+            height: 260,
+          });
+        }}
+        onRefreshFiles={onRefreshFiles}
+        title="Add Image to Canvas"
       />
     </div>
   );

@@ -2,13 +2,14 @@ import { useState, useEffect } from "react";
 import type { FC } from "react";
 import { CanvasFileNode as ICanvasFileNode } from "../../types/canvas";
 import { MarkdownViewer } from "../MarkdownViewer";
-import { FileText, ExternalLink, AlertTriangle, Image as ImageIcon } from "lucide-react";
-import { GitVaultBridge } from "../../services/gitVaultBridge";
+import { FileText, ExternalLink, AlertTriangle, Image as ImageIcon, Maximize2 } from "lucide-react";
+import { GitVaultBridge, resolveImageUrl } from "../../services/gitVaultBridge";
 
 interface CanvasFileNodeProps {
   node: ICanvasFileNode;
   vaultPath: string;
   onOpenFile?: (path: string) => void;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
 }
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"]);
@@ -17,13 +18,19 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
   node,
   vaultPath,
   onOpenFile,
+  onPreviewImage,
 }) => {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const fileExt = node.file.split(".").pop()?.toLowerCase() || "";
-  const isImage = IMAGE_EXTENSIONS.has(fileExt);
+  const isImage =
+    IMAGE_EXTENSIONS.has(fileExt) ||
+    node.file.startsWith("data:image/") ||
+    node.file.startsWith("http://") ||
+    node.file.startsWith("https://") ||
+    node.file.startsWith("blob:");
 
   useEffect(() => {
     if (!node.file) {
@@ -67,6 +74,7 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
   };
 
   const fileName = node.file.split("/").pop() || node.file;
+  const resolvedSrc = isImage ? resolveImageUrl(node.file, vaultPath) : "";
 
   return (
     <div
@@ -90,29 +98,52 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
             </span>
           )}
         </div>
-        <button
-          onClick={handleOpenNote}
-          title="Open note in editor (Double-click)"
-          className="p-1 hover:text-sky-400 text-zinc-400 rounded transition-colors cursor-pointer shrink-0"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </button>
+        {isImage ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onPreviewImage) onPreviewImage(resolvedSrc, fileName);
+            }}
+            title="Open image preview (Click)"
+            className="p-1 hover:text-purple-400 text-zinc-400 rounded transition-colors cursor-pointer shrink-0"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          <button
+            onClick={handleOpenNote}
+            title="Open note in editor (Double-click)"
+            className="p-1 hover:text-sky-400 text-zinc-400 rounded transition-colors cursor-pointer shrink-0"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Content Body */}
       <div className="flex-1 overflow-auto p-3 text-xs">
         {isImage ? (
-          <div className="w-full h-full flex items-center justify-center p-2 bg-[#0d1117]/40 rounded">
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onPreviewImage) onPreviewImage(resolvedSrc, fileName);
+            }}
+            className="w-full h-full flex items-center justify-center p-2 bg-[#0d1117]/40 rounded relative group cursor-pointer overflow-hidden"
+          >
             <img
-              src={`/api/gitvault/read_file_content?full_path=${encodeURIComponent(`${vaultPath}/${node.file}`)}`}
+              src={resolvedSrc}
               alt={fileName}
-              className="max-w-full max-h-full object-contain rounded shadow"
-              onError={(e) => {
-                // If API URL image loading fails, fallback error display
-                (e.target as HTMLElement).style.display = "none";
+              className="max-w-full max-h-full object-contain rounded shadow group-hover:scale-[1.02] transition-transform duration-200"
+              onError={() => {
                 setError("Image could not be loaded");
               }}
             />
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+              <span className="px-2.5 py-1 bg-[#161b22]/90 border border-purple-500/40 rounded-lg shadow-xl backdrop-blur-md flex items-center gap-1.5 text-purple-200 text-xs font-medium">
+                <Maximize2 className="w-3.5 h-3.5 text-purple-400" />
+                <span>Click to Preview</span>
+              </span>
+            </div>
           </div>
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-amber-400/90 gap-1.5 py-4">
@@ -129,6 +160,8 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
         ) : content ? (
           <MarkdownViewer
             content={content}
+            vaultPath={vaultPath}
+            onPreviewImage={onPreviewImage}
             className="text-xs"
             onNavigateFile={(target) => onOpenFile && onOpenFile(target)}
           />

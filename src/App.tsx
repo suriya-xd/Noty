@@ -8,6 +8,7 @@ import { ConflictResolverModal } from "./components/ConflictResolverModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { AccountSettingsModal } from "./components/AccountSettingsModal";
 import { RepoSwitchModal } from "./components/RepoSwitchModal";
+import { ImagePreviewModal } from "./components/ImagePreviewModal";
 import { MobileShell } from "./components/mobile/MobileShell";
 import { MobileConflictView } from "./components/mobile/MobileConflictView";
 import { MobileOnboardingView } from "./components/mobile/MobileOnboardingView";
@@ -30,6 +31,9 @@ export default function App() {
   const [activeFileContent, setActiveFileContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+
+  // Image lightbox preview state
+  const [previewImage, setPreviewImage] = useState<{ src: string; alt?: string; title?: string } | null>(null);
 
   // Conflict modal state
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
@@ -377,6 +381,10 @@ export default function App() {
             onOpenOnboarding={() => setIsOnboardingOpen(true)}
             onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
             onSimulateState={handleSimulateState}
+            onRefreshFiles={async () => {
+              await refreshFiles(vaultPath);
+            }}
+            onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
           />
 
 
@@ -448,6 +456,10 @@ export default function App() {
                     vaultFiles={files}
                     onDebouncedSave={handleDebouncedSave}
                     onOpenFile={handleSelectFile}
+                    onRefreshFiles={async () => {
+                      await refreshFiles(vaultPath);
+                    }}
+                    onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
                     onClose={() => {
                       setActiveFilePath(null);
                       setActiveFileContent("");
@@ -461,6 +473,12 @@ export default function App() {
                     onRenameFile={handleRenameFile}
                     onOpenFile={handleSelectFile}
                     onCreateFile={handleCreateFile}
+                    vaultPath={vaultPath}
+                    vaultFiles={files}
+                    onRefreshFiles={async () => {
+                      await refreshFiles(vaultPath);
+                    }}
+                    onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
                     onClose={() => {
                       setActiveFilePath(null);
                       setActiveFileContent("");
@@ -524,6 +542,15 @@ export default function App() {
           showToast("Switched repository successfully!", "success");
           await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
         }}
+      />
+
+      {/* Lightbox Image Preview Modal */}
+      <ImagePreviewModal
+        isOpen={!!previewImage}
+        src={previewImage?.src || ""}
+        alt={previewImage?.alt}
+        title={previewImage?.title}
+        onClose={() => setPreviewImage(null)}
       />
 
       {/* Toast Notification Pill */}

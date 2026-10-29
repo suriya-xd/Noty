@@ -10,23 +10,40 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { FileText, HardDrive, Edit2, Check, X, ArrowLeftRight, LayoutDashboard } from "lucide-react";
+import {
+  FileText,
+  HardDrive,
+  Edit2,
+  Check,
+  X,
+  ArrowLeftRight,
+  LayoutDashboard,
+  Image as ImageIcon,
+} from "lucide-react";
 import {
   obsidianLivePreviewPlugin,
   obsidianTheme,
+  livePreviewConfigFacet,
 } from "./obsidianLivePreview";
 import { BacklinksPanel } from "./BacklinksPanel";
+import { InsertImageModal } from "./InsertImageModal";
+import { GitVaultBridge } from "../services/gitVaultBridge";
+import { VaultEntry } from "../types/gitVault";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 
 interface EditorProps {
   filePath: string | null;
   initialContent: string;
+  vaultPath?: string;
+  vaultFiles?: VaultEntry[];
   onDebouncedSave: (filePath: string, content: string) => void;
   onRenameFile?: (oldPath: string, newPath: string) => void;
   onOpenFile?: (path: string) => void;
   onCreateFile?: (newFilePath: string) => void;
   onClose?: () => void;
+  onRefreshFiles?: () => Promise<void>;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
   debounceMs?: number;
 }
 
@@ -49,11 +66,15 @@ const markdownHighlightStyle = HighlightStyle.define([
 export const Editor: FC<EditorProps> = ({
   filePath,
   initialContent,
+  vaultPath,
+  vaultFiles,
   onDebouncedSave,
   onRenameFile,
   onOpenFile,
   onCreateFile,
   onClose,
+  onRefreshFiles,
+  onPreviewImage,
   debounceMs = 500,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -61,6 +82,7 @@ export const Editor: FC<EditorProps> = ({
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [showBacklinks, setShowBacklinks] = useState(false);
+  const [isInsertImageOpen, setIsInsertImageOpen] = useState(false);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<"synced" | "saving">("synced");
@@ -71,6 +93,57 @@ export const Editor: FC<EditorProps> = ({
 
   const latestContentRef = useRef(initialContent);
   const latestPathRef = useRef(filePath);
+
+  const handleInsertImage = useCallback(
+    (imagePathOrUrl: string, altText?: string) => {
+      const view = editorViewRef.current;
+      const alt = altText ? altText.trim() : "";
+      const imageMarkdown = `\n![${alt}](${imagePathOrUrl})\n`;
+      if (view) {
+        const currentPos = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: currentPos, insert: imageMarkdown },
+          selection: { anchor: currentPos + imageMarkdown.length },
+        });
+        view.focus();
+      } else {
+        const nextContent = latestContentRef.current + imageMarkdown;
+        latestContentRef.current = nextContent;
+        if (filePath) {
+          onDebouncedSave(filePath, nextContent);
+        }
+      }
+    },
+    [filePath, onDebouncedSave]
+  );
+
+  const saveAndInsertFile = useCallback(
+    async (file: File) => {
+      try {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const base64 = e.target?.result as string;
+          const arrayBuffer = await file.arrayBuffer();
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const relPath = `assets/${safeName}`;
+          if (vaultPath) {
+            await GitVaultBridge.saveImageFile(
+              vaultPath,
+              relPath,
+              base64,
+              new Uint8Array(arrayBuffer)
+            );
+            if (onRefreshFiles) await onRefreshFiles();
+          }
+          handleInsertImage(relPath, file.name.replace(/\.[^/.]+$/, ""));
+        };
+        reader.readAsDataURL(file);
+      } catch (err) {
+        console.error("Failed to save and insert image:", err);
+      }
+    },
+    [vaultPath, onRefreshFiles, handleInsertImage]
+  );
 
   // Subscribe to graph updates to re-render link count badges in real time
   useSyncExternalStore(
@@ -214,9 +287,23 @@ export const Editor: FC<EditorProps> = ({
         history(),
         markdown(),
         syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
+        livePreviewConfigFacet.of({
+          vaultPath: vaultPath || "",
+          onPreviewImage,
+        }),
         obsidianLivePreviewPlugin,
         obsidianTheme,
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        keymap.of([
+          {
+            key: "Mod-Shift-i",
+            run: () => {
+              setIsInsertImageOpen(true);
+              return true;
+            },
+          },
+          ...defaultKeymap,
+          ...historyKeymap,
+        ]),
         EditorView.lineWrapping,
         EditorView.domEventHandlers({
           click(event) {
@@ -228,6 +315,34 @@ export const Editor: FC<EditorProps> = ({
               const header = targetEl.dataset.wikilinkHeader;
               handleWikilinkClickRef.current(target, header);
               return true;
+            }
+            return false;
+          },
+          paste(event) {
+            const items = event.clipboardData?.items;
+            if (items) {
+              for (const item of Array.from(items)) {
+                if (item.type.startsWith("image/")) {
+                  const file = item.getAsFile();
+                  if (file) {
+                    event.preventDefault();
+                    saveAndInsertFile(file);
+                    return true;
+                  }
+                }
+              }
+            }
+            return false;
+          },
+          drop(event) {
+            const files = event.dataTransfer?.files;
+            if (files && files.length > 0) {
+              const imgFile = Array.from(files).find((f) => f.type.startsWith("image/"));
+              if (imgFile) {
+                event.preventDefault();
+                saveAndInsertFile(imgFile);
+                return true;
+              }
             }
             return false;
           },
@@ -258,7 +373,7 @@ export const Editor: FC<EditorProps> = ({
       }
       view.destroy();
     };
-  }, [filePath]);
+  }, [filePath, vaultPath, onPreviewImage, saveAndInsertFile]);
 
   if (!filePath) {
     return (
@@ -347,6 +462,17 @@ export const Editor: FC<EditorProps> = ({
         </div>
 
         <div className="flex items-center gap-3 text-zinc-400 text-[11px]">
+          {/* Insert Image Button */}
+          <button
+            type="button"
+            onClick={() => setIsInsertImageOpen(true)}
+            title="Insert Image (Ctrl+Shift+I)"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-sans border border-[#30363d] hover:border-purple-500/50 bg-[#161b22] hover:bg-[#21262d] text-zinc-300 hover:text-white transition-all cursor-pointer shadow-xs group"
+          >
+            <ImageIcon className="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition-transform" />
+            <span className="font-medium">Image</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowBacklinks(!showBacklinks)}
@@ -411,6 +537,17 @@ export const Editor: FC<EditorProps> = ({
           onCreateFile={onCreateFile}
         />
       )}
+
+      {/* Insert Image Modal */}
+      <InsertImageModal
+        isOpen={isInsertImageOpen}
+        vaultPath={vaultPath || ""}
+        vaultFiles={vaultFiles || []}
+        onClose={() => setIsInsertImageOpen(false)}
+        onInsertImage={handleInsertImage}
+        onRefreshFiles={onRefreshFiles}
+        title={`Insert Image into ${filePath || "Note"}`}
+      />
     </div>
   );
 };

@@ -21,6 +21,7 @@ interface CanvasNodeItemProps {
   onStartEdgeConnect: (e: React.MouseEvent, nodeId: string, side: CanvasSide) => void;
   onUpdateNode: (updatedNode: CanvasNode) => void;
   onOpenFile?: (path: string) => void;
+  onPreviewImage?: (src: string, alt?: string, title?: string) => void;
 }
 
 export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
@@ -35,6 +36,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   onStartEdgeConnect,
   onUpdateNode,
   onOpenFile,
+  onPreviewImage,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -106,6 +108,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
             node={node}
             vaultPath={vaultPath}
             onOpenFile={onOpenFile}
+            onPreviewImage={onPreviewImage}
           />
         )}
         {node.type === "link" && <CanvasLinkNode node={node} />}
