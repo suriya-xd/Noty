@@ -170,8 +170,10 @@ export const CanvasView: FC<CanvasViewProps> = ({
   // Dragging nodes
   const [isDraggingNodes, setIsDraggingNodes] = useState(false);
   const dragStartRef = useRef<{
+    startScreen: Point;
     startWorld: Point;
     nodeInitialPositions: Map<string, Point>;
+    hasMoved: boolean;
   } | null>(null);
 
   // Resizing a node
@@ -384,12 +386,13 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     // 1. Panning
     if (isPanning && panStartRef.current) {
-      const dx = e.clientX - panStartRef.current.mouseX;
-      const dy = e.clientY - panStartRef.current.mouseY;
+      const panStart = panStartRef.current;
+      const dx = e.clientX - panStart.mouseX;
+      const dy = e.clientY - panStart.mouseY;
       setViewport((prev) => ({
         ...prev,
-        panX: panStartRef.current!.panX + dx,
-        panY: panStartRef.current!.panY + dy,
+        panX: panStart.panX + dx,
+        panY: panStart.panY + dy,
       }));
       return;
     }
@@ -448,14 +451,29 @@ export const CanvasView: FC<CanvasViewProps> = ({
     }
 
     // 4. Dragging Nodes (Multi-drag & Spatial Group Drag)
-    if (isDraggingNodes && dragStartRef.current) {
-      const dx = currentWorld.x - dragStartRef.current.startWorld.x;
-      const dy = currentWorld.y - dragStartRef.current.startWorld.y;
+    if (dragStartRef.current) {
+      const dragStart = dragStartRef.current;
+      if (!dragStart.hasMoved) {
+        const dist = Math.hypot(
+          e.clientX - dragStart.startScreen.x,
+          e.clientY - dragStart.startScreen.y
+        );
+        if (dist < 4) {
+          // Below threshold: ignore mouse jitter during clicks
+          return;
+        }
+        dragStart.hasMoved = true;
+        setIsDraggingNodes(true);
+      }
+
+      const { startWorld, nodeInitialPositions } = dragStart;
+      const dx = currentWorld.x - startWorld.x;
+      const dy = currentWorld.y - startWorld.y;
 
       setCanvasData((prev) => ({
         ...prev,
         nodes: prev.nodes.map((node) => {
-          const initialPos = dragStartRef.current!.nodeInitialPositions.get(node.id);
+          const initialPos = nodeInitialPositions.get(node.id);
           if (initialPos) {
             let nextX = initialPos.x + dx;
             let nextY = initialPos.y + dy;
@@ -512,9 +530,11 @@ export const CanvasView: FC<CanvasViewProps> = ({
       setResizingNode(null);
     }
 
-    if (isDraggingNodes) {
-      commitCanvasChange((prev) => prev); // Record history on drag complete
-      setIsDraggingNodes(false);
+    if (dragStartRef.current) {
+      if (dragStartRef.current.hasMoved) {
+        commitCanvasChange((prev) => prev); // Record history on drag complete
+        setIsDraggingNodes(false);
+      }
       dragStartRef.current = null;
     }
 
@@ -637,10 +657,11 @@ export const CanvasView: FC<CanvasViewProps> = ({
       if (n) nodePositions.set(id, { x: n.x, y: n.y });
     });
 
-    setIsDraggingNodes(true);
     dragStartRef.current = {
+      startScreen: { x: e.clientX, y: e.clientY },
       startWorld,
       nodeInitialPositions: nodePositions,
+      hasMoved: false,
     };
   };
 
@@ -690,9 +711,9 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     let newNode: CanvasNode;
     if (type === "text") {
-      newNode = { id, type: "text", x, y, width: 280, height: 180, text: "# New Note\n\nWrite here...", ...extra };
+      newNode = { id, type: "text", x, y, width: 320, height: 200, text: "# New Note\n\nWrite here...", ...extra };
     } else if (type === "file") {
-      newNode = { id, type: "file", x, y, width: 320, height: 240, file: (extra.file as string) || "Welcome.md", ...extra };
+      newNode = { id, type: "file", x, y, width: 340, height: 260, file: (extra.file as string) || "Welcome.md", ...extra };
     } else if (type === "link") {
       newNode = { id, type: "link", x, y, width: 300, height: 140, url: (extra.url as string) || "https://jsoncanvas.org", ...extra };
     } else {
@@ -718,7 +739,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
       { x: e.clientX - rect.left, y: e.clientY - rect.top },
       viewport
     );
-    addNodeAtPosition("text", worldPt, { text: "" });
+    addNodeAtPosition("text", worldPt);
   };
 
   // Drag and drop from file tree sidebar
@@ -938,7 +959,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       className={`relative w-full h-full overflow-hidden bg-[#0d1117] select-none ${
-        isSpacePressed || isPanning ? "cursor-grab active:cursor-grabbing" : "cursor-default"
+        isSpacePressed || isPanning || isDraggingNodes ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
       {/* Dynamic Infinite Dot Grid Background */}
@@ -1143,10 +1164,10 @@ export const CanvasView: FC<CanvasViewProps> = ({
         }}
         onAddTextNode={() => {
           const center = screenToWorld(
-            { x: viewportSize.width / 2 - 140, y: viewportSize.height / 2 - 90 },
+            { x: viewportSize.width / 2 - 160, y: viewportSize.height / 2 - 100 },
             viewport
           );
-          addNodeAtPosition("text", center, { text: "" });
+          addNodeAtPosition("text", center);
         }}
         onAddFileNode={() => {
           const center = screenToWorld(
@@ -1194,7 +1215,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
           state={contextMenu}
           onClose={() => setContextMenu(null)}
           onAddTextNode={() => {
-            addNodeAtPosition("text", addNoteTargetWorldPos.current, { text: "" });
+            addNodeAtPosition("text", addNoteTargetWorldPos.current);
           }}
           onAddFileNode={() => {
             setIsAddNoteModalOpen(true);

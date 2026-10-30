@@ -18,6 +18,8 @@ import {
   getZoomToFitViewport,
   isNodeInsideGroup,
   isNodeInViewport,
+  calculateCanvasNodeFontSize,
+  calculateCanvasTextNodeFontSize,
 } from "../src/utils/canvas/math";
 
 async function runCanvasTests() {
@@ -195,6 +197,76 @@ async function runCanvasTests() {
     throw new Error("Zoom to fit computed invalid viewport");
   }
   console.log("  ✓ Spatial group calculations and zoom-to-fit verified.");
+
+  // 7. Dynamic Note Font Size Calculation Based on Node Dimensions
+  console.log("\n[7/7] Testing Dynamic Note Font Size Calculation...");
+  // Test default note creation sizes
+  const defaultTextFont = calculateCanvasNodeFontSize(320, 200);
+  if (defaultTextFont < 15 || defaultTextFont > 17) {
+    throw new Error(`Default text node font size should be comfortable (~16px), got ${defaultTextFont}`);
+  }
+  const defaultFileFont = calculateCanvasNodeFontSize(340, 260);
+  if (defaultFileFont < 16 || defaultFileFont > 18) {
+    throw new Error(`Default file node font size should be comfortable (~17px), got ${defaultFileFont}`);
+  }
+
+  // Test scaling down for small notes
+  const smallFont = calculateCanvasNodeFontSize(160, 100);
+  if (smallFont < 11 || smallFont > 13) {
+    throw new Error(`Small node font should scale down gracefully, got ${smallFont}`);
+  }
+  const minFont = calculateCanvasNodeFontSize(50, 40);
+  if (minFont !== 11) {
+    throw new Error(`Minimum font size should clamp at 11px, got ${minFont}`);
+  }
+
+  // Test scaling up for large notes
+  const medLargeFont = calculateCanvasNodeFontSize(600, 400);
+  const largeFont = calculateCanvasNodeFontSize(1000, 700);
+  const extraLargeFont = calculateCanvasNodeFontSize(1600, 1100);
+
+  if (medLargeFont <= defaultTextFont) {
+    throw new Error(`Font size must dynamically scale up with size. MedLarge: ${medLargeFont}, Default: ${defaultTextFont}`);
+  }
+  if (largeFont <= medLargeFont) {
+    throw new Error(`Font size must dynamically scale up with size. Large: ${largeFont}, MedLarge: ${medLargeFont}`);
+  }
+  if (extraLargeFont > 36) {
+    throw new Error(`Font size must not exceed maximum clamp (36px), got ${extraLargeFont}`);
+  }
+
+  // Test extreme aspect ratios (prevent vertical or horizontal overflow)
+  const veryWideThinFont = calculateCanvasNodeFontSize(900, 60);
+  if (veryWideThinFont > 15) {
+    throw new Error(`Very wide but thin note should be bounded by height, got ${veryWideThinFont}`);
+  }
+  const veryTallNarrowFont = calculateCanvasNodeFontSize(100, 900);
+  if (veryTallNarrowFont > 14) {
+    throw new Error(`Very tall but narrow note should be bounded by width, got ${veryTallNarrowFont}`);
+  }
+
+  // Test explicit override
+  const overrideFont = calculateCanvasNodeFontSize(300, 200, 24);
+  if (overrideFont !== 24) {
+    throw new Error(`Explicit custom font size should be respected, got ${overrideFont}`);
+  }
+  console.log(`  ✓ Dynamic font sizing validated: Default=${defaultTextFont}px, Small=${smallFont}px, MedLarge=${medLargeFont}px, Large=${largeFont}px.`);
+
+  // Test Canvas Text Node Dynamic Scaling (Short titles vs medium vs long text)
+  const shortTextSmallCard = calculateCanvasTextNodeFontSize(180, 120, "# MIND");
+  const shortTextDefaultCard = calculateCanvasTextNodeFontSize(320, 200, "# MIND");
+  const shortTextLargeCard = calculateCanvasTextNodeFontSize(600, 400, "# MIND");
+
+  if (shortTextDefaultCard <= shortTextSmallCard) {
+    throw new Error(`Text element font size must scale with card dimensions. Default: ${shortTextDefaultCard}, Small: ${shortTextSmallCard}`);
+  }
+  if (shortTextLargeCard <= shortTextDefaultCard) {
+    throw new Error(`Text element font size must scale with card dimensions. Large: ${shortTextLargeCard}, Default: ${shortTextDefaultCard}`);
+  }
+  if (shortTextLargeCard > 60) {
+    throw new Error(`Text element font size should be safely clamped, got ${shortTextLargeCard}`);
+  }
+  console.log(`  ✓ Text element dynamic scaling validated: SmallCard=${shortTextSmallCard}px, DefaultCard=${shortTextDefaultCard}px, LargeCard=${shortTextLargeCard}px.`);
 
   console.log("\n>>> ALL CANVAS TESTS PASSED SUCCESSFULLY! <<<\n");
 }

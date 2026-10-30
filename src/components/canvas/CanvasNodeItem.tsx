@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import type { FC } from "react";
 import { CanvasNode, CanvasSide } from "../../types/canvas";
 import { getCanvasColorStyles } from "../../utils/canvas/parser";
+import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
 import { CanvasTextNode } from "./CanvasTextNode";
 import { CanvasFileNode } from "./CanvasFileNode";
 import { CanvasLinkNode } from "./CanvasLinkNode";
@@ -39,8 +40,10 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   onPreviewImage,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [isEditingText, setIsEditingText] = useState(false);
 
   const colorStyles = getCanvasColorStyles(node.color);
+  const dynamicFontSize = calculateCanvasNodeFontSize(node.width, node.height);
 
   // Connection sides
   const sides: CanvasSide[] = ["top", "right", "bottom", "left"];
@@ -68,7 +71,15 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
         // Prevent pan when clicking a node
         if (e.button === 0) {
           onSelect(e, node.id);
-          onStartDrag(e, node.id);
+          if (!isEditingText) {
+            onStartDrag(e, node.id);
+          }
+        }
+      }}
+      onDoubleClick={(e) => {
+        if (node.type === "text") {
+          e.stopPropagation();
+          setIsEditingText(true);
         }
       }}
       style={{
@@ -76,13 +87,21 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
         width: `${node.width}px`,
         height: `${node.height}px`,
         zIndex,
+        fontSize: `${dynamicFontSize}px`,
+        ["--canvas-node-font-size" as string]: `${dynamicFontSize}px`,
+        ...(node.color
+          ? {
+              borderColor: isSelected ? undefined : colorStyles.border,
+              backgroundColor: colorStyles.bg,
+            }
+          : {}),
       }}
       className={`absolute select-none transition-shadow rounded-xl ${
         isGroup
           ? `border-2 border-dashed ${
-              node.color ? "" : "border-[#30363d]/80"
-            } bg-[#161b22]/30 backdrop-blur-[1px]`
-          : `border shadow-xl ${colorStyles.bg}`
+              node.color ? "" : "border-[#30363d]/80 bg-[#161b22]/30"
+            } backdrop-blur-[1px]`
+          : `border shadow-xl ${node.color ? "" : "bg-[#161b22]"}`
       } ${
         isSelected
           ? "ring-2 ring-sky-400 ring-offset-2 ring-offset-[#0d1117] shadow-[0_0_20px_rgba(56,189,248,0.3)] !border-sky-400"
@@ -99,6 +118,8 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
           <CanvasTextNode
             node={node}
             isSelected={isSelected}
+            isEditing={isEditingText}
+            onEditingChange={setIsEditingText}
             onUpdateText={(text) => onUpdateNode({ ...node, text })}
             onNavigateFile={onOpenFile}
           />

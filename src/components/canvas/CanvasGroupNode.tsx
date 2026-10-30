@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { FC } from "react";
 import { CanvasGroupNode as ICanvasGroupNode } from "../../types/canvas";
 import { Folder, Edit2, Check } from "lucide-react";
+import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
 
 interface CanvasGroupNodeProps {
   node: ICanvasGroupNode;
@@ -14,6 +15,13 @@ export const CanvasGroupNode: FC<CanvasGroupNodeProps> = ({
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [labelValue, setLabelValue] = useState(node.label || "Group");
+
+  const dynamicFontSize = useMemo(
+    () => calculateCanvasNodeFontSize(node.width, node.height),
+    [node.width, node.height]
+  );
+
+  const labelFontSize = Math.min(18, Math.max(12, Math.round(dynamicFontSize * 0.78)));
 
   const handleFinish = () => {
     setIsEditing(false);
@@ -32,7 +40,7 @@ export const CanvasGroupNode: FC<CanvasGroupNodeProps> = ({
     >
       {/* Group Header Label */}
       <div className="absolute top-2 left-3 pointer-events-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#161b22]/90 border border-[#30363d] backdrop-blur-sm shadow-sm group">
-        <Folder className="w-3.5 h-3.5 text-zinc-400" />
+        <Folder className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
         {isEditing ? (
           <div className="flex items-center gap-1">
             <input
@@ -49,7 +57,8 @@ export const CanvasGroupNode: FC<CanvasGroupNodeProps> = ({
                   setLabelValue(node.label || "Group");
                 }
               }}
-              className="bg-[#0d1117] border border-sky-500 rounded px-1.5 py-0.5 text-xs text-white outline-none w-36 font-semibold"
+              style={{ fontSize: `${labelFontSize}px` }}
+              className="bg-[#0d1117] border border-sky-500 rounded px-1.5 py-0.5 text-white outline-none w-36 font-semibold"
             />
             <button
               onClick={handleFinish}
@@ -66,7 +75,10 @@ export const CanvasGroupNode: FC<CanvasGroupNodeProps> = ({
               setIsEditing(true);
             }}
           >
-            <span className="text-xs font-semibold text-zinc-200">
+            <span
+              style={{ fontSize: `${labelFontSize}px` }}
+              className="font-semibold text-zinc-200"
+            >
               {node.label || "Untitled Group"}
             </span>
             <button

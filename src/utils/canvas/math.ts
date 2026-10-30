@@ -307,3 +307,132 @@ export function isNodeInsideGroup(node: Rect, group: Rect): boolean {
     node.y + node.height <= group.y + group.height
   );
 }
+
+/**
+ * Dynamically calculates the optimal font size (in pixels) for a canvas note node
+ * based on its width and height.
+ *
+ * Scales smoothly and sub-linearly with node dimensions, ensuring that:
+ * 1. Default added notes start with a comfortable, clear, readable font size (~16px-17px).
+ * 2. As note cards are resized larger, the font size dynamically increases up to a safe cap (36px).
+ * 3. As note cards are resized smaller, the font scales down gracefully to a legible floor (11px).
+ * 4. Extreme aspect ratios (very wide or very tall) are constrained so text never overflows.
+ *
+ * @param width Note element width in pixels
+ * @param height Note element height in pixels
+ * @param customFontSize Optional override font size
+ * @returns Font size in pixels (clamped to a safe, readable range)
+ */
+export function calculateCanvasNodeFontSize(
+  width: number,
+  height: number,
+  customFontSize?: number
+): number {
+  if (typeof customFontSize === "number" && customFontSize > 0) {
+    return Math.round(customFontSize);
+  }
+
+  const safeW = Math.max(80, width || 300);
+  const safeH = Math.max(50, height || 200);
+
+  // Geometric mean represents the 2D visual area of the node card
+  const metric = Math.sqrt(safeW * safeH);
+
+  // Baseline: standard card ~300w x 200h => metric ≈ 245 yields 16px base font size
+  // Sub-linear exponent (~0.45) provides natural scaling so text grows with card area
+  // without ballooning too quickly.
+  const baselineMetric = 245;
+  const baselineFontSize = 16;
+  const unconstrained = baselineFontSize * Math.pow(metric / baselineMetric, 0.45);
+
+  // Safety bounds for extreme aspect ratios:
+  // Account for header bar (~36px); don't exceed what fits vertically in the card
+  const maxByHeight = Math.max(11, (safeH - 36) * 0.38);
+  // Don't exceed what fits comfortably across narrow widths
+  const maxByWidth = Math.max(11, safeW * 0.12);
+
+  const clamped = Math.min(unconstrained, maxByHeight, maxByWidth);
+
+  // Hard clamp between 11px and 36px
+  return Math.round(Math.min(36, Math.max(11, clamped)));
+}
+
+/**
+ * Dynamically calculates the optimal font size (in pixels) for a Canvas Text Card element
+ * based on its dimensions (width, height) and content volume.
+ *
+ * For short text (titles, concepts, mind-map nodes like "# MIND", "# BODY", single words):
+ * Scales generously with card size so the text prominently and beautifully fills the card.
+ *
+ * For medium to long markdown text (bullet lists, paragraphs):
+ * Automatically adapts so the content fits comfortably without overflowing.
+ *
+ * Dynamically re-adjusts in real time as the Text element is resized.
+ *
+ * @param width Text element width in pixels
+ * @param height Text element height in pixels
+ * @param text Optional text content for content-volume-aware fitting
+ * @param customFontSize Optional override font size
+ * @returns Font size in pixels (clamped between 12px and 60px)
+ */
+export function calculateCanvasTextNodeFontSize(
+  width: number,
+  height: number,
+  text?: string,
+  customFontSize?: number
+): number {
+  if (typeof customFontSize === "number" && customFontSize > 0) {
+    return Math.round(customFontSize);
+  }
+
+  const safeW = Math.max(80, width || 260);
+  const safeH = Math.max(50, height || 160);
+
+  // Available area inside text card (subtracting ~36px header bar and ~24px padding)
+  const availW = Math.max(60, safeW - 24);
+  const availH = Math.max(30, safeH - 38);
+  const visualMetric = Math.sqrt(availW * availH);
+
+  const cleanText = (text || "").trim();
+  const charCount = cleanText.length;
+  const lines = cleanText ? cleanText.split("\n").filter((l) => l.trim().length > 0) : [];
+  const lineCount = Math.max(1, lines.length);
+
+  // 1. Empty state
+  if (charCount === 0) {
+    const size = 16 * Math.pow(visualMetric / 180, 0.45);
+    return Math.round(Math.min(24, Math.max(12, size)));
+  }
+
+  // 2. Short titles, single words, concepts (e.g. "# MIND", "# BODY", "# SOUL", "Overview")
+  if (charCount <= 30 && lineCount <= 2) {
+    const maxLineLen = Math.max(...lines.map((l) => l.replace(/^#+\s*/, "").length), 1);
+    const widthFit = (availW * 0.82) / Math.max(maxLineLen * 0.6, 2.5);
+    const heightFit = (availH * 0.45) / lineCount;
+    const dimensionFit = 24 * Math.pow(visualMetric / 180, 0.62);
+
+    const calculated = Math.min(widthFit, heightFit, dimensionFit);
+    return Math.round(Math.min(56, Math.max(14, calculated)));
+  }
+
+  // 3. Medium text (short notes, 2-4 lines)
+  if (charCount <= 100 && lineCount <= 4) {
+    const maxLineLen = Math.max(...lines.map((l) => l.length), 1);
+    const widthFit = (availW * 0.85) / Math.max(maxLineLen * 0.55, 5);
+    const heightFit = (availH * 0.72) / (lineCount * 1.35);
+    const dimensionFit = 20 * Math.pow(visualMetric / 180, 0.52);
+
+    const calculated = Math.min(widthFit, heightFit, dimensionFit);
+    return Math.round(Math.min(42, Math.max(13, calculated)));
+  }
+
+  // 4. Longer markdown content (paragraphs, lists)
+  const dimensionFit = 16 * Math.pow(visualMetric / 180, 0.45);
+  const estLines = Math.max(lineCount, Math.ceil(charCount / Math.max(10, availW / 9)));
+  const heightFit = (availH * 0.85) / Math.max(1, estLines * 1.3);
+
+  const calculated = Math.min(dimensionFit, Math.max(11, heightFit));
+  return Math.round(Math.min(32, Math.max(11, calculated)));
+}
+
+

@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { FC } from "react";
 import { CanvasFileNode as ICanvasFileNode } from "../../types/canvas";
 import { MarkdownViewer } from "../MarkdownViewer";
 import { FileText, ExternalLink, AlertTriangle, Image as ImageIcon, Maximize2 } from "lucide-react";
 import { GitVaultBridge, resolveImageUrl } from "../../services/gitVaultBridge";
+import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
 
 interface CanvasFileNodeProps {
   node: ICanvasFileNode;
@@ -23,6 +24,12 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Dynamically calculate font size based on current note width and height
+  const dynamicFontSize = useMemo(
+    () => calculateCanvasNodeFontSize(node.width, node.height),
+    [node.width, node.height]
+  );
 
   const fileExt = node.file.split(".").pop()?.toLowerCase() || "";
   const isImage =
@@ -79,21 +86,30 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
   return (
     <div
       className="w-full h-full flex flex-col overflow-hidden bg-[#161b22] select-none"
+      style={{ fontSize: `${dynamicFontSize}px` }}
       onDoubleClick={handleOpenNote}
     >
       {/* Node Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#30363d]/60 bg-[#0d1117]/80 text-xs text-zinc-300">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#30363d]/60 bg-[#0d1117]/80 text-zinc-300 shrink-0">
         <div className="flex items-center gap-1.5 overflow-hidden min-w-0">
           {isImage ? (
             <ImageIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
           ) : (
             <FileText className="w-3.5 h-3.5 text-sky-400 shrink-0" />
           )}
-          <span className="truncate font-medium text-xs text-white" title={node.file}>
+          <span
+            style={{ fontSize: `${Math.min(14, Math.max(11, Math.round(dynamicFontSize * 0.78)))}px` }}
+            className="truncate font-medium text-white"
+            title={node.file}
+          >
             {fileName}
           </span>
           {node.subpath && (
-            <span className="text-[10px] text-zinc-400 font-mono truncate" title={node.subpath}>
+            <span
+              style={{ fontSize: `${Math.min(12, Math.max(10, Math.round(dynamicFontSize * 0.68)))}px` }}
+              className="text-zinc-400 font-mono truncate"
+              title={node.subpath}
+            >
               {node.subpath}
             </span>
           )}
@@ -121,7 +137,10 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
       </div>
 
       {/* Content Body */}
-      <div className="flex-1 overflow-auto p-3 text-xs">
+      <div
+        className="flex-1 overflow-auto p-3.5"
+        style={{ fontSize: `${dynamicFontSize}px` }}
+      >
         {isImage ? (
           <div
             onClick={(e) => {
@@ -148,25 +167,28 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-amber-400/90 gap-1.5 py-4">
             <AlertTriangle className="w-5 h-5 text-amber-400" />
-            <span className="text-xs font-medium">{error}</span>
-            <span className="text-[10px] text-zinc-500 font-mono truncate max-w-full px-2">
+            <span style={{ fontSize: `${dynamicFontSize}px` }} className="font-medium">{error}</span>
+            <span
+              style={{ fontSize: `${Math.max(10, Math.round(dynamicFontSize * 0.72))}px` }}
+              className="text-zinc-500 font-mono truncate max-w-full px-2"
+            >
               {node.file}
             </span>
           </div>
         ) : isLoading ? (
-          <div className="flex items-center justify-center h-full text-zinc-500 text-xs">
+          <div style={{ fontSize: `${dynamicFontSize}px` }} className="flex items-center justify-center h-full text-zinc-500">
             Loading preview...
           </div>
         ) : content ? (
           <MarkdownViewer
             content={content}
             vaultPath={vaultPath}
+            fontSize={dynamicFontSize}
             onPreviewImage={onPreviewImage}
-            className="text-xs"
             onNavigateFile={(target) => onOpenFile && onOpenFile(target)}
           />
         ) : (
-          <div className="text-zinc-500 italic text-xs h-full flex items-center justify-center">
+          <div style={{ fontSize: `${dynamicFontSize}px` }} className="text-zinc-500 italic h-full flex items-center justify-center">
             Empty note
           </div>
         )}
