@@ -367,7 +367,7 @@ export const Dashboard: FC<DashboardProps> = ({
             <div className="flex items-center gap-2">
               <FileText className="w-4 h-4 text-sky-400" />
               <h2 className="text-sm font-semibold text-white tracking-wide uppercase">
-                Notes
+                {topNotes.some((n) => n.name.endsWith(".canvas")) ? "Notes & canvases" : "Notes"}
               </h2>
               <span className="text-xs px-2 py-0.5 rounded-full bg-[#161b22] border border-[#30363d] text-zinc-400 font-mono">
                 {topNotes.length}
@@ -404,29 +404,32 @@ export const Dashboard: FC<DashboardProps> = ({
                     <div>
                       {/* Note Header & Status Badge */}
                       <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-start gap-2.5 min-w-0">
                           {note.name.endsWith(".canvas") ? (
-                            <div className="w-9 h-9 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
+                            <div className="w-9 h-9 shrink-0 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
                               <LayoutGrid className="w-4 h-4" />
                             </div>
                           ) : (
-                            <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 group-hover:scale-105 transition-transform">
+                            <div className="w-9 h-9 shrink-0 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 group-hover:scale-105 transition-transform">
                               <FileText className="w-4 h-4" />
                             </div>
                           )}
-                          <div>
-                            <h3 className="text-sm font-semibold text-white group-hover:text-sky-300 transition-colors">
+                          <div className="min-w-0">
+                            <h3
+                              title={note.name}
+                              className="text-sm font-semibold text-white group-hover:text-sky-300 transition-colors line-clamp-2 break-words"
+                            >
                               {note.name.replace(/\.(md|canvas)$/, "")}
                             </h3>
                             <span className="font-mono text-[10px] text-zinc-500">
-                              {note.name.endsWith(".canvas") ? "Canvas Board" : note.name}
+                              {note.name.endsWith(".canvas") ? "Canvas" : "Markdown note"}
                             </span>
                           </div>
                         </div>
 
                         {/* Git Status Indicator */}
                         {fileStat?.is_modified ? (
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                             Modified
                           </span>
                         ) : fileStat?.is_untracked ? (
@@ -447,7 +450,7 @@ export const Dashboard: FC<DashboardProps> = ({
 
                     {/* Bottom Action Footer */}
                     <div className="mt-4 pt-2.5 border-t border-[#30363d]/40 flex items-center justify-between text-xs text-zinc-400 group-hover:text-sky-300 transition-colors">
-                      <span className="text-[11px] font-medium">Open note</span>
+                      <span className="text-[11px] font-medium">{note.name.endsWith(".canvas") ? "Open canvas" : "Open note"}</span>
                       <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
                     </div>
                   </div>

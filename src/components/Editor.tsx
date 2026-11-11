@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
-import type { FC } from "react";
+import type { FC, MutableRefObject } from "react";
 import { EditorState } from "@codemirror/state";
 import {
   EditorView,
@@ -32,7 +32,24 @@ import { VaultEntry } from "../types/gitVault";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 
+/** Imperative formatting/commands API, used by the mobile shell's own toolbar. */
+export interface EditorHandle {
+  /** Wraps the selection (or inserts a selected placeholder) in `before`/`after`. */
+  wrapSelection: (before: string, after: string, placeholder: string) => void;
+  /** Adds `prefix` to the start of the current line, or removes it if already there. */
+  toggleLinePrefix: (prefix: string) => void;
+  /** Inserts a block on its own lines at the cursor. */
+  insertBlock: (text: string) => void;
+  openInsertImage: () => void;
+  toggleLinks: () => void;
+  focus: () => void;
+}
+
 interface EditorProps {
+  /** "full" shows the desktop header bar; "minimal" renders only the document (host supplies chrome). */
+  chrome?: "full" | "minimal";
+  apiRef?: MutableRefObject<EditorHandle | null>;
+  onSaveStatusChange?: (status: "synced" | "saving") => void;
   filePath: string | null;
   initialContent: string;
   vaultPath?: string;
@@ -76,6 +93,9 @@ export const Editor: FC<EditorProps> = ({
   onRefreshFiles,
   onPreviewImage,
   debounceMs = 500,
+  chrome = "full",
+  apiRef,
+  onSaveStatusChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorViewRef = useRef<EditorView | null>(null);
@@ -93,6 +113,56 @@ export const Editor: FC<EditorProps> = ({
 
   const latestContentRef = useRef(initialContent);
   const latestPathRef = useRef(filePath);
+
+  useEffect(() => {
+    onSaveStatusChange?.(saveStatus);
+  }, [saveStatus, onSaveStatusChange]);
+
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      wrapSelection(before, after, placeholder) {
+        const view = editorViewRef.current;
+        if (!view) return;
+        const { from, to } = view.state.selection.main;
+        const inner = view.state.sliceDoc(from, to) || placeholder;
+        view.dispatch({
+          changes: { from, to, insert: `${before}${inner}${after}` },
+          selection: { anchor: from + before.length, head: from + before.length + inner.length },
+          scrollIntoView: true,
+        });
+        view.focus();
+      },
+      toggleLinePrefix(prefix) {
+        const view = editorViewRef.current;
+        if (!view) return;
+        const line = view.state.doc.lineAt(view.state.selection.main.head);
+        const change = line.text.startsWith(prefix)
+          ? { from: line.from, to: line.from + prefix.length, insert: "" }
+          : { from: line.from, insert: prefix };
+        view.dispatch({ changes: change, scrollIntoView: true });
+        view.focus();
+      },
+      insertBlock(text) {
+        const view = editorViewRef.current;
+        if (!view) return;
+        const line = view.state.doc.lineAt(view.state.selection.main.head);
+        const insert = `${line.text.trim() ? "\n" : ""}${text}\n`;
+        view.dispatch({
+          changes: { from: line.to, insert },
+          selection: { anchor: line.to + insert.length },
+          scrollIntoView: true,
+        });
+        view.focus();
+      },
+      openInsertImage: () => setIsInsertImageOpen(true),
+      toggleLinks: () => setShowBacklinks((v) => !v),
+      focus: () => editorViewRef.current?.focus(),
+    };
+    return () => {
+      apiRef.current = null;
+    };
+  }, [apiRef]);
 
   const handleInsertImage = useCallback(
     (imagePathOrUrl: string, altText?: string) => {
@@ -178,6 +248,14 @@ export const Editor: FC<EditorProps> = ({
     [onOpenFile, onCreateFile]
   );
 
+  // Latest callbacks for the long-lived editor instance (see the editor effect's dependency note).
+  const onPreviewImageRef = useRef(onPreviewImage);
+  const saveAndInsertFileRef = useRef(saveAndInsertFile);
+  useEffect(() => {
+    onPreviewImageRef.current = onPreviewImage;
+    saveAndInsertFileRef.current = saveAndInsertFile;
+  }, [onPreviewImage, saveAndInsertFile]);
+
   const handleWikilinkClickRef = useRef(handleWikilinkClick);
   useEffect(() => {
     handleWikilinkClickRef.current = handleWikilinkClick;
@@ -238,11 +316,12 @@ export const Editor: FC<EditorProps> = ({
     setRenameValue(filePath || "");
   };
 
+  // Only the path is tracked here. `initialContent` is echoed back by the parent after every
+  // autosave and can be older than what is in the editor; copying it into latestContentRef made a
+  // pending save write stale text. The editor effect below seeds content when a note is opened.
   useEffect(() => {
     latestPathRef.current = filePath;
-    latestContentRef.current = initialContent;
-    updateStats(initialContent);
-  }, [filePath, initialContent]);
+  }, [filePath]);
 
   const updateStats = (text: string) => {
     setCharCount(text.length);
@@ -289,7 +368,7 @@ export const Editor: FC<EditorProps> = ({
         syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
         livePreviewConfigFacet.of({
           vaultPath: vaultPath || "",
-          onPreviewImage,
+          onPreviewImage: (src, alt, title) => onPreviewImageRef.current?.(src, alt, title),
         }),
         obsidianLivePreviewPlugin,
         obsidianTheme,
@@ -326,7 +405,7 @@ export const Editor: FC<EditorProps> = ({
                   const file = item.getAsFile();
                   if (file) {
                     event.preventDefault();
-                    saveAndInsertFile(file);
+                    saveAndInsertFileRef.current(file);
                     return true;
                   }
                 }
@@ -340,7 +419,7 @@ export const Editor: FC<EditorProps> = ({
               const imgFile = Array.from(files).find((f) => f.type.startsWith("image/"));
               if (imgFile) {
                 event.preventDefault();
-                saveAndInsertFile(imgFile);
+                saveAndInsertFileRef.current(imgFile);
                 return true;
               }
             }
@@ -373,7 +452,11 @@ export const Editor: FC<EditorProps> = ({
       }
       view.destroy();
     };
-  }, [filePath, vaultPath, onPreviewImage, saveAndInsertFile]);
+    // Rebuild only when a different note (or vault) is opened. The callbacks are read through refs:
+    // the parent passes new function identities on every render (after each autosave and each status
+    // poll), and rebuilding on those reset the document and threw the cursor back to the first line.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filePath, vaultPath]);
 
   if (!filePath) {
     return (
@@ -388,8 +471,8 @@ export const Editor: FC<EditorProps> = ({
   return (
     <div className="flex-1 flex flex-col h-full bg-[#0d1117] overflow-hidden">
       {/* Editor Header / Breadcrumbs */}
-      <div className="h-10 border-b border-[#21262d] px-6 flex items-center justify-between bg-[#161b22]/40 text-xs shrink-0 select-none">
-        <div className="flex items-center gap-1.5">
+      <div className={chrome === "minimal" ? "hidden" : "h-10 border-b border-[#21262d] px-6 flex items-center justify-between bg-[#161b22]/40 text-xs shrink-0 select-none gap-3"}>
+        <div className="flex items-center gap-1.5 min-w-0">
           {onClose && (
             <button
               type="button"
@@ -398,7 +481,7 @@ export const Editor: FC<EditorProps> = ({
               className="flex items-center gap-1.5 px-2 py-1 -ml-2 mr-1 rounded-md hover:bg-[#21262d] text-zinc-400 hover:text-white transition-colors cursor-pointer text-xs font-medium"
             >
               <LayoutDashboard className="w-3.5 h-3.5 text-zinc-400 hover:text-sky-400" />
-              <span className="hidden sm:inline">Dashboard</span>
+              <span className="hidden xl:inline">Dashboard</span>
             </button>
           )}
           {isRenaming ? (
@@ -450,10 +533,10 @@ export const Editor: FC<EditorProps> = ({
               type="button"
               onClick={startRenaming}
               title="Click to rename note"
-              className="group flex items-center gap-2 font-mono text-zinc-300 hover:text-white px-2 py-1 -mx-2 -my-1 rounded-md hover:bg-[#21262d]/80 transition-all cursor-pointer border border-transparent hover:border-[#30363d]"
+              className="group flex items-center gap-2 font-mono text-zinc-300 hover:text-white px-2 py-1 -my-1 rounded-md hover:bg-[#21262d]/80 transition-all cursor-pointer border border-transparent hover:border-[#30363d] min-w-0"
             >
               <FileText className="w-3.5 h-3.5 text-sky-400 shrink-0 group-hover:scale-110 transition-transform" />
-              <span className="font-semibold text-white group-hover:text-sky-300 transition-colors">
+              <span className="font-semibold text-white group-hover:text-sky-300 transition-colors truncate">
                 {filePath}
               </span>
               <Edit2 className="w-3 h-3 text-zinc-500 group-hover:text-sky-400 opacity-60 group-hover:opacity-100 transition-all ml-0.5 shrink-0" />
@@ -461,7 +544,7 @@ export const Editor: FC<EditorProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-3 text-zinc-400 text-[11px]">
+        <div className="flex items-center gap-2 lg:gap-3 text-zinc-400 text-[11px] shrink-0">
           {/* Insert Image Button */}
           <button
             type="button"
@@ -470,7 +553,7 @@ export const Editor: FC<EditorProps> = ({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-sans border border-[#30363d] hover:border-purple-500/50 bg-[#161b22] hover:bg-[#21262d] text-zinc-300 hover:text-white transition-all cursor-pointer shadow-xs group"
           >
             <ImageIcon className="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition-transform" />
-            <span className="font-medium">Image</span>
+            <span className="font-medium hidden lg:inline">Image</span>
           </button>
 
           <button
@@ -484,14 +567,14 @@ export const Editor: FC<EditorProps> = ({
             }`}
           >
             <ArrowLeftRight className="w-3.5 h-3.5 text-sky-400" />
-            <span className="font-medium">Links</span>
+            <span className="font-medium hidden lg:inline">Links</span>
             {filePath && (
               <span className="flex items-center gap-1 font-mono text-[10px]">
-                <span className="px-1.5 py-0.2 bg-[#21262d] text-sky-400 rounded-full" title={`${incomingCount} incoming backlinks`}>
+                <span className="px-1.5 py-0.5 bg-[#21262d] text-sky-400 rounded-full whitespace-nowrap" title={`${incomingCount} incoming backlinks`}>
                   {incomingCount} in
                 </span>
                 <span className="text-zinc-600 font-sans">·</span>
-                <span className="px-1.5 py-0.2 bg-[#21262d] text-indigo-400 rounded-full" title={`${outgoingCount} outgoing links`}>
+                <span className="px-1.5 py-0.5 bg-[#21262d] text-indigo-400 rounded-full whitespace-nowrap" title={`${outgoingCount} outgoing links`}>
                   {outgoingCount} out
                 </span>
               </span>
@@ -501,6 +584,7 @@ export const Editor: FC<EditorProps> = ({
           <div className="h-3 w-[1px] bg-[#30363d] hidden md:block" />
 
           <div
+            title={saveStatus === "saving" ? "Saving to this device…" : "Saved on this device. Use Save in the top bar to push to GitHub."}
             className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
               saveStatus === "saving"
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
@@ -508,17 +592,17 @@ export const Editor: FC<EditorProps> = ({
             }`}
           >
             <HardDrive className="w-3 h-3" />
-            <span>{saveStatus === "saving" ? "Saving..." : "Saved locally (500ms)"}</span>
+            <span className="hidden lg:inline whitespace-nowrap">{saveStatus === "saving" ? "Saving…" : "Saved locally"}</span>
           </div>
 
-          <div className="h-3 w-[1px] bg-[#30363d] hidden sm:block" />
+          <div className="h-3 w-[1px] bg-[#30363d] hidden xl:block" />
 
-          <div className="hidden sm:flex items-center gap-1.5 font-mono text-zinc-400 text-[11px]">
+          <div className="hidden xl:flex items-center gap-1.5 font-mono text-zinc-400 text-[11px] whitespace-nowrap">
             <span>{wordCount} words</span>
             <span>•</span>
             <span>{charCount} chars</span>
-            <span className="hidden lg:inline">•</span>
-            <span className="hidden lg:inline">{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
+            <span className="hidden 2xl:inline">•</span>
+            <span className="hidden 2xl:inline">{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
           </div>
         </div>
       </div>

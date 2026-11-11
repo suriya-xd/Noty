@@ -1,3 +1,4 @@
+import { PromptDialog } from "../dialogs";
 import React, {
   useState,
   useRef,
@@ -111,19 +112,159 @@ export const CanvasView: FC<CanvasViewProps> = ({
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // Center or fit on initial load if nodes exist
-  const hasInitializedViewport = useRef(false);
+  // Touch support. The canvas is driven by mouse handlers; on touch screens a one-finger drag is
+  // replayed as the equivalent mouse gesture (drag a card or handle, or pan on empty space) and
+  // two fingers pinch-zoom and pan. Taps are left alone so the browser's own click / double-click
+  // still reach cards, and toolbars and text fields are never intercepted.
   useEffect(() => {
-    if (!hasInitializedViewport.current && canvasData.nodes.length > 0 && containerRef.current) {
+    const el = containerRef.current;
+    if (!el) return;
+
+    type Mode = "idle" | "pending" | "drag" | "pinch";
+    let mode: Mode = "idle";
+    let target: Element | null = null;
+    let button = 0;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let pinchDist = 0;
+    let pinchMid = { x: 0, y: 0 };
+
+    const fire = (type: "mousedown" | "mousemove" | "mouseup", x: number, y: number) => {
+      target?.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+          button,
+          buttons: type === "mouseup" ? 0 : button === 1 ? 4 : 1,
+        })
+      );
+    };
+    const isControl = (t: Element) =>
+      !!t.closest("button, input, textarea, select, a, [contenteditable='true'], [data-canvas-ui]");
+    const measure = (touches: TouchList) => {
+      const [a, b] = [touches[0], touches[1]];
+      return {
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        mid: { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 },
+      };
+    };
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        if (mode === "drag") fire("mouseup", lastX, lastY);
+        const m = measure(e.touches);
+        pinchDist = m.dist;
+        pinchMid = m.mid;
+        mode = "pinch";
+        e.preventDefault();
+        return;
+      }
+      if (e.touches.length !== 1) return;
+      const t = e.target as Element;
+      if (isControl(t)) {
+        mode = "idle";
+        return;
+      }
+      target = t;
+      // On a card: left-button drag (move / resize / connect). On empty space: middle-button drag, i.e. pan.
+      button = t.closest("[data-node-id]") ? 0 : 1;
+      startX = lastX = e.touches[0].clientX;
+      startY = lastY = e.touches[0].clientY;
+      mode = "pending";
+    };
+
+    const onMove = (e: TouchEvent) => {
+      if (mode === "pinch") {
+        if (e.touches.length < 2) return;
+        e.preventDefault();
+        const m = measure(e.touches);
+        const rect = el.getBoundingClientRect();
+        const scale = pinchDist > 0 ? m.dist / pinchDist : 1;
+        const dx = m.mid.x - pinchMid.x;
+        const dy = m.mid.y - pinchMid.y;
+        setViewport((prev) => {
+          const zoomed = zoomTowardPoint(
+            prev,
+            { x: m.mid.x - rect.left, y: m.mid.y - rect.top },
+            clampZoom(prev.zoom * scale)
+          );
+          return { ...zoomed, panX: zoomed.panX + dx, panY: zoomed.panY + dy };
+        });
+        pinchDist = m.dist;
+        pinchMid = m.mid;
+        return;
+      }
+      if (mode !== "pending" && mode !== "drag") return;
+      const { clientX, clientY } = e.touches[0];
+      if (mode === "pending") {
+        if (Math.hypot(clientX - startX, clientY - startY) < 6) return;
+        mode = "drag";
+        fire("mousedown", startX, startY);
+      }
+      e.preventDefault();
+      lastX = clientX;
+      lastY = clientY;
+      fire("mousemove", clientX, clientY);
+    };
+
+    const onEnd = (e: TouchEvent) => {
+      if (mode === "drag") {
+        // Also stops the browser from sending its own mouse events / click for this gesture.
+        e.preventDefault();
+        fire("mouseup", lastX, lastY);
+      }
+      // After a pinch, wait for every finger to lift before starting a new gesture.
+      if (e.touches.length === 0 || mode !== "pinch") mode = "idle";
+    };
+
+    // Focusing a text field in a card that pokes past the edge makes the browser scroll this
+    // (overflow-hidden) box to reveal it, which drags the toolbars off-screen. Pin it in place.
+    const pin = (e: Event) => {
+      const box = e.currentTarget as HTMLElement;
+      if (box.scrollLeft !== 0) box.scrollLeft = 0;
+      if (box.scrollTop !== 0) box.scrollTop = 0;
+    };
+    const parent = el.parentElement;
+    el.addEventListener("scroll", pin);
+    parent?.addEventListener("scroll", pin);
+
+    el.addEventListener("touchstart", onStart, { passive: false });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: false });
+    el.addEventListener("touchcancel", onEnd, { passive: false });
+    return () => {
+      el.removeEventListener("scroll", pin);
+      parent?.removeEventListener("scroll", pin);
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", onEnd);
+    };
+  }, []);
+
+  // Center or fit on initial load if nodes exist
+  // (The view is keyed by file path, so this runs once per opened canvas. Fitting later, when the
+  // first card is added to an empty board, would zoom in on that card and throw off new placements.)
+  useEffect(() => {
+    if (canvasData.nodes.length > 0 && containerRef.current) {
       const fit = getZoomToFitViewport(
         canvasData.nodes,
         containerRef.current.clientWidth || 1200,
         containerRef.current.clientHeight || 800
       );
-      setViewport(fit);
-      hasInitializedViewport.current = true;
+      // Never open zoomed in past 100%.
+      setViewport(fit.zoom > 1 ? zoomTowardPoint(fit, {
+        x: (containerRef.current.clientWidth || 1200) / 2,
+        y: (containerRef.current.clientHeight || 800) / 2,
+      }, 1) : fit);
     }
-  }, [canvasData.nodes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Sync external file content updates if file changed on disk
   const lastSavedContentRef = useRef(initialContent);
@@ -201,6 +342,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
   const [isAddNoteModalOpen, setIsAddNoteModalOpen] = useState(false);
   const [isAddImageModalOpen, setIsAddImageModalOpen] = useState(false);
   const addNoteTargetWorldPos = useRef<Point>({ x: 100, y: 100 });
+  const [isAddLinkOpen, setIsAddLinkOpen] = useState(false);
 
   // Map of nodes by ID for fast edge lookup
   const nodesMap = useMemo(() => {
@@ -958,7 +1100,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
       onContextMenu={handleContextMenu}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      className={`relative w-full h-full overflow-hidden bg-[#0d1117] select-none ${
+      className={`relative w-full h-full overflow-hidden bg-[#0d1117] select-none touch-none ${
         isSpacePressed || isPanning || isDraggingNodes ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
@@ -976,7 +1118,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
       />
 
       {/* Top-Left Header Breadcrumbs */}
-      <div className="absolute top-4 left-5 z-40 flex items-center gap-2 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-xl text-xs select-none">
+      <div data-canvas-ui className="canvas-titlebar absolute top-4 left-5 z-40 max-w-[calc(100%-2.5rem)] lg:max-w-[calc(100%-22rem)] flex items-center gap-2 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-xl text-xs select-none">
         {onClose && (
           <button
             onClick={onClose}
@@ -1186,14 +1328,11 @@ export const CanvasView: FC<CanvasViewProps> = ({
           setIsAddImageModalOpen(true);
         }}
         onAddLinkNode={() => {
-          const url = prompt("Enter web URL:", "https://");
-          if (url && url.trim()) {
-            const center = screenToWorld(
-              { x: viewportSize.width / 2 - 150, y: viewportSize.height / 2 - 70 },
-              viewport
-            );
-            addNodeAtPosition("link", center, { url: url.trim() });
-          }
+          addNoteTargetWorldPos.current = screenToWorld(
+            { x: viewportSize.width / 2 - 150, y: viewportSize.height / 2 - 70 },
+            viewport
+          );
+          setIsAddLinkOpen(true);
         }}
         onAddGroupNode={() => {
           const center = screenToWorld(
@@ -1223,12 +1362,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
           onAddImageNode={() => {
             setIsAddImageModalOpen(true);
           }}
-          onAddLinkNode={() => {
-            const url = prompt("Enter web URL:", "https://");
-            if (url && url.trim()) {
-              addNodeAtPosition("link", addNoteTargetWorldPos.current, { url: url.trim() });
-            }
-          }}
+          onAddLinkNode={() => setIsAddLinkOpen(true)}
           onAddGroupNode={() => {
             addNodeAtPosition("group", addNoteTargetWorldPos.current);
           }}
@@ -1265,6 +1399,19 @@ export const CanvasView: FC<CanvasViewProps> = ({
         }}
         onRefreshFiles={onRefreshFiles}
         title="Add Image to Canvas"
+      />
+      <PromptDialog
+        open={isAddLinkOpen}
+        title="Add web link"
+        label="URL"
+        initialValue="https://"
+        placeholder="https://example.com"
+        confirmLabel="Add link"
+        onSubmit={(url) => {
+          setIsAddLinkOpen(false);
+          addNodeAtPosition("link", addNoteTargetWorldPos.current, { url });
+        }}
+        onClose={() => setIsAddLinkOpen(false)}
       />
     </div>
   );

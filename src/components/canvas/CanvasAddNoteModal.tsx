@@ -1,3 +1,4 @@
+import { useEscapeKey } from "../dialogs";
 import { useState, useMemo } from "react";
 import type { FC } from "react";
 import { VaultEntry } from "../../types/gitVault";
@@ -16,6 +17,7 @@ export const CanvasAddNoteModal: FC<CanvasAddNoteModalProps> = ({
   onClose,
   onSelectNote,
 }) => {
+  useEscapeKey(isOpen, onClose);
   const [search, setSearch] = useState("");
 
   const filteredNotes = useMemo(() => {
@@ -27,8 +29,8 @@ export const CanvasAddNoteModal: FC<CanvasAddNoteModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-100">
-      <div className="w-full max-w-md bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[70vh]">
+    <div className="app-modal fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-100">
+      <div className="app-modal-panel w-full max-w-md bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[70vh]">
         {/* Header */}
         <div className="px-4 py-3 border-b border-[#21262d] flex items-center justify-between">
           <div className="flex items-center gap-2">

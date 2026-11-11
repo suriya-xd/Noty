@@ -1,282 +1,312 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FC } from "react";
-import {
-  Terminal,
-  Copy,
-  Check,
-  ExternalLink,
-  ChevronDown,
-  Key,
-  FolderOpen,
-  ArrowRight,
-  ShieldCheck,
-} from "lucide-react";
-import { GitVaultBridge } from "../../services/gitVaultBridge";
+import { ArrowLeft, Check, Copy, ExternalLink, FileText, KeyRound, RefreshCw } from "lucide-react";
+import { GitHubService } from "../../services/githubService";
+import type { DeviceCodeResponse } from "../../types/gitVault";
 
 interface MobileOnboardingViewProps {
   isOpen: boolean;
-  defaultVaultPath: string;
-  onComplete: (data: { vaultPath: string; token?: string }) => void;
+  /** Called once a GitHub account is signed in; the host continues to repository selection. */
+  onAuthenticated: () => void;
   onCancel: () => void;
 }
 
-export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({
-  isOpen,
-  defaultVaultPath,
-  onComplete,
-  onCancel,
-}) => {
-  const [deviceCode, setDeviceCode] = useState("WXYZ-9821");
-  const [userCodeUrl, setUserCodeUrl] = useState("https://github.com/login/device");
+type Step = "welcome" | "code" | "token";
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, onAuthenticated, onCancel }) => {
+  const [step, setStep] = useState<Step>("welcome");
+  const [device, setDevice] = useState<DeviceCodeResponse | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [secondsLeft, setSecondsLeft] = useState(411);
-  const [patToken, setPatToken] = useState("");
-  const [showPat, setShowPat] = useState(false);
-  const [selectedVaultPath, setSelectedVaultPath] = useState(defaultVaultPath || "/Documents/Noty-Vault");
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [pat, setPat] = useState("");
+  const [isCheckingPat, setIsCheckingPat] = useState(false);
 
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
+  }, []);
+
+  // Reset whenever the view is closed.
   useEffect(() => {
-    if (!isOpen) return;
-    let isSubscribed = true;
+    if (isOpen) return;
+    stopPolling();
+    setStep("welcome");
+    setDevice(null);
+    setError(null);
+    setPat("");
+  }, [isOpen, stopPolling]);
 
-    // Trigger device code request via bridge
-    GitVaultBridge.startDeviceFlow()
-      .then((res) => {
-        if (isSubscribed && res?.user_code) {
-          setDeviceCode(res.user_code);
-          if (res.verification_uri) setUserCodeUrl(res.verification_uri);
-          if (res.expires_in) setSecondsLeft(res.expires_in);
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const finish = useCallback(
+    async (token: string) => {
+      const user = await GitHubService.validateToken(token);
+      GitHubService.saveGitHubAuth(token, user);
+      onAuthenticated();
+    },
+    [onAuthenticated]
+  );
+
+  const startDeviceFlow = async () => {
+    stopPolling();
+    setError(null);
+    setIsStarting(true);
+    try {
+      const res = await GitHubService.startDeviceFlow();
+      setDevice(res);
+      setSecondsLeft(res.expires_in);
+      setStep("code");
+
+      const poll = async (interval: number) => {
+        try {
+          const r = await GitHubService.pollDeviceToken(res.device_code);
+          if (r.status === "approved" && r.access_token) {
+            await finish(r.access_token);
+            return;
+          }
+          if (r.status === "pending" || r.status === "slow_down") {
+            const next = r.interval || interval;
+            pollTimer.current = setTimeout(() => poll(next), next * 1000);
+            return;
+          }
+          setError(r.error_description || "Sign-in wasn't completed. Request a new code to try again.");
+        } catch (err) {
+          setError(errorText(err));
         }
-      })
-      .catch((err) => {
-        console.warn("Device flow mock fallback:", err);
-      });
+      };
+      pollTimer.current = setTimeout(() => poll(res.interval || 5), (res.interval || 5) * 1000);
+    } catch (err) {
+      setError(`Couldn't reach GitHub. ${errorText(err)}`);
+    } finally {
+      setIsStarting(false);
+    }
+  };
 
-    return () => {
-      isSubscribed = false;
-    };
-  }, [isOpen]);
-
+  // Countdown for the one-time code.
   useEffect(() => {
-    if (!isOpen) return;
-    const interval = setInterval(() => {
-      setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isOpen]);
+    if (step !== "code") return;
+    const t = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [step, device]);
+
+  const expired = step === "code" && !!device && secondsLeft === 0;
+  useEffect(() => {
+    if (expired) stopPolling();
+  }, [expired, stopPolling]);
+
+  const copyCode = async () => {
+    if (!device) return;
+    try {
+      await navigator.clipboard.writeText(device.user_code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Couldn't copy automatically. Press and hold the code to copy it.");
+    }
+  };
+
+  const submitPat = async () => {
+    setError(null);
+    setIsCheckingPat(true);
+    try {
+      await finish(pat.trim());
+    } catch (err) {
+      setError(`GitHub didn't accept that token. ${errorText(err)}`);
+    } finally {
+      setIsCheckingPat(false);
+    }
+  };
 
   if (!isOpen) return null;
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(deviceCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const back = () => {
+    stopPolling();
+    setError(null);
+    setStep("welcome");
   };
 
-  const formatCountdown = (totalSeconds: number) => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `Expires in ${mins}:${secs < 10 ? "0" : ""}${secs}`;
-  };
-
-  const handleContinue = () => {
-    onComplete({
-      vaultPath: selectedVaultPath,
-      token: patToken.trim() || undefined,
-    });
-  };
+  const errorBox = error && (
+    <p role="alert" className="rounded-xl bg-red-500/10 border border-red-500/30 px-4 py-3 text-[14px] leading-relaxed text-red-300">
+      {error}
+    </p>
+  );
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#10141a] text-[#dfe2eb] flex flex-col overflow-y-auto animate-fadeIn select-none">
-      <main className="flex-1 flex flex-col relative w-full pt-safe pb-safe px-4 py-6 max-w-md mx-auto space-y-4">
-        {/* Stepper Progress Bar */}
-        <div className="flex flex-col space-y-2">
-          <div className="flex items-center justify-between font-mono text-[11px] text-[#8b949e]">
-            <span className="flex items-center gap-1.5 text-sky-400 font-semibold tracking-wider">
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
-              STEP 01 OF 03
-            </span>
-            <span>Account Sync</span>
-          </div>
-
-          <div className="grid grid-cols-3 gap-1.5 w-full">
-            <div className="h-1.5 rounded-full bg-sky-400 shadow-sm"></div>
-            <div className="h-1.5 rounded-full bg-[#262a31]"></div>
-            <div className="h-1.5 rounded-full bg-[#262a31]"></div>
-          </div>
-
-          <div className="flex justify-between font-mono text-[10px] text-[#8b949e] px-0.5">
-            <span className="text-[#f0f6fc] font-medium">1. Connect</span>
-            <span>2. Folder</span>
-            <span>3. Vault</span>
-          </div>
-        </div>
-
-        {/* Hero Header */}
-        <div className="flex flex-col items-center text-center space-y-2 pt-1 pb-1">
-          <div className="relative flex items-center justify-center w-14 h-14 rounded-full bg-[#1c2026] border border-[#30363d] shadow-lg">
-            <div className="absolute inset-0 rounded-full bg-sky-400/10 animate-ping"></div>
-            <Terminal className="w-7 h-7 text-sky-400" />
-          </div>
-          <div className="space-y-0.5">
-            <h1 className="font-headline text-xl font-bold text-[#f0f6fc] tracking-tight">
-              Welcome to Noty
-            </h1>
-            <p className="text-xs text-[#8b949e] max-w-xs mx-auto leading-relaxed">
-              Connect your GitHub account to sync local markdown notes transparently with Git versioning.
-            </p>
-          </div>
-        </div>
-
-        {/* Device Authentication Card */}
-        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 shadow-xl flex flex-col space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Key className="w-4 h-4 text-sky-400" />
-              <div>
-                <h2 className="font-headline text-xs font-semibold text-[#f0f6fc]">
-                  GitHub Device Code
-                </h2>
-                <p className="font-mono text-[10px] text-[#8b949e]">
-                  oauth2_device_flow
-                </p>
-              </div>
-            </div>
-            <span className="px-2 py-0.5 rounded-full font-mono text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium">
-              v2.4
-            </span>
-          </div>
-
-          {/* Activation Code Box */}
-          <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-3 flex items-center justify-between shadow-inner">
-            <div className="flex flex-col">
-              <span className="font-mono text-[9px] uppercase tracking-wider text-[#8b949e]">
-                One-Time Activation Code
-              </span>
-              <span className="font-mono text-lg font-bold tracking-widest text-[#f0f6fc] mt-0.5 select-all">
-                {deviceCode}
-              </span>
-            </div>
+    <div className="m-shell fixed inset-0 z-50 bg-[#0d1117] text-[#e6edf3] flex flex-col m-fade-in select-none">
+      <div className="pt-safe shrink-0">
+        <div className="h-14 px-1.5 flex items-center">
+          {step !== "welcome" && (
             <button
-              onClick={handleCopyCode}
-              aria-label="Copy Code"
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-95 cursor-pointer shadow-sm ${
-                copied
-                  ? "bg-emerald-500 text-[#0d1117]"
-                  : "bg-[#21262d] text-[#f0f6fc] hover:bg-[#30363d]"
-              }`}
+              type="button"
+              aria-label="Back"
+              onClick={back}
+              className="w-11 h-11 rounded-full flex items-center justify-center text-[#8b949e] active:bg-[#21262d]"
             >
-              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              <ArrowLeft className="w-5 h-5" />
             </button>
-          </div>
-
-          {/* Verification Link Button */}
-          <a
-            href={userCodeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-full bg-sky-500 hover:bg-sky-400 text-[#0d1117] font-headline text-xs font-bold active:scale-[0.98] transition-transform shadow-md"
-          >
-            <span>Open Verification Page</span>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-
-          {/* Countdown & Status */}
-          <div className="flex items-center justify-between px-1 text-[11px] text-[#8b949e]">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
-              <span className="text-[#f0f6fc]">Waiting for authorization...</span>
-            </div>
-            <span className="font-mono text-[10px] text-[#8b949e]">
-              {formatCountdown(secondsLeft)}
-            </span>
-          </div>
-        </div>
-
-        {/* PAT Accordion */}
-        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3 flex flex-col space-y-2">
-          <button
-            onClick={() => setShowPat(!showPat)}
-            className="flex items-center justify-between w-full text-left text-xs font-medium text-[#f0f6fc] cursor-pointer"
-          >
-            <span className="flex items-center gap-2">
-              <Key className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Use Personal Access Token (PAT)</span>
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 text-[#8b949e] transition-transform ${
-                showPat ? "rotate-180" : ""
-              }`}
-            />
-          </button>
-
-          {showPat && (
-            <div className="space-y-2 pt-1 animate-fadeIn">
-              <p className="text-[11px] text-[#8b949e] leading-relaxed">
-                Provide a GitHub Personal Access Token with <code className="text-sky-300">repo</code> scope if device code is blocked.
-              </p>
-              <input
-                type="password"
-                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                value={patToken}
-                onChange={(e) => setPatToken(e.target.value)}
-                className="w-full bg-[#0d1117] border border-[#30363d] focus:border-sky-500 rounded-full px-3.5 py-1.5 text-xs text-[#f0f6fc] outline-none font-mono"
-              />
-            </div>
           )}
         </div>
+      </div>
 
-        {/* Mobile Vault Path */}
-        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3.5 flex flex-col space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-              <span className="font-headline text-xs font-semibold text-[#f0f6fc]">
-                Mobile Vault Path
-              </span>
+      <div className="flex-1 overflow-y-auto">
+        <div className="min-h-full w-full max-w-md mx-auto px-6 pb-6 flex flex-col">
+          {step === "welcome" && (
+            <>
+              <div className="flex-1 flex flex-col justify-center py-8">
+                <div className="w-14 h-14 rounded-2xl bg-sky-500/10 border border-sky-500/25 flex items-center justify-center">
+                  <FileText className="w-7 h-7 text-sky-400" />
+                </div>
+                <h1 className="font-headline text-[32px] leading-[1.15] font-semibold text-[#f0f6fc] mt-6">
+                  Notes that live in your own GitHub repo
+                </h1>
+                <p className="text-[16px] leading-relaxed text-[#8b949e] mt-3">
+                  Noty keeps plain Markdown files on this device and syncs them through a repository you control.
+                </p>
+              </div>
+              <div className="space-y-3">
+                {errorBox}
+                <button
+                  type="button"
+                  onClick={startDeviceFlow}
+                  disabled={isStarting}
+                  className="w-full h-[52px] rounded-xl bg-sky-500 text-[#04121d] text-[16px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400 disabled:opacity-60"
+                >
+                  {isStarting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  <span>{isStarting ? "Contacting GitHub…" : "Sign in with GitHub"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setStep("token");
+                  }}
+                  className="w-full h-[52px] rounded-xl bg-[#161b22] border border-[#30363d] text-[#f0f6fc] text-[16px] font-medium active:bg-[#21262d]"
+                >
+                  Use an access token
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  className="w-full h-12 text-[15px] font-medium text-[#8b949e] active:text-[#f0f6fc]"
+                >
+                  Not now — keep notes on this device
+                </button>
+              </div>
+            </>
+          )}
+
+          {step === "code" && device && (
+            <div className="flex-1 flex flex-col pt-2">
+              <h1 className="font-headline text-[26px] font-semibold text-[#f0f6fc]">Enter this code on GitHub</h1>
+              <p className="text-[15px] leading-relaxed text-[#8b949e] mt-2">
+                Copy the code, open GitHub, and paste it there to approve Noty. This screen continues by itself.
+              </p>
+
+              <div className="mt-6 rounded-2xl bg-[#161b22] border border-[#21262d] p-5">
+                <p
+                  className={`font-mono text-[30px] font-semibold tracking-[0.18em] text-center select-all ${
+                    expired ? "text-[#6e7681] line-through" : "text-[#f0f6fc]"
+                  }`}
+                >
+                  {device.user_code}
+                </p>
+                <button
+                  type="button"
+                  onClick={copyCode}
+                  disabled={expired}
+                  className="mt-4 w-full h-12 rounded-xl bg-[#21262d] text-[#f0f6fc] text-[15px] font-medium flex items-center justify-center gap-2 active:bg-[#30363d] disabled:opacity-40"
+                >
+                  {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? "Copied" : "Copy code"}</span>
+                </button>
+              </div>
+
+              <a
+                href={device.verification_uri}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`mt-3 w-full h-[52px] rounded-xl bg-sky-500 text-[#04121d] text-[16px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400 ${
+                  expired ? "pointer-events-none opacity-40" : ""
+                }`}
+              >
+                <span>Open GitHub</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
+
+              <div className="mt-5 space-y-3">
+                {errorBox}
+                {expired || error ? (
+                  <button
+                    type="button"
+                    onClick={startDeviceFlow}
+                    disabled={isStarting}
+                    className="w-full h-12 rounded-xl bg-[#161b22] border border-[#30363d] text-[#f0f6fc] text-[15px] font-medium active:bg-[#21262d] disabled:opacity-60"
+                  >
+                    {expired && !error ? "Code expired — get a new one" : "Get a new code"}
+                  </button>
+                ) : (
+                  <p className="flex items-center justify-center gap-2 text-[14px] text-[#8b949e]" aria-live="polite">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>
+                      Waiting for approval · code valid for {Math.floor(secondsLeft / 60)}:
+                      {String(secondsLeft % 60).padStart(2, "0")}
+                    </span>
+                  </p>
+                )}
+              </div>
             </div>
-            <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-[#21262d] text-[#8b949e]">
-              Local Store
-            </span>
-          </div>
+          )}
 
-          <div className="flex items-center justify-between bg-[#0d1117] border border-[#21262d] rounded-full p-1 pl-3">
-            <span className="font-mono text-xs text-[#f0f6fc] truncate mr-2">
-              {selectedVaultPath}
-            </span>
-            <button
-              onClick={() => {
-                const p = prompt("Enter mobile vault folder path:", selectedVaultPath);
-                if (p) setSelectedVaultPath(p);
+          {step === "token" && (
+            <form
+              className="flex-1 flex flex-col pt-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (pat.trim()) submitPat();
               }}
-              className="px-2.5 py-1 rounded-full bg-[#21262d] hover:bg-[#30363d] text-[11px] font-medium text-[#f0f6fc] transition-colors cursor-pointer shrink-0"
             >
-              Browse
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-[10px] text-[#8b949e]">
-            <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
-            <span>Sandboxed document store with transparent Git staging.</span>
-          </div>
+              <h1 className="font-headline text-[26px] font-semibold text-[#f0f6fc]">Use an access token</h1>
+              <p className="text-[15px] leading-relaxed text-[#8b949e] mt-2">
+                Paste a GitHub personal access token with the <span className="font-mono text-[#c9d1d9]">repo</span>{" "}
+                scope. It is stored only on this device.
+              </p>
+              <label className="mt-6 block">
+                <span className="block text-[14px] font-medium text-[#c9d1d9] mb-2">Personal access token</span>
+                <span className="flex items-center h-[52px] rounded-xl bg-[#161b22] border border-[#30363d] focus-within:border-sky-500 px-3.5 gap-2.5">
+                  <KeyRound className="w-[18px] h-[18px] text-[#6e7681] shrink-0" />
+                  <input
+                    type="password"
+                    value={pat}
+                    onChange={(e) => setPat(e.target.value)}
+                    placeholder="ghp_…"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    className="flex-1 min-w-0 bg-transparent font-mono text-[#f0f6fc] placeholder:text-[#6e7681] outline-none select-text"
+                  />
+                </span>
+              </label>
+              <div className="mt-4 space-y-3">
+                {errorBox}
+                <button
+                  type="submit"
+                  disabled={!pat.trim() || isCheckingPat}
+                  className="w-full h-[52px] rounded-xl bg-sky-500 text-[#04121d] text-[16px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400 disabled:opacity-40"
+                >
+                  {isCheckingPat && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  <span>{isCheckingPat ? "Checking…" : "Continue"}</span>
+                </button>
+              </div>
+            </form>
+          )}
         </div>
-
-        {/* Bottom Actions */}
-        <div className="flex flex-col space-y-2 pt-1">
-          <button
-            onClick={handleContinue}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-5 rounded-full bg-sky-500 hover:bg-sky-400 text-[#0d1117] font-headline text-xs font-bold active:scale-[0.98] transition-transform shadow-lg cursor-pointer"
-          >
-            <span>Continue to Notes</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={onCancel}
-            className="w-full py-2 text-xs text-[#8b949e] hover:text-[#f0f6fc] transition-colors cursor-pointer"
-          >
-            Skip for now (Local only)
-          </button>
-        </div>
-      </main>
+      </div>
+      <div className="pb-safe shrink-0" />
     </div>
   );
 };

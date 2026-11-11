@@ -1,3 +1,4 @@
+import { useEscapeKey } from "./dialogs";
 import { useState, useEffect } from "react";
 import type { FC } from "react";
 import {
@@ -33,6 +34,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
   defaultVaultPath,
   onComplete,
 }) => {
+  useEscapeKey(isOpen, onClose);
   const [currentUser, setCurrentUser] = useState<GitHubUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
 
@@ -48,7 +50,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
 
   // Create Repository form state
   const [newRepoName, setNewRepoName] = useState("my-vault");
-  const [newRepoDesc, setNewRepoDesc] = useState("Personal notes synced with GitVault");
+  const [newRepoDesc, setNewRepoDesc] = useState("Personal notes synced with Noty");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [isCreatingRepo, setIsCreatingRepo] = useState(false);
   const [createRepoError, setCreateRepoError] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
   if (!isOpen) return null;
 
   // Derive author details automatically from GitHub authentication
-  const authorName = currentUser?.name || currentUser?.login || "GitVault User";
+  const authorName = currentUser?.name || currentUser?.login || "Noty User";
   const authorEmail =
     currentUser?.email ||
     (currentUser?.login ? `${currentUser.login}@users.noreply.github.com` : "vault@gitvault.local");
@@ -188,20 +190,20 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto">
-      <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-2xl w-full max-w-2xl text-zinc-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+    <div className="app-modal fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto">
+      <div className="app-modal-panel bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-2xl w-full max-w-2xl text-zinc-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-[#30363d] bg-[#161b22]">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-[#30363d] bg-[#161b22]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
                 <FolderGit2 className="w-4 h-4" />
               </div>
               <div>
                 <h1 className="text-base font-bold text-white">
-                  Switch Vault Repository
+                  Switch repository
                 </h1>
-                <p className="text-xs text-zinc-400">
+                <p className="hidden sm:block text-xs text-zinc-400">
                   Select an existing repository or create a new one for your notes.
                 </p>
               </div>
@@ -209,7 +211,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
 
             <div className="flex items-center gap-2">
               {currentUser && (
-                <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#21262d] border border-[#30363d] text-xs">
+                <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-[#21262d] border border-[#30363d] text-xs">
                   <img
                     src={currentUser.avatar_url}
                     alt={currentUser.login}
@@ -229,7 +231,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
           {loadError && (
             <div className="p-3 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -256,7 +258,8 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
               }`}
             >
               <FolderGit2 className="w-3.5 h-3.5" />
-              <span>Select Existing Repository ({repos.length})</span>
+              <span className="sm:hidden">Existing ({repos.length})</span>
+              <span className="hidden sm:inline">Select Existing Repository ({repos.length})</span>
             </button>
             <button
               type="button"
@@ -268,7 +271,8 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
               }`}
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>Create New Repository</span>
+              <span className="sm:hidden">Create new</span>
+              <span className="hidden sm:inline">Create New Repository</span>
             </button>
           </div>
 
@@ -374,7 +378,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
                   type="text"
                   value={newRepoDesc}
                   onChange={(e) => setNewRepoDesc(e.target.value)}
-                  placeholder="Markdown notes synced with GitVault"
+                  placeholder="Markdown notes synced with Noty"
                   className="w-full px-3.5 py-2 bg-[#161b22] border border-[#30363d] focus:border-sky-500 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none"
                 />
               </div>
@@ -405,17 +409,17 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
           {/* Automatic Commit Author & Vault Path Information (Directly from GitHub Auth) */}
           <div className="p-3 bg-[#161b22]/70 border border-[#30363d] rounded-xl space-y-2.5">
             {/* Commit Author derived from GitHub Auth */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-zinc-300">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-300 min-w-0">
                 <User className="w-3.5 h-3.5 text-zinc-400" />
                 <span>Commit Author:</span>
                 <span className="font-semibold text-white">{authorName}</span>
-                <span className="text-zinc-500 text-[11px] font-mono flex items-center gap-1">
+                <span className="text-zinc-500 text-[11px] font-mono flex items-center gap-1 min-w-0 break-all">
                   <Mail className="w-3 h-3 text-zinc-500" />
                   {authorEmail}
                 </span>
               </div>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded">
+              <span className="hidden sm:inline text-[10px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded">
                 From GitHub Auth
               </span>
             </div>
@@ -449,7 +453,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-[#30363d] bg-[#161b22] flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 border-t border-[#30363d] bg-[#161b22] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="text-xs text-zinc-400">
             {repoTab === "select" && selectedRepo ? (
               <span className="text-sky-300 flex items-center gap-1.5">
@@ -463,7 +467,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 [&>button:last-child]:flex-1 sm:[&>button:last-child]:flex-none [&>button:last-child]:justify-center [&>button]:whitespace-nowrap">
             <button
               type="button"
               onClick={onClose}
@@ -489,7 +493,7 @@ export const RepoSwitchModal: FC<RepoSwitchModalProps> = ({
                 ) : (
                   <>
                     <Check className="w-3.5 h-3.5" />
-                    <span>Switch to this Repository</span>
+                    <span>Switch repository</span>
                   </>
                 )}
               </button>

@@ -109,22 +109,13 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <header className="h-14 border-b border-[#30363d]/70 bg-[#161b22]/95 backdrop-blur-xl px-4 flex items-center justify-between z-20 select-none">
       {/* Left: Desktop Controls, Branding & Vault / Branch */}
-      <div className="flex-1 flex items-center gap-3">
-        {/* Subtle desktop window dots */}
-        <div className="flex items-center gap-1.5 mr-1">
-          <span className="w-2.5 h-2.5 rounded-full bg-red-500/40 hover:bg-red-500 transition-colors cursor-pointer" />
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-500/40 hover:bg-amber-500 transition-colors cursor-pointer" />
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/40 hover:bg-emerald-500 transition-colors cursor-pointer" />
-        </div>
-
-        <div className="h-4 w-[1px] bg-[#30363d]" />
-
+      <div className="flex-1 min-w-0 flex items-center gap-3">
         {/* Noty Brand */}
         <button
           type="button"
           onClick={onGoToDashboard}
           title="Return to Dashboard"
-          className="flex items-center gap-2 group cursor-pointer border-none bg-transparent p-0 text-left"
+          className="flex items-center gap-2 group cursor-pointer border-none bg-transparent p-0 text-left shrink-0"
         >
           <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-500 flex items-center justify-center shadow-md shadow-sky-500/20 group-hover:scale-105 transition-transform">
             <Sparkles className="w-4 h-4 text-white" />
@@ -132,21 +123,21 @@ export const TopBar: React.FC<TopBarProps> = ({
           <span className="font-headline font-bold text-sm tracking-tight text-white group-hover:text-sky-300 transition-colors">Noty</span>
         </button>
 
-        <div className="h-4 w-[1px] bg-[#30363d]" />
+        <div className="h-4 w-[1px] bg-[#30363d] shrink-0" />
 
         {/* Vault Switcher Pill */}
         <button
           onClick={onOpenRepoSwitch}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-[#30363d] text-xs font-mono text-zinc-300 border border-[#30363d] transition-colors cursor-pointer group"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-[#30363d] text-xs font-mono text-zinc-300 border border-[#30363d] transition-colors cursor-pointer group min-w-0"
           title="Switch Active Vault"
         >
-          <FolderOpen className="w-3.5 h-3.5 text-sky-400 group-hover:scale-105 transition-transform" />
-          <span className="font-medium text-white">{vaultName}</span>
-          <ChevronDown className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300" />
+          <FolderOpen className="w-3.5 h-3.5 text-sky-400 group-hover:scale-105 transition-transform shrink-0" />
+          <span className="font-medium text-white truncate">{vaultName}</span>
+          <ChevronDown className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 shrink-0" />
         </button>
 
         {/* Git Branch & Ahead/Behind Badges */}
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] text-xs font-mono text-zinc-300 border border-[#30363d]">
+        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#21262d] text-xs font-mono text-zinc-300 border border-[#30363d] shrink-0">
           <GitBranch className="w-3.5 h-3.5 text-purple-400" />
           <span className="font-medium">{status?.branch || "main"}</span>
           {status?.ahead_count ? (
@@ -215,13 +206,13 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* Right: State Simulation & Repo Actions */}
-      <div className="flex-1 flex items-center justify-end gap-2">
-        {/* Simulation testing menu (for quick state testing) */}
-        {onSimulateState && (
+      <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+        {/* Simulation testing menu: development builds only, and only when there is room for it */}
+        {import.meta.env.DEV && onSimulateState && (
           <select
             onChange={(e) => onSimulateState(e.target.value)}
             value=""
-            className="text-xs bg-[#21262d] border border-[#30363d] text-zinc-300 rounded px-2 py-1 outline-none cursor-pointer hover:border-zinc-500"
+            className="hidden xl:block max-w-[170px] text-xs bg-[#21262d] border border-dashed border-[#30363d] text-zinc-300 rounded px-2 py-1 outline-none cursor-pointer hover:border-zinc-500"
             title="Simulate Git Worktree States"
           >
             <option value="" disabled>
@@ -240,7 +231,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         {!status?.remote_url ? (
           <button
             onClick={onOpenOnboarding}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-300 hover:text-white hover:border-amber-400 transition-all cursor-pointer animate-pulse shadow-sm shadow-amber-500/10"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-300 hover:text-white hover:border-amber-400 transition-all cursor-pointer shadow-sm shadow-amber-500/10 shrink-0 whitespace-nowrap"
             title="No GitHub repository linked! Click to launch Setup Wizard."
           >
             <GithubIcon className="w-3.5 h-3.5" />
@@ -250,7 +241,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             id="btn-switch-repo"
             onClick={onOpenRepoSwitch}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer shrink-0 whitespace-nowrap"
             title="Switch repository or create new repository"
           >
             <GithubIcon className="w-3.5 h-3.5 text-sky-400" />

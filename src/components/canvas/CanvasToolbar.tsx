@@ -83,7 +83,7 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
   return (
     <>
       {/* 1. Main Bottom-Right Zoom & Navigation Controls */}
-      <div className="absolute bottom-5 right-5 z-40 flex items-center gap-1.5 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-2xl text-xs select-none">
+      <div data-canvas-ui className="canvas-zoombar absolute bottom-5 right-5 z-40 flex items-center gap-1.5 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-2xl text-xs select-none">
         <button
           onClick={onZoomOut}
           title="Zoom out (Ctrl -)"
@@ -132,7 +132,7 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
       </div>
 
       {/* 2. Top-Center Creation & History Toolbar */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-2xl text-xs select-none">
+      <div data-canvas-ui className="canvas-addbar absolute top-[4.25rem] left-5 lg:top-4 lg:left-auto lg:right-5 z-40 flex items-center gap-1.5 p-1.5 bg-[#161b22]/90 border border-[#30363d] backdrop-blur-md rounded-xl shadow-2xl text-xs select-none">
         <button
           onClick={onUndo}
           disabled={!canUndo}
@@ -209,8 +209,8 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
 
       {/* 3. Floating Selection Toolbar (when nodes are selected) */}
       {selectedCount > 0 && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 p-1 bg-[#161b22] border border-sky-500/40 backdrop-blur-md rounded-xl shadow-2xl text-xs select-none animate-in fade-in zoom-in-95 duration-150">
-          <span className="px-2 py-1 text-zinc-400 font-mono text-[11px] font-medium border-r border-[#30363d]">
+        <div data-canvas-ui className="canvas-selbar absolute top-[7.5rem] lg:top-[4.25rem] left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 p-1 bg-[#161b22] border border-sky-500/40 backdrop-blur-md rounded-xl shadow-2xl text-xs select-none animate-in fade-in zoom-in-95 duration-150">
+          <span className="px-2 py-1 text-zinc-400 font-mono text-[11px] font-medium border-r border-[#30363d] whitespace-nowrap">
             {selectedCount} selected
           </span>
 

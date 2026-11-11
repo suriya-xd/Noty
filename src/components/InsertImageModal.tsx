@@ -1,3 +1,4 @@
+import { useEscapeKey } from "./dialogs";
 import { useState, useMemo, useRef } from "react";
 import type { FC, ChangeEvent, DragEvent } from "react";
 import { VaultEntry } from "../types/gitVault";
@@ -34,6 +35,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
   onRefreshFiles,
   title = "Insert Image",
 }) => {
+  useEscapeKey(isOpen, onClose);
   const [activeTab, setActiveTab] = useState<"upload" | "vault" | "url">("upload");
 
   // Tab 1: Upload state
@@ -160,15 +162,15 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-100">
-      <div className="w-full max-w-xl bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+    <div className="app-modal fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-100">
+      <div className="app-modal-panel w-full max-w-xl bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
         {/* Modal Header */}
         <div className="px-5 py-3.5 border-b border-[#21262d] flex items-center justify-between bg-[#0d1117]/60">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 shrink-0 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
               <ImageIcon className="w-4 h-4" />
             </div>
-            <span className="text-sm font-semibold text-white">{title}</span>
+            <span className="text-sm font-semibold text-white truncate">{title}</span>
           </div>
           <button
             onClick={onClose}
@@ -179,7 +181,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center border-b border-[#21262d] px-5 bg-[#0d1117]/30 text-xs">
+        <div className="flex items-center border-b border-[#21262d] px-3 sm:px-5 bg-[#0d1117]/30 text-xs overflow-x-auto no-scrollbar [&>button]:whitespace-nowrap [&>button]:shrink-0">
           <button
             type="button"
             onClick={() => { setActiveTab("upload"); setErrorMessage(null); }}
@@ -190,7 +192,8 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
             }`}
           >
             <Upload className="w-3.5 h-3.5" />
-            <span>Upload from Device</span>
+            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">Upload from Device</span>
           </button>
 
           <button
@@ -450,7 +453,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
         </div>
 
         {/* Modal Footer Actions */}
-        <div className="px-5 py-3 border-t border-[#21262d] bg-[#0d1117]/60 flex items-center justify-end gap-2.5">
+        <div className="px-4 sm:px-5 py-3 border-t border-[#21262d] bg-[#0d1117]/60 flex items-center justify-end gap-2.5 [&>button]:flex-1 sm:[&>button]:flex-none [&>button]:justify-center">
           <button
             type="button"
             onClick={onClose}

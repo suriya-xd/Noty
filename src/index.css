@@ -25,6 +25,7 @@
     user-select: none;
     overflow: hidden;
     height: 100vh;
+    height: 100dvh;
     width: 100vw;
   }
 }
@@ -54,17 +55,14 @@
 }
 
 /* CodeMirror 6 Custom Theme Enhancements */
+/* Typography and spacing come from obsidianTheme in obsidianLivePreview.ts. */
 .cm-editor {
   height: 100%;
-  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, Monaco, monospace;
-  font-size: 14px;
-  line-height: 1.6;
   background-color: #0d1117 !important;
   color: #e6edf3 !important;
 }
 
 .cm-editor .cm-scroller {
-  padding: 1.5rem 1rem;
   overflow: auto;
 }
 
@@ -106,4 +104,269 @@
 
 .animate-soft-pulse {
   animation: soft-pulse 2s infinite ease-in-out;
+}
+
+/* ---------------------------------------------------------------------------
+   Mobile shell
+   --------------------------------------------------------------------------- */
+
+/* Device safe areas (notch / gesture bar). Requires viewport-fit=cover. */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Fill the visible viewport even when the mobile browser toolbar is showing. */
+.h-app {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.m-shell {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* 16px inputs stop iOS from zooming the page on focus. */
+.m-shell input,
+.m-shell select,
+.m-shell textarea {
+  font-size: 16px;
+}
+
+.m-shell :focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+/* Reading-width tuning for the note editor on phones. */
+.m-shell .cm-editor,
+.m-shell .cm-editor .cm-scroller {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.m-shell .cm-editor .cm-scroller {
+  padding: 0;
+}
+.m-shell .cm-editor .cm-content {
+  padding: 16px 20px 96px 20px !important;
+  font-size: 16px;
+  line-height: 1.7 !important;
+}
+
+@keyframes m-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes m-sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes m-screen-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes m-toast-in {
+  from {
+    transform: translateY(-8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-fadeIn,
+.m-fade-in {
+  animation: m-fade-in 160ms ease-out both;
+}
+.m-sheet-up {
+  animation: m-sheet-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.m-screen-in {
+  animation: m-screen-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.m-toast-in {
+  animation: m-toast-in 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fadeIn,
+  .m-fade-in,
+  .m-sheet-up,
+  .m-screen-in,
+  .m-toast-in {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Shared modals and the canvas on phones
+   --------------------------------------------------------------------------- */
+
+/* Resize handles and connection ports get a finger-sized hit area on touch screens. */
+@media (pointer: coarse) {
+  .canvas-handle::after {
+    content: "";
+    position: absolute;
+    inset: -14px;
+  }
+  /* Same for the small buttons inside cards (edit, rename). */
+  [data-node-id] button {
+    position: relative;
+  }
+  [data-node-id] button::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+}
+
+@media (max-width: 767px) {
+  /* Dialogs become bottom sheets. */
+  .app-modal {
+    align-items: flex-end;
+    padding: 0;
+    overflow: hidden;
+  }
+  .app-modal-panel {
+    width: 100%;
+    max-width: none;
+    max-height: 92dvh;
+    overflow-y: auto;
+    border-radius: 24px 24px 0 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-bottom-width: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    animation: m-sheet-up 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+
+  /* Touch-sized controls and readable type inside sheets and dialogs. */
+  .app-modal-panel button,
+  .app-modal-panel a[href],
+  .app-dialog button {
+    min-height: 44px;
+  }
+  .app-modal-panel button:has(> svg:only-child) {
+    min-width: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .app-modal-panel input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .app-modal-panel select,
+  .app-modal-panel textarea,
+  .app-dialog input {
+    font-size: 16px;
+    min-height: 44px;
+  }
+  .app-modal-panel .text-\[10px\] {
+    font-size: 12px;
+  }
+  .app-modal-panel .text-\[11px\] {
+    font-size: 13px;
+  }
+  .app-modal-panel .text-xs,
+  .app-dialog .text-xs {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .app-modal-panel .text-sm,
+  .app-dialog .text-sm {
+    font-size: 16px;
+  }
+  .app-modal-panel .text-base,
+  .app-dialog .text-base {
+    font-size: 18px;
+  }
+
+  /* Canvas: the host screen already shows the title, so the floating title bar goes away;
+     the add-toolbar becomes an icon bar along the bottom with the zoom controls above it. */
+  .canvas-titlebar {
+    display: none;
+  }
+  .canvas-addbar {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    justify-content: space-between;
+    gap: 0;
+    padding: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .canvas-addbar button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    flex-shrink: 0;
+    justify-content: center;
+  }
+  .canvas-addbar button > span {
+    display: none;
+  }
+  .canvas-addbar svg,
+  .canvas-selbar svg,
+  .canvas-zoombar svg {
+    width: 20px;
+    height: 20px;
+  }
+  .canvas-zoombar {
+    right: 12px;
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    gap: 0;
+    padding: 4px;
+  }
+  .canvas-zoombar button {
+    min-width: 40px;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .canvas-selbar > span:first-child {
+    display: none;
+  }
+  .canvas-selbar {
+    top: 12px;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .canvas-selbar button {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
 }

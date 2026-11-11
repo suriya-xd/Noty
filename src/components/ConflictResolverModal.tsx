@@ -1,3 +1,4 @@
+import { useEscapeKey } from "./dialogs";
 import { useState } from "react";
 import type { FC } from "react";
 import {
@@ -16,13 +17,21 @@ interface ConflictResolverModalProps {
   onApplyResolutions: (resolutions: ConflictResolution[]) => void;
 }
 
-export const ConflictResolverModal: FC<ConflictResolverModalProps> = ({
+// The resolver's hooks live in an inner component that only mounts while the modal is open.
+// (They used to sit below an early return, which crashed React with "Rendered more hooks
+// than during the previous render" the moment a conflict appeared.)
+export const ConflictResolverModal: FC<ConflictResolverModalProps> = (props) => {
+  if (!props.isOpen || props.conflicts.length === 0) return null;
+  return <ConflictResolverContent {...props} />;
+};
+
+const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
   conflicts,
   isOpen,
   onClose,
   onApplyResolutions,
 }) => {
-  if (!isOpen || conflicts.length === 0) return null;
+  useEscapeKey(isOpen, onClose);
 
   // Selected file index
   const [activeFileIndex, setActiveFileIndex] = useState(0);

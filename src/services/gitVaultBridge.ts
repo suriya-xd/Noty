@@ -150,7 +150,11 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     case "write_file_content": {
       const fullPath = args.full_path as string;
       const content = args.content as string;
-      const key = Object.keys(MOCK_FILES).find((k) => fullPath.endsWith(k)) || fullPath;
+      // New files: key by the path inside the vault, not the vault folder itself
+      // (otherwise "GitVault/Note.md" shows up as a stray "GitVault" folder).
+      const key =
+        Object.keys(MOCK_FILES).find((k) => fullPath.endsWith(k)) ||
+        fullPath.replace(/\\/g, "/").replace(/^\/?[^/]+\//, "");
       MOCK_FILES[key] = content;
       mockDirtySet.add(key);
       return undefined as unknown as T;

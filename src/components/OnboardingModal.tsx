@@ -1,3 +1,4 @@
+import { useEscapeKey } from "./dialogs";
 import { useState, useEffect, useRef } from "react";
 import type { FC } from "react";
 import {
@@ -22,8 +23,6 @@ import {
   Mail,
   GitBranch,
   Copy,
-  Smartphone,
-  Laptop,
   RefreshCw,
 } from "lucide-react";
 import { GitHubService } from "../services/githubService";
@@ -53,6 +52,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
   onComplete,
   onCancel,
 }) => {
+  useEscapeKey(isOpen && !!onCancel, () => onCancel?.());
   // Steps: 1 = Auth, 2 = Select / Create Repo, 3 = Local Vault Setup
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
@@ -82,7 +82,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
 
   // Step 2: Create Repository Form
   const [newRepoName, setNewRepoName] = useState("gitvault-notes");
-  const [newRepoDesc, setNewRepoDesc] = useState("Personal notes synced with GitVault");
+  const [newRepoDesc, setNewRepoDesc] = useState("Personal notes synced with Noty");
   const [newRepoPrivate, setNewRepoPrivate] = useState(true);
   const [isCreatingRepo, setIsCreatingRepo] = useState(false);
   const [createRepoError, setCreateRepoError] = useState<string | null>(null);
@@ -286,7 +286,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
         remote_url: selectedRepo.clone_url,
         branch: targetBranch.trim() || "main",
         github_token: token.trim(),
-        user_name: authorName.trim() || currentUser?.login || "GitVault User",
+        user_name: authorName.trim() || currentUser?.login || "Noty User",
         user_email: authorEmail.trim() || "vault@gitvault.local",
       });
 
@@ -318,7 +318,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
               </div>
               <div>
                 <h1 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-                  <span>GitVault Onboarding</span>
+                  <span>Set up Noty</span>
                   <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
                     Step {currentStep} of 3
                   </span>
@@ -375,19 +375,8 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
                   Sign in with GitHub
                 </h2>
                 <p className="text-xs text-zinc-400 mt-1">
-                  Authenticate securely in your browser. Compatible with both Windows desktop and Android mobile without passwords.
+                  Authorize Noty in your browser with a one-time code. No password is stored in the app.
                 </p>
-                <div className="flex items-center justify-center gap-2 mt-2.5">
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[#21262d] text-zinc-300 border border-[#30363d]">
-                    <Laptop className="w-3 h-3 text-sky-400" /> Windows
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[#21262d] text-zinc-300 border border-[#30363d]">
-                    <Smartphone className="w-3 h-3 text-emerald-400" /> Android
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-[#21262d] text-zinc-300 border border-[#30363d]">
-                    <Sparkles className="w-3 h-3 text-purple-400" /> Device Flow
-                  </span>
-                </div>
               </div>
 
               {/* Device Flow Interactive Card */}
@@ -431,7 +420,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
                       Step 1 of 2: Your Authorization Code
                     </span>
                     <p className="text-xs text-zinc-400">
-                      Copy this code, open GitHub in your browser, and authorize GitVault.
+                      Copy this code, open GitHub in your browser, and authorize Noty.
                     </p>
                   </div>
 
@@ -491,7 +480,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
                         {isPollingDeviceToken ? "Waiting for your approval in browser..." : "Authorization paused"}
                       </span>
                       <div className="text-[11px] text-zinc-400 mt-0.5">
-                        GitVault will automatically detect when you authorize.
+                        Noty will automatically detect when you authorize.
                       </div>
                     </div>
                     <button
@@ -533,7 +522,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
                         Personal Access Token
                       </label>
                       <a
-                        href="https://github.com/settings/tokens/new?scopes=repo&description=GitVault%20Notes"
+                        href="https://github.com/settings/tokens/new?scopes=repo&description=Noty%20Notes"
                         target="_blank"
                         rel="noreferrer"
                         className="text-[11px] text-sky-400 hover:text-sky-300 flex items-center gap-1 underline"
@@ -743,7 +732,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
                       type="text"
                       value={newRepoDesc}
                       onChange={(e) => setNewRepoDesc(e.target.value)}
-                      placeholder="My personal notes in GitVault"
+                      placeholder="My personal notes in Noty"
                       className="w-full px-3.5 py-2 bg-[#161b22] border border-[#30363d] rounded-xl text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-500"
                     />
                   </div>

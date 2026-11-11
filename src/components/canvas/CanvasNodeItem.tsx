@@ -151,7 +151,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
               e.stopPropagation();
               onStartEdgeConnect(e, node.id, side);
             }}
-            className={`absolute z-30 w-3.5 h-3.5 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md hover:scale-135 hover:bg-sky-300 transition-all cursor-crosshair ${getSideHandlePosition(
+            className={`canvas-handle absolute z-30 w-3.5 h-3.5 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md hover:scale-135 hover:bg-sky-300 transition-all cursor-crosshair ${getSideHandlePosition(
               side
             )}`}
           />
@@ -163,36 +163,36 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
           {/* Corners */}
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "nw")}
-            className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nwse-resize z-40 hover:scale-125"
+            className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nwse-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "ne")}
-            className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nesw-resize z-40 hover:scale-125"
+            className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nesw-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "se")}
-            className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nwse-resize z-40 hover:scale-125"
+            className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nwse-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "sw")}
-            className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nesw-resize z-40 hover:scale-125"
+            className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-[#0d1117] rounded-sm cursor-nesw-resize z-40 canvas-handle hover:scale-125"
           />
           {/* Edges */}
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "n")}
-            className="absolute -top-1 left-1/2 -translate-x-1/2 w-4 h-2 bg-white/70 border border-[#0d1117] rounded-xs cursor-ns-resize z-40 hover:scale-125"
+            className="absolute -top-1 left-1/2 -translate-x-1/2 w-4 h-2 bg-white/70 border border-[#0d1117] rounded-xs cursor-ns-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "s")}
-            className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-2 bg-white/70 border border-[#0d1117] rounded-xs cursor-ns-resize z-40 hover:scale-125"
+            className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-4 h-2 bg-white/70 border border-[#0d1117] rounded-xs cursor-ns-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "w")}
-            className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-4 bg-white/70 border border-[#0d1117] rounded-xs cursor-ew-resize z-40 hover:scale-125"
+            className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-4 bg-white/70 border border-[#0d1117] rounded-xs cursor-ew-resize z-40 canvas-handle hover:scale-125"
           />
           <div
             onMouseDown={(e) => onStartResize(e, node.id, "e")}
-            className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-4 bg-white/70 border border-[#0d1117] rounded-xs cursor-ew-resize z-40 hover:scale-125"
+            className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-4 bg-white/70 border border-[#0d1117] rounded-xs cursor-ew-resize z-40 canvas-handle hover:scale-125"
           />
         </>
       )}

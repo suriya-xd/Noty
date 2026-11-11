@@ -22,6 +22,7 @@ import {
   LayoutGrid,
 } from "lucide-react";
 import { FileStatus, VaultEntry } from "../types/gitVault";
+import { ConfirmDialog } from "./dialogs";
 import {
   CustomOrderMap,
   SortMode,
@@ -47,6 +48,8 @@ interface SidebarProps {
   onDeleteFile: (path: string) => void;
   onRenameFile: (oldPath: string, newPath: string) => void;
   onOpenSettings: () => void;
+  /** Whether the vault is linked to a GitHub remote. */
+  isConnected?: boolean;
 }
 
 export interface TreeNode {
@@ -123,7 +126,9 @@ export const Sidebar: FC<SidebarProps> = ({
   onDeleteFile,
   onRenameFile,
   onOpenSettings,
+  isConnected = false,
 }) => {
+  const [pendingDelete, setPendingDelete] = useState<{ path: string; title: string; message: string } | null>(null);
   const [creating, setCreating] = useState<CreatingState | null>(null);
   const [creatingValue, setCreatingValue] = useState("");
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
@@ -233,11 +238,9 @@ export const Sidebar: FC<SidebarProps> = ({
 
   const handleDelete = (path: string, isDirectory: boolean, name: string) => {
     const msg = isDirectory
-      ? `Delete folder "${name}" and all its contents?`
-      : `Delete note "${name}"?`;
-    if (confirm(msg)) {
-      onDeleteFile(path);
-    }
+      ? "The folder and everything inside it will be removed from this device. The deletion reaches GitHub the next time you save."
+      : "The file will be removed from this device. The deletion reaches GitHub the next time you save.";
+    setPendingDelete({ path, title: isDirectory ? `Delete folder "${name}"?` : `Delete "${name}"?`, message: msg });
   };
 
   // Drag and drop validation
@@ -769,11 +772,14 @@ export const Sidebar: FC<SidebarProps> = ({
       {/* Vault Header */}
       <div className="px-3 py-2.5 border-b border-[#21262d] flex items-center justify-between relative">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 font-mono whitespace-nowrap">
-            Vault Notes
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 font-mono truncate">
+            Notes
           </span>
-          <span className="bg-[#21262d] text-zinc-400 font-mono text-[10px] px-1.5 py-0.5 rounded font-medium">
-            {files.length}
+          <span
+            className="bg-[#21262d] text-zinc-400 font-mono text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+            title="Notes and canvases in this vault"
+          >
+            {files.filter((f) => !f.is_directory).length}
           </span>
         </div>
 
@@ -991,24 +997,6 @@ export const Sidebar: FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Legend Footer */}
-      <div className="p-3 border-t border-[#21262d] bg-[#161b22]/50 text-[11px] text-zinc-400 space-y-1.5">
-        <div className="font-semibold text-zinc-300 text-[10px] uppercase tracking-wider">
-          Git Worktree Legend
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-amber-400 font-bold text-sm leading-none">•</span>
-          <span>Modified in worktree</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-emerald-400 font-bold text-xs leading-none">+</span>
-          <span>New untracked file</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sky-400 font-bold text-xs leading-none">↓</span>
-          <span>Remote change incoming</span>
-        </div>
-      </div>
 
       {/* Settings / Account Button at Bottom of Sidebar */}
       <div className="p-2 border-t border-[#21262d] bg-[#161b22]">
@@ -1020,14 +1008,30 @@ export const Sidebar: FC<SidebarProps> = ({
         >
           <div className="flex items-center gap-2.5">
             <Settings className="w-4 h-4 text-zinc-400 group-hover:text-sky-400 transition-colors" />
-            <span className="font-medium">Settings & Account</span>
+            <span className="font-medium whitespace-nowrap">Settings</span>
           </div>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono font-medium flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            Auth OK
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-medium flex items-center gap-1 whitespace-nowrap shrink-0 ${
+              isConnected ? "bg-emerald-500/10 text-emerald-400" : "bg-[#21262d] text-zinc-400"
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? "bg-emerald-400" : "bg-zinc-500"}`}></span>
+            {isConnected ? "Connected" : "Local only"}
           </span>
         </button>
       </div>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={pendingDelete?.title ?? ""}
+        message={pendingDelete?.message ?? ""}
+        confirmLabel="Delete"
+        onConfirm={() => {
+          if (pendingDelete) onDeleteFile(pendingDelete.path);
+          setPendingDelete(null);
+        }}
+        onClose={() => setPendingDelete(null)}
+      />
     </aside>
   );
 };

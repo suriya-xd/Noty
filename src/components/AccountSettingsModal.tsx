@@ -1,3 +1,4 @@
+import { useEscapeKey, ConfirmDialog } from "./dialogs";
 import { useState, useEffect } from "react";
 import type { FC } from "react";
 import {
@@ -42,6 +43,8 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   vaultPath,
   onAccountChanged,
 }) => {
+  const [isConfirmingSignOut, setIsConfirmingSignOut] = useState(false);
+  useEscapeKey(isOpen && !isConfirmingSignOut, onClose);
   const [currentUser, setCurrentUser] = useState<GitHubUser | null>(null);
 
   // Switch account / Device flow state
@@ -128,11 +131,10 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   };
 
   const handleSignOut = () => {
-    if (confirm("Sign out of your GitHub account? Local notes will remain on disk.")) {
-      GitHubService.clearGitHubAuth();
-      setCurrentUser(null);
-      onAccountChanged?.();
-    }
+    setIsConfirmingSignOut(false);
+    GitHubService.clearGitHubAuth();
+    setCurrentUser(null);
+    onAccountChanged?.();
   };
 
   const handleOpenBrowser = async () => {
@@ -146,8 +148,8 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
-      <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-2xl w-full max-w-lg text-zinc-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+    <div className="app-modal fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+      <div className="app-modal-panel bg-[#0d1117] border border-[#30363d] rounded-2xl shadow-2xl w-full max-w-lg text-zinc-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#30363d] bg-[#161b22]">
           <div className="flex items-center gap-3">
@@ -311,7 +313,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
 
           {/* Account Actions: Switch Account & Sign Out */}
           {currentUser && !isSwitchingAccount && (
-            <div className="flex items-center gap-2.5 pt-1">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 pt-1">
               <button
                 onClick={handleStartSwitchAccount}
                 disabled={isStartingDeviceFlow}
@@ -322,8 +324,8 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               </button>
 
               <button
-                onClick={handleSignOut}
-                className="px-3.5 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                onClick={() => setIsConfirmingSignOut(true)}
+                className="px-3.5 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
@@ -344,11 +346,19 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               <span className="flex items-center gap-1">
                 <Laptop className="w-3 h-3" /> Native Git2 Engine
               </span>
-              <span>GitVault v0.1.0</span>
+              <span>Noty v0.1.0</span>
             </div>
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={isConfirmingSignOut}
+        title="Sign out of GitHub?"
+        message="Your notes stay on this device. You will need to sign in again to sync."
+        confirmLabel="Sign out"
+        onConfirm={handleSignOut}
+        onClose={() => setIsConfirmingSignOut(false)}
+      />
     </div>
   );
 };

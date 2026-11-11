@@ -114,7 +114,10 @@ export default function App() {
         await Promise.all([refreshFiles(info.path), refreshStatus(info.path)]);
         if (!info.remote_url) {
           setIsOnboardingOpen(true);
-          showToast("Welcome to GitVault! Please connect your GitHub repository to get started.", "info");
+          // The mobile onboarding screen is full-screen and says this itself.
+          if (window.innerWidth >= 768) {
+            showToast("Welcome to Noty! Connect a GitHub repository to start syncing.", "info");
+          }
         }
       } catch (err) {
         console.error("Vault initialization failed:", err);
@@ -199,7 +202,7 @@ export default function App() {
         // Line-level collisions detected! Open Visual Conflict Resolver Modal
         setConflictedFiles(result.conflicts);
         setIsConflictModalOpen(true);
-        showToast("Line-level conflict detected! Opened Visual Conflict Resolver.", "info");
+        // No toast here: the resolver that just opened is its own announcement.
       } else {
         showToast(result.message, "success");
       }
@@ -357,7 +360,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0d1117] text-white select-none">
+    <div className="flex flex-col h-app w-screen overflow-hidden bg-[#0d1117] text-white select-none">
       {isMobile ? (
         // ================= ANDROID MOBILE LAYOUT (STITCH REDESIGN) =================
         <>
@@ -399,12 +402,10 @@ export default function App() {
           {/* Android GitHub Onboarding Wizard */}
           <MobileOnboardingView
             isOpen={isOnboardingOpen}
-            defaultVaultPath={vaultPath}
-            onComplete={async (data) => {
-              setVaultPath(data.vaultPath);
+            onAuthenticated={() => {
+              // Signed in: continue to choosing (or creating) the repository to sync with.
               setIsOnboardingOpen(false);
-              showToast("Vault successfully connected to GitHub!", "success");
-              await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
+              setIsRepoSwitchOpen(true);
             }}
             onCancel={() => setIsOnboardingOpen(false)}
           />
@@ -443,6 +444,7 @@ export default function App() {
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
               onOpenSettings={() => setIsAccountSettingsOpen(true)}
+              isConnected={!!status?.remote_url}
             />
 
             {/* CodeMirror 6 Markdown Editor OR Dashboard when no note is opened */}
@@ -450,6 +452,7 @@ export default function App() {
               {activeFilePath ? (
                 activeFilePath.endsWith(".canvas") ? (
                   <CanvasView
+                    key={activeFilePath}
                     filePath={activeFilePath}
                     initialContent={activeFileContent}
                     vaultPath={vaultPath}
@@ -556,12 +559,17 @@ export default function App() {
       {/* Toast Notification Pill */}
       {toastMessage && (
         <div
-          className={`fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-medium flex items-center gap-2 transition-all transform animate-bounce ${
+          role="status"
+          className={`fixed z-[70] rounded-xl shadow-2xl border font-medium flex items-center gap-2 m-toast-in ${
+            isMobile
+              ? "left-3 right-3 top-[calc(env(safe-area-inset-top,0px)+8px)] px-4 py-3 text-sm pointer-events-none"
+              : "bottom-5 left-1/2 -translate-x-1/2 max-w-[min(90vw,32rem)] px-4 py-2.5 text-xs"
+          } ${
             toastMessage.type === "success"
-              ? "bg-emerald-950/90 text-emerald-300 border-emerald-500/40"
+              ? "bg-emerald-950 text-emerald-200 border-emerald-500/40"
               : toastMessage.type === "error"
-              ? "bg-red-950/90 text-red-300 border-red-500/40"
-              : "bg-sky-950/90 text-sky-300 border-sky-500/40"
+              ? "bg-red-950 text-red-200 border-red-500/40"
+              : "bg-sky-950 text-sky-200 border-sky-500/40"
           }`}
         >
           <span>{toastMessage.text}</span>

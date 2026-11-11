@@ -88,6 +88,12 @@ export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
         <div className="flex items-center gap-1">
           {isEditing ? (
             <button
+              // Keep focus in the textarea until the click lands. Otherwise blur finishes editing first,
+              // this button is swapped for "Edit", and the same click immediately re-enters edit mode.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 handleFinishEditing();

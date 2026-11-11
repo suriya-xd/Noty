@@ -1,43 +1,56 @@
-import { useState, useMemo } from "react";
-import type { FC } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import type { FC, ReactNode } from "react";
 import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowDownToLine,
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowUp,
+  ArrowUpDown,
+  ArrowUpFromLine,
+  Bold,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CloudOff,
+  Code,
+  FilePlus,
   FileText,
   Folder,
+  FolderInput,
   FolderOpen,
   FolderPlus,
-  FilePlus,
+  GitBranch,
+  Heading,
+  Home,
+  Image as ImageIcon,
+  Italic,
+  LayoutGrid,
+  Link as LinkIcon,
+  Link2,
+  List,
+  ListChecks,
+  MoreHorizontal,
+  MoreVertical,
+  Pencil,
+  Plus,
+  Quote,
   RefreshCw,
   Search,
-  Check,
-  ChevronRight,
-  ChevronDown,
-  ChevronUp,
-  Cloud,
   Settings,
-  Edit2,
   Trash2,
-  X,
+  UploadCloud,
   User,
-  HardDrive,
-  GitBranch,
-  Archive,
-  Bold,
-  Italic,
-  Heading2,
-  CheckSquare,
-  Code,
-  Link,
-  List,
-  FolderInput,
-  ArrowDownToLine,
-  GripVertical,
-  ArrowUpDown,
-  Sparkles,
-  RotateCcw,
+  X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { RepoStatusPayload, VaultEntry } from "../../types/gitVault";
 import { Editor } from "../Editor";
+import type { EditorHandle } from "../Editor";
 import { CanvasView } from "../canvas/CanvasView";
+import { GitHubService } from "../../services/githubService";
 import {
   CustomOrderMap,
   SortMode,
@@ -46,12 +59,11 @@ import {
   getStoredSortMode,
   saveSortMode,
   getParentPath,
-  getItemName,
-  reorderItem,
   moveItemStep,
   renameInCustomOrder,
   sortTreeNodes,
 } from "../../utils/customOrder";
+import { ConfirmSheet, Sheet, SheetAction, TextPromptSheet } from "./mobileUi";
 
 interface MobileShellProps {
   vaultPath: string;
@@ -84,42 +96,37 @@ interface TreeNode {
   children: TreeNode[];
 }
 
+type Tab = "notes" | "sync" | "settings";
+
 function buildFileTree(entries: VaultEntry[]): TreeNode[] {
   const rootNodes: TreeNode[] = [];
   const nodeMap = new Map<string, TreeNode>();
 
   for (const entry of entries) {
-    const normalized = entry.path.replace(/\\/g, "/");
-    const parts = normalized.split("/");
+    const parts = entry.path.replace(/\\/g, "/").split("/");
     let currentPath = "";
 
     for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
       const isLast = i === parts.length - 1;
       const prevPath = currentPath;
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
 
-      if (!nodeMap.has(currentPath)) {
-        const isDir = isLast ? entry.is_directory : true;
+      const existing = nodeMap.get(currentPath);
+      if (!existing) {
         const node: TreeNode = {
           path: currentPath,
-          name: part,
-          isDirectory: isDir,
+          name: parts[i],
+          isDirectory: isLast ? entry.is_directory : true,
           children: [],
         };
         nodeMap.set(currentPath, node);
-
-        if (prevPath && nodeMap.has(prevPath)) {
-          nodeMap.get(prevPath)!.children.push(node);
-        } else if (!prevPath) {
-          rootNodes.push(node);
-        }
+        if (prevPath) nodeMap.get(prevPath)?.children.push(node);
+        else rootNodes.push(node);
       } else if (isLast && entry.is_directory) {
-        nodeMap.get(currentPath)!.isDirectory = true;
+        existing.isDirectory = true;
       }
     }
   }
-
   return rootNodes;
 }
 
@@ -127,6 +134,183 @@ function countNotes(node: TreeNode): number {
   if (!node.isDirectory) return 1;
   return node.children.reduce((acc, c) => acc + countNotes(c), 0);
 }
+
+const isCanvasPath = (p: string) => p.endsWith(".canvas");
+const fileExt = (name: string) => (name.endsWith(".canvas") ? ".canvas" : name.endsWith(".md") ? ".md" : "");
+const displayName = (name: string) => name.replace(/\.(md|canvas)$/, "");
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// ---------------------------------------------------------------------------
+// Sync state → what to tell the user and which single action to offer
+// ---------------------------------------------------------------------------
+type SyncTone = "ok" | "warn" | "info" | "ahead" | "off";
+type SyncAction = "save" | "pull" | "fetch" | "connect";
+
+interface SyncSummary {
+  tone: SyncTone;
+  chip: string;
+  headline: string;
+  detail: string;
+  action: SyncAction;
+  actionLabel: string;
+  icon: LucideIcon;
+}
+
+function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
+  const dirty = status?.dirty_count ?? 0;
+  const behind = status?.behind_count ?? 0;
+  const ahead = status?.ahead_count ?? 0;
+
+  if (status && !status.remote_url) {
+    return {
+      tone: "off",
+      chip: dirty > 0 ? `${dirty} local` : "Local only",
+      headline: "Not connected to GitHub",
+      detail: "Your notes are saved on this device only. Connect a repository to back them up and sync across devices.",
+      action: "connect",
+      actionLabel: "Connect GitHub",
+      icon: CloudOff,
+    };
+  }
+  if (behind > 0 && dirty > 0) {
+    return {
+      tone: "warn",
+      chip: `${behind} to pull`,
+      headline: "Pull before you save",
+      detail: `GitHub has ${plural(behind, "new commit")} and you have ${plural(dirty, "unsaved change")}. Pull first; overlapping edits open the conflict resolver.`,
+      action: "pull",
+      actionLabel: "Pull updates",
+      icon: AlertTriangle,
+    };
+  }
+  if (behind > 0) {
+    return {
+      tone: "info",
+      chip: `${behind} to pull`,
+      headline: `${plural(behind, "update")} available`,
+      detail: "Newer commits are on GitHub. Pull to bring this device up to date.",
+      action: "pull",
+      actionLabel: "Pull updates",
+      icon: ArrowDownToLine,
+    };
+  }
+  if (ahead > 0) {
+    return {
+      tone: "ahead",
+      chip: `${ahead} to push`,
+      headline: `${plural(ahead, "commit")} waiting to push`,
+      detail: "These were saved while offline. Push them to GitHub when you have a connection.",
+      action: "save",
+      actionLabel: "Push now",
+      icon: ArrowUpFromLine,
+    };
+  }
+  if (dirty > 0) {
+    return {
+      tone: "warn",
+      chip: `${dirty} unsaved`,
+      headline: `${plural(dirty, "unsaved change")}`,
+      detail: "Edits are on this device but not yet committed to GitHub.",
+      action: "save",
+      actionLabel: "Save & push",
+      icon: UploadCloud,
+    };
+  }
+  return {
+    tone: "ok",
+    chip: "Synced",
+    headline: "Everything is up to date",
+    detail: "This device matches your GitHub repository.",
+    action: "fetch",
+    actionLabel: "Check for updates",
+    icon: CheckCircle2,
+  };
+}
+
+const TONE: Record<SyncTone, { text: string; dot: string; chip: string; iconWrap: string }> = {
+  ok: {
+    text: "text-emerald-400",
+    dot: "bg-emerald-400",
+    chip: "bg-emerald-500/10 border-emerald-500/30 text-emerald-300",
+    iconWrap: "bg-emerald-500/10 text-emerald-400",
+  },
+  warn: {
+    text: "text-amber-400",
+    dot: "bg-amber-400",
+    chip: "bg-amber-500/10 border-amber-500/30 text-amber-300",
+    iconWrap: "bg-amber-500/10 text-amber-400",
+  },
+  info: {
+    text: "text-sky-400",
+    dot: "bg-sky-400",
+    chip: "bg-sky-500/10 border-sky-500/30 text-sky-300",
+    iconWrap: "bg-sky-500/10 text-sky-400",
+  },
+  ahead: {
+    text: "text-purple-300",
+    dot: "bg-purple-400",
+    chip: "bg-purple-500/10 border-purple-500/30 text-purple-300",
+    iconWrap: "bg-purple-500/10 text-purple-300",
+  },
+  off: {
+    text: "text-[#8b949e]",
+    dot: "bg-[#6e7681]",
+    chip: "bg-[#21262d] border-[#30363d] text-[#c9d1d9]",
+    iconWrap: "bg-[#21262d] text-[#8b949e]",
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Small presentational pieces
+// ---------------------------------------------------------------------------
+const IconButton: FC<{
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  className?: string;
+}> = ({ icon: Icon, label, onClick, className = "" }) => (
+  <button
+    type="button"
+    aria-label={label}
+    onClick={onClick}
+    className={`w-11 h-11 shrink-0 rounded-full flex items-center justify-center text-[#8b949e] active:bg-[#21262d] active:text-[#f0f6fc] transition-colors ${className}`}
+  >
+    <Icon className="w-5 h-5" />
+  </button>
+);
+
+const SectionLabel: FC<{ children: ReactNode }> = ({ children }) => (
+  <h3 className="px-1 pb-2 text-[13px] font-semibold text-[#8b949e]">{children}</h3>
+);
+
+const SettingsRow: FC<{
+  icon: LucideIcon;
+  label: string;
+  value?: string;
+  mono?: boolean;
+  onClick?: () => void;
+}> = ({ icon: Icon, label, value, mono, onClick }) => {
+  const body = (
+    <>
+      <Icon className="w-5 h-5 text-[#8b949e] shrink-0" />
+      <span className="flex-1 min-w-0">
+        <span className="block text-[15px] text-[#f0f6fc]">{label}</span>
+        {value && (
+          <span className={`block text-[13px] text-[#8b949e] truncate ${mono ? "font-mono" : ""}`}>{value}</span>
+        )}
+      </span>
+      {onClick && <ChevronRight className="w-4 h-4 text-[#6e7681] shrink-0" />}
+    </>
+  );
+  const cls = "w-full min-h-[60px] px-4 py-2.5 flex items-center gap-3.5 text-left";
+  return onClick ? (
+    <button type="button" onClick={onClick} className={`${cls} active:bg-[#1c2128] transition-colors`}>
+      {body}
+    </button>
+  ) : (
+    <div className={cls}>{body}</div>
+  );
+};
 
 export const MobileShell: FC<MobileShellProps> = ({
   vaultPath,
@@ -143,1309 +327,941 @@ export const MobileShell: FC<MobileShellProps> = ({
   onRenameFile,
   onSave,
   onSync,
+  onFetch,
   onOpenRepoSwitch,
+  onOpenOnboarding,
   onOpenAccountSettings,
   onSimulateState,
   onRefreshFiles,
   onPreviewImage,
 }) => {
-  const [activeTab, setActiveTab] = useState<"notes" | "vault" | "sync" | "settings">("notes");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
-  const [creating, setCreating] = useState<{ type: "file" | "folder"; parentPath: string } | null>(null);
-  const [creatingValue, setCreatingValue] = useState("");
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  const [tab, setTab] = useState<Tab>("notes");
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  // Custom ordering and sort mode state
-  const [customOrder, setCustomOrder] = useState<CustomOrderMap>(() =>
-    getStoredCustomOrder(vaultPath)
-  );
-  const [sortMode, setSortMode] = useState<SortMode>(() =>
-    getStoredSortMode(vaultPath)
-  );
-  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
+  const [customOrder, setCustomOrder] = useState<CustomOrderMap>(() => getStoredCustomOrder(vaultPath));
+  const [sortMode, setSortModeState] = useState<SortMode>(() => getStoredSortMode(vaultPath));
 
-  // Drag and drop state
-  const [draggedPath, setDraggedPath] = useState<string | null>(null);
-  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<{
-    targetPath: string;
-    position: "before" | "after" | "inside";
-  } | null>(null);
+  // Sheets
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [sortSheetOpen, setSortSheetOpen] = useState(false);
+  const [editorMenuOpen, setEditorMenuOpen] = useState(false);
+  const [itemSheet, setItemSheet] = useState<{ node: TreeNode; siblings: TreeNode[] } | null>(null);
+  const [creating, setCreating] = useState<{ type: "note" | "folder" | "canvas"; parent: string } | null>(null);
+  const [renaming, setRenaming] = useState<{ path: string; name: string; isDirectory: boolean } | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<{ path: string; name: string; isDirectory: boolean } | null>(null);
 
-  // Settings mock toggles matching Stitch Screen 3
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
-  const [autoCheckUpdates, setAutoCheckUpdates] = useState(true);
-  const [conflictStrategy, setConflictStrategy] = useState("ask");
+  // Editor screen
+  const editorApi = useRef<EditorHandle | null>(null);
+  const [saveState, setSaveState] = useState<"synced" | "saving">("synced");
+  const handleSaveStatus = useCallback((s: "synced" | "saving") => setSaveState(s), []);
 
-  const rawTree = useMemo(() => buildFileTree(files), [files]);
-  const tree = useMemo(
-    () => sortTreeNodes(rawTree, "", sortMode, customOrder),
-    [rawTree, sortMode, customOrder]
-  );
+  const sync = summarizeSync(status);
+  const tone = TONE[sync.tone];
+  const vaultName = vaultPath.split(/[\\/]/).filter(Boolean).pop() || "Vault";
+  const account = useMemo(() => GitHubService.getStoredGitHubAuth(), [status?.remote_url, tab]);
 
-  const isValidDrop = (source: string | null, targetFolder: string): boolean => {
-    if (!source) return false;
-    if (source === targetFolder) return false;
-    const currentParent = source.includes("/")
-      ? source.substring(0, source.lastIndexOf("/"))
-      : "";
-    if (currentParent === targetFolder) return false;
-    if (targetFolder.startsWith(source + "/")) return false;
-    return true;
-  };
-
-  const handleMove = (sourcePath: string, targetFolderPath: string) => {
-    const baseName = sourcePath.split("/").pop() || "";
-    const newPath = targetFolderPath ? `${targetFolderPath}/${baseName}` : baseName;
-    if (sourcePath === newPath) return;
-
-    onRenameFile(sourcePath, newPath);
-    const updated = renameInCustomOrder(customOrder, sourcePath, newPath);
-    setCustomOrder(updated);
-    saveCustomOrder(vaultPath, updated);
-
-    if (targetFolderPath) {
-      setCollapsedFolders((prev) => {
-        const next = new Set(prev);
-        next.delete(targetFolderPath);
-        return next;
-      });
+  const fileStatus = useMemo(() => {
+    const map = new Map<string, "modified" | "new" | "incoming">();
+    for (const f of status?.files ?? []) {
+      if (f.has_remote_update) map.set(f.path, "incoming");
+      else if (f.is_untracked) map.set(f.path, "new");
+      else if (f.is_modified) map.set(f.path, "modified");
     }
+    return map;
+  }, [status]);
+
+  const tree = useMemo(() => buildFileTree(files), [files]);
+  const sorted = useCallback(
+    (nodes: TreeNode[], parent: string) => sortTreeNodes(nodes, parent, sortMode, customOrder),
+    [sortMode, customOrder]
+  );
+
+  const folders = useMemo(
+    () => files.filter((f) => f.is_directory).map((f) => f.path).sort((a, b) => a.localeCompare(b)),
+    [files]
+  );
+  const noteCount = useMemo(() => files.filter((f) => !f.is_directory).length, [files]);
+
+  const searchResults = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return files
+      .filter((f) => !f.is_directory && f.path.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const an = a.name.toLowerCase().includes(q) ? 0 : 1;
+        const bn = b.name.toLowerCase().includes(q) ? 0 : 1;
+        return an - bn || a.path.localeCompare(b.path);
+      });
+  }, [files, query]);
+
+  // ---- actions -----------------------------------------------------------
+  const setSortMode = (mode: SortMode) => {
+    setSortModeState(mode);
+    saveSortMode(vaultPath, mode);
   };
 
-  const toggleFolder = (path: string) => {
-    setCollapsedFolders((prev) => {
+  const applyOrder = (next: CustomOrderMap) => {
+    setCustomOrder(next);
+    saveCustomOrder(vaultPath, next);
+  };
+
+  const toggleFolder = (path: string) =>
+    setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
       return next;
     });
+
+  const runSyncAction = (action: SyncAction) => {
+    if (action === "save") onSave();
+    else if (action === "pull") onSync();
+    else if (action === "fetch") onFetch();
+    else onOpenOnboarding();
   };
 
-  const handleStartCreate = (type: "file" | "folder", parentPath = "") => {
-    setCreating({ type, parentPath });
-    setCreatingValue("");
-    if (parentPath) {
-      setCollapsedFolders((prev) => {
+  const submitCreate = (raw: string) => {
+    if (!creating) return;
+    const prefix = creating.parent ? `${creating.parent}/` : "";
+    if (creating.type === "folder") {
+      onCreateFolder(`${prefix}${raw}`);
+    } else {
+      const ext = creating.type === "canvas" ? ".canvas" : ".md";
+      onCreateFile(`${prefix}${raw.endsWith(ext) ? raw : raw + ext}`);
+    }
+    if (creating.parent) {
+      setCollapsed((prev) => {
         const next = new Set(prev);
-        next.delete(parentPath);
+        next.delete(creating.parent);
         return next;
       });
     }
-  };
-
-  const handleCreateSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!creating || !creatingValue.trim()) {
-      setCreating(null);
-      setCreatingValue("");
-      return;
-    }
-    const raw = creatingValue.trim();
-    if (creating.type === "file") {
-      const finalName = raw.endsWith(".md") ? raw : `${raw}.md`;
-      const full = creating.parentPath ? `${creating.parentPath}/${finalName}` : finalName;
-      onCreateFile(full);
-      setActiveTab("notes");
-    } else {
-      const full = creating.parentPath ? `${creating.parentPath}/${raw}` : raw;
-      onCreateFolder(full);
-    }
     setCreating(null);
-    setCreatingValue("");
   };
 
-  const handleRenameSubmit = (oldPath: string, isDirectory: boolean) => {
-    const clean = renameValue.trim();
-    if (!clean) {
-      setRenamingPath(null);
-      return;
-    }
-    const currentBaseName = oldPath.split("/").pop() || "";
-    if (clean === currentBaseName) {
-      setRenamingPath(null);
-      return;
-    }
-    const parent = oldPath.includes("/") ? oldPath.substring(0, oldPath.lastIndexOf("/")) : "";
-    const finalName = !isDirectory && !clean.endsWith(".md") ? `${clean}.md` : clean;
+  const submitRename = (raw: string) => {
+    if (!renaming) return;
+    const ext = renaming.isDirectory ? "" : fileExt(renaming.name) || ".md";
+    const finalName = renaming.isDirectory || raw.endsWith(ext) ? raw : raw + ext;
+    const parent = getParentPath(renaming.path);
     const newPath = parent ? `${parent}/${finalName}` : finalName;
-    onRenameFile(oldPath, newPath);
-    const updated = renameInCustomOrder(customOrder, oldPath, newPath);
-    setCustomOrder(updated);
-    saveCustomOrder(vaultPath, updated);
-    setRenamingPath(null);
+    if (newPath !== renaming.path) {
+      onRenameFile(renaming.path, newPath);
+      applyOrder(renameInCustomOrder(customOrder, renaming.path, newPath));
+    }
+    setRenaming(null);
   };
 
-  const handleNodeDragOver = (e: React.DragEvent<HTMLDivElement>, node: TreeNode) => {
-    if (!draggedPath || draggedPath === node.path) return;
-    if (node.path.startsWith(draggedPath + "/")) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = "move";
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const offsetY = e.clientY - rect.top;
-    const height = rect.height;
-
-    if (node.isDirectory) {
-      if (offsetY < height * 0.25) {
-        setDropIndicator({ targetPath: node.path, position: "before" });
-      } else if (offsetY > height * 0.75) {
-        setDropIndicator({ targetPath: node.path, position: "after" });
-      } else {
-        if (isValidDrop(draggedPath, node.path)) {
-          setDropIndicator({ targetPath: node.path, position: "inside" });
-        } else {
-          setDropIndicator({
-            targetPath: node.path,
-            position: offsetY < height * 0.5 ? "before" : "after",
-          });
-        }
-      }
-    } else {
-      if (offsetY < height * 0.5) {
-        setDropIndicator({ targetPath: node.path, position: "before" });
-      } else {
-        setDropIndicator({ targetPath: node.path, position: "after" });
-      }
+  const moveTo = (source: string, targetFolder: string) => {
+    const base = source.split("/").pop() || "";
+    const newPath = targetFolder ? `${targetFolder}/${base}` : base;
+    if (newPath !== source) {
+      onRenameFile(source, newPath);
+      applyOrder(renameInCustomOrder(customOrder, source, newPath));
     }
+    setMoving(null);
   };
 
-  const handleNodeDragLeave = (e: React.DragEvent<HTMLDivElement>, node: TreeNode) => {
-    if (dropIndicator?.targetPath === node.path && !e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDropIndicator(null);
-    }
-  };
-
-  const handleNodeDrop = (
-    e: React.DragEvent<HTMLDivElement>,
-    node: TreeNode,
-    siblingNodes: TreeNode[]
-  ) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const source = draggedPath || e.dataTransfer.getData("text/plain");
-    const indicator = dropIndicator;
-    setDropIndicator(null);
-    setDraggedPath(null);
-
-    if (!source || !indicator || indicator.targetPath !== node.path) return;
-
-    if (indicator.position === "inside" && node.isDirectory) {
-      if (isValidDrop(source, node.path)) {
-        handleMove(source, node.path);
-      }
-      return;
-    }
-
-    const sourceParent = getParentPath(source);
-    const targetParent = getParentPath(node.path);
-    const sourceName = getItemName(source);
-    const targetName = getItemName(node.path);
-    const siblingNames = siblingNodes.map((s) => s.name);
-
-    if (sortMode !== "custom") {
-      setSortMode("custom");
-      saveSortMode(vaultPath, "custom");
-    }
-
-    if (sourceParent === targetParent) {
-      const updated = reorderItem(
-        customOrder,
-        sourceParent,
-        siblingNames,
-        sourceName,
-        targetName,
-        indicator.position as "before" | "after"
-      );
-      setCustomOrder(updated);
-      saveCustomOrder(vaultPath, updated);
-    } else {
-      handleMove(source, targetParent);
-      const updated = reorderItem(
-        customOrder,
-        targetParent,
-        [...siblingNames, sourceName],
-        sourceName,
-        targetName,
-        indicator.position as "before" | "after"
-      );
-      setCustomOrder(updated);
-      saveCustomOrder(vaultPath, updated);
-    }
-  };
-
-  const handleMoveStep = (
-    node: TreeNode,
-    direction: "up" | "down",
-    siblingNodes: TreeNode[]
-  ) => {
+  const moveStep = (node: TreeNode, siblings: TreeNode[], direction: "up" | "down") => {
+    // Reordering starts from what is on screen, so an A→Z list keeps its order apart from the moved item.
+    const names = siblings.map((s) => s.name);
     const parent = getParentPath(node.path);
-    const siblingNames = siblingNodes.map((s) => s.name);
-
-    if (sortMode !== "custom") {
-      setSortMode("custom");
-      saveSortMode(vaultPath, "custom");
-    }
-
-    const updated = moveItemStep(customOrder, parent, siblingNames, node.name, direction);
-    setCustomOrder(updated);
-    saveCustomOrder(vaultPath, updated);
+    const base = sortMode === "custom" ? customOrder : { ...customOrder, [parent]: names };
+    if (sortMode !== "custom") setSortMode("custom");
+    applyOrder(moveItemStep(base, parent, names, node.name, direction));
   };
 
-  // Status badges
-  const isDirty = (status?.dirty_count || 0) > 0;
-  const isBehind = (status?.behind_count || 0) > 0;
-  const isAhead = (status?.ahead_count || 0) > 0;
+  // ---- notes list --------------------------------------------------------
+  const StatusDot: FC<{ path: string }> = ({ path }) => {
+    const s = fileStatus.get(path);
+    if (!s) return null;
+    const cfg = {
+      modified: { cls: "bg-amber-400", label: "Unsaved changes" },
+      new: { cls: "bg-emerald-400", label: "New, not yet saved to GitHub" },
+      incoming: { cls: "bg-sky-400", label: "Update available" },
+    }[s];
+    return <span role="img" aria-label={cfg.label} className={`w-2 h-2 rounded-full shrink-0 ${cfg.cls}`} />;
+  };
 
-  // Render tree node in Vault Tab
-  const renderTreeNode = (node: TreeNode, depth = 0, siblingNodes: TreeNode[] = tree) => {
-    const isRenaming = renamingPath === node.path;
-    const isBeingDragged = draggedPath === node.path;
-    const isFirst = siblingNodes[0]?.path === node.path;
-    const isLast = siblingNodes[siblingNodes.length - 1]?.path === node.path;
-    const showDropBefore = dropIndicator?.targetPath === node.path && dropIndicator.position === "before";
-    const showDropAfter = dropIndicator?.targetPath === node.path && dropIndicator.position === "after";
-    const isDragInside = dropIndicator?.targetPath === node.path && dropIndicator.position === "inside";
+  const renderNode = (node: TreeNode, depth: number, siblings: TreeNode[]): ReactNode => {
+    const indent = { paddingLeft: 4 + depth * 20 };
+    const openMenu = () => setItemSheet({ node, siblings });
 
     if (node.isDirectory) {
-      const isCollapsed = collapsedFolders.has(node.path);
-      const noteCount = countNotes(node);
-      const isDragTarget = dragOverTarget === node.path;
-
+      const isCollapsed = collapsed.has(node.path);
+      const children = sorted(node.children, node.path);
       return (
-        <div key={node.path} className="relative select-none">
-          {/* Drop indicator line ABOVE */}
-          {showDropBefore && (
-            <div className="absolute -top-1 left-0 right-0 h-0.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)] z-30 pointer-events-none rounded-full flex items-center">
-              <div className="w-2 h-2 -ml-1 rounded-full bg-sky-400 border border-[#0d1117]" />
-            </div>
-          )}
-
-          <div
-            draggable={!isRenaming}
-            onDragStart={(e) => {
-              e.stopPropagation();
-              e.dataTransfer.setData("text/plain", node.path);
-              e.dataTransfer.effectAllowed = "move";
-              setDraggedPath(node.path);
-            }}
-            onDragEnd={() => {
-              setDraggedPath(null);
-              setDragOverTarget(null);
-              setDropIndicator(null);
-            }}
-            onDragOver={(e) => handleNodeDragOver(e, node)}
-            onDragLeave={(e) => handleNodeDragLeave(e, node)}
-            onDrop={(e) => handleNodeDrop(e, node, siblingNodes)}
-            className={`group flex items-center justify-between px-2.5 py-2 rounded-xl text-xs cursor-pointer transition-all ${
-              isDragInside || isDragTarget
-                ? "bg-sky-500/25 ring-2 ring-sky-400 text-white shadow-md"
-                : isBeingDragged
-                ? "opacity-40 border border-dashed border-amber-400"
-                : "hover:bg-[#161b22] text-[#dfe2eb]"
-            }`}
-            onClick={() => toggleFolder(node.path)}
-          >
-            <div className="flex items-center gap-2 overflow-hidden flex-1 mr-1">
-              <GripVertical className="w-3 h-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleFolder(node.path);
-                }}
-                className="text-[#8b949e] hover:text-[#f0f6fc] p-0.5"
-              >
-                {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              </button>
+        <li key={node.path}>
+          <div className="flex items-center" style={indent}>
+            <button
+              type="button"
+              onClick={() => toggleFolder(node.path)}
+              aria-expanded={!isCollapsed}
+              className="flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pl-2 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors"
+            >
+              <ChevronRight
+                className={`w-4 h-4 text-[#6e7681] shrink-0 transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+              />
               {isCollapsed ? (
-                <Folder className="w-4 h-4 text-amber-400/90 shrink-0" />
+                <Folder className="w-5 h-5 text-amber-400/90 shrink-0" />
               ) : (
-                <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />
+                <FolderOpen className="w-5 h-5 text-amber-400 shrink-0" />
               )}
-
-              {isRenaming ? (
-                <input
-                  type="text"
-                  autoFocus
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                  onBlur={() => handleRenameSubmit(node.path, true)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleRenameSubmit(node.path, true);
-                    if (e.key === "Escape") setRenamingPath(null);
-                  }}
-                  className="w-full bg-[#0d1117] border border-sky-500 text-white rounded px-2 py-0.5 text-xs outline-none"
-                />
-              ) : (
-                <span className="truncate font-medium text-[#f0f6fc]">{node.name}</span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-              <span className="font-mono text-[10px] text-[#8b949e] bg-[#21262d] px-1.5 py-0.5 rounded-full">
-                {noteCount}
-              </span>
-
-              {/* Move Up / Move Down buttons */}
-              <button
-                title={isFirst ? "Top item" : "Move up"}
-                disabled={isFirst}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleMoveStep(node, "up", siblingNodes);
-                }}
-                className={`p-1 transition-colors ${
-                  isFirst ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                }`}
-              >
-                <ChevronUp className="w-3.5 h-3.5" />
-              </button>
-              <button
-                title={isLast ? "Bottom item" : "Move down"}
-                disabled={isLast}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleMoveStep(node, "down", siblingNodes);
-                }}
-                className={`p-1 transition-colors ${
-                  isLast ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-                }`}
-              >
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-
-              <button
-                title="New Note in folder"
-                onClick={() => handleStartCreate("file", node.path)}
-                className="p-1 hover:text-sky-400 text-[#8b949e]"
-              >
-                <FilePlus className="w-3.5 h-3.5" />
-              </button>
-              <button
-                title="New Subfolder"
-                onClick={() => handleStartCreate("folder", node.path)}
-                className="p-1 hover:text-amber-400 text-[#8b949e]"
-              >
-                <FolderPlus className="w-3.5 h-3.5" />
-              </button>
-            </div>
+              <span className="flex-1 min-w-0 truncate text-[16px] font-medium text-[#f0f6fc]">{node.name}</span>
+              <span className="text-[13px] text-[#6e7681] tabular-nums shrink-0">{countNotes(node)}</span>
+            </button>
+            <IconButton icon={MoreHorizontal} label={`Actions for folder ${node.name}`} onClick={openMenu} />
           </div>
-
-          {!isCollapsed && (
-            <div className="pl-3.5 border-l border-[#21262d] ml-4 my-1 space-y-0.5">
-              {creating && creating.parentPath === node.path && (
-                <form onSubmit={handleCreateSubmit} className="p-1.5 bg-[#161b22] border border-sky-500/40 rounded-xl my-1 flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    autoFocus
-                    placeholder={creating.type === "folder" ? "Subfolder name..." : "Note name..."}
-                    value={creatingValue}
-                    onChange={(e) => setCreatingValue(e.target.value)}
-                    className="w-full text-xs bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-white outline-none"
-                  />
-                  <button type="submit" className="p-1 bg-sky-600 text-white rounded">
-                    <Check className="w-3 h-3" />
-                  </button>
-                  <button type="button" onClick={() => setCreating(null)} className="p-1 text-[#8b949e]">
-                    <X className="w-3 h-3" />
-                  </button>
-                </form>
-              )}
-              {node.children.length === 0 && (!creating || creating.parentPath !== node.path) ? (
-                <div className="py-1 px-2 text-[11px] text-[#8b949e] italic flex items-center justify-between">
-                  <span>Empty folder</span>
-                  <button onClick={() => handleStartCreate("file", node.path)} className="text-sky-400 not-italic">
-                    + note
-                  </button>
-                </div>
-              ) : (
-                node.children.map((child) => renderTreeNode(child, depth + 1, node.children))
-              )}
-            </div>
-          )}
-
-          {/* Drop indicator line BELOW */}
-          {showDropAfter && (
-            <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)] z-30 pointer-events-none rounded-full flex items-center">
-              <div className="w-2 h-2 -ml-1 rounded-full bg-sky-400 border border-[#0d1117]" />
-            </div>
-          )}
-        </div>
+          {!isCollapsed &&
+            (children.length === 0 ? (
+              <div className="flex items-center min-h-[44px] text-[14px] text-[#6e7681]" style={{ paddingLeft: 56 + depth * 20 }}>
+                <span>Empty folder</span>
+                <button
+                  type="button"
+                  onClick={() => setCreating({ type: "note", parent: node.path })}
+                  className="ml-2 px-2 h-11 text-sky-400 font-medium active:text-sky-300"
+                >
+                  Add a note
+                </button>
+              </div>
+            ) : (
+              <ul>{children.map((c) => renderNode(c, depth + 1, children))}</ul>
+            ))}
+        </li>
       );
     }
 
-    const isActive = activeFilePath === node.path;
+    const canvas = isCanvasPath(node.name);
     return (
-      <div key={node.path} className="relative select-none">
-        {/* Drop indicator line ABOVE */}
-        {showDropBefore && (
-          <div className="absolute -top-1 left-0 right-0 h-0.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)] z-30 pointer-events-none rounded-full flex items-center">
-            <div className="w-2 h-2 -ml-1 rounded-full bg-sky-400 border border-[#0d1117]" />
-          </div>
-        )}
-
-        <div
-          draggable={!isRenaming}
-          onDragStart={(e) => {
-            e.stopPropagation();
-            e.dataTransfer.setData("text/plain", node.path);
-            e.dataTransfer.effectAllowed = "move";
-            setDraggedPath(node.path);
-          }}
-          onDragEnd={() => {
-            setDraggedPath(null);
-            setDragOverTarget(null);
-            setDropIndicator(null);
-          }}
-          onDragOver={(e) => handleNodeDragOver(e, node)}
-          onDragLeave={(e) => handleNodeDragLeave(e, node)}
-          onDrop={(e) => handleNodeDrop(e, node, siblingNodes)}
-          onClick={() => {
-            onSelectFile(node.path);
-            setActiveTab("notes");
-          }}
-          className={`group flex items-center justify-between px-2.5 py-2 rounded-xl text-xs cursor-pointer transition-all ${
-            isBeingDragged
-              ? "opacity-40 border border-dashed border-sky-400"
-              : isActive
-              ? "bg-[#1c2026] text-white border-l-2 border-sky-400 pl-2 shadow-sm font-medium"
-              : "text-[#8b949e] hover:bg-[#161b22] hover:text-[#f0f6fc]"
-          }`}
+      <li key={node.path} className="flex items-center" style={indent}>
+        <button
+          type="button"
+          onClick={() => onSelectFile(node.path)}
+          className="flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pl-2 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors"
         >
-          <div className="flex items-center gap-2 overflow-hidden flex-1 mr-2">
-            <GripVertical className="w-3 h-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <FileText className={`w-4 h-4 shrink-0 ${isActive ? "text-sky-400" : "text-[#8b949e]"}`} />
-            {isRenaming ? (
-              <input
-                type="text"
-                autoFocus
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onBlur={() => handleRenameSubmit(node.path, false)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleRenameSubmit(node.path, false);
-                  if (e.key === "Escape") setRenamingPath(null);
-                }}
-                className="w-full bg-[#0d1117] border border-sky-500 text-white rounded px-2 py-0.5 text-xs outline-none"
-              />
-            ) : (
-              <span className="truncate">{node.name}</span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-            {/* Move Up / Move Down buttons */}
-            <button
-              title={isFirst ? "Top item" : "Move up"}
-              disabled={isFirst}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleMoveStep(node, "up", siblingNodes);
-              }}
-              className={`p-1 transition-colors ${
-                isFirst ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-              }`}
-            >
-              <ChevronUp className="w-3.5 h-3.5" />
-            </button>
-            <button
-              title={isLast ? "Bottom item" : "Move down"}
-              disabled={isLast}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleMoveStep(node, "down", siblingNodes);
-              }}
-              className={`p-1 transition-colors ${
-                isLast ? "opacity-25 cursor-not-allowed text-zinc-600" : "hover:text-sky-400 text-zinc-400"
-              }`}
-            >
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-
-            {/* Quick Move Button */}
-            <button
-              title="Move note..."
-              onClick={() => {
-                const target = prompt("Move note to folder (enter folder name or leave empty for root):", "");
-                if (target !== null) {
-                  handleMove(node.path, target.trim());
-                }
-              }}
-              className="p-1 text-[#8b949e] hover:text-sky-400"
-            >
-              <FolderInput className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => {
-                setRenamingPath(node.path);
-                setRenameValue(node.name);
-              }}
-              className="p-1 text-[#8b949e] hover:text-white"
-            >
-              <Edit2 className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => {
-                if (confirm(`Delete note "${node.name}"?`)) onDeleteFile(node.path);
-              }}
-              className="p-1 text-[#8b949e] hover:text-red-400"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </div>
-        </div>
-
-        {/* Drop indicator line BELOW */}
-        {showDropAfter && (
-          <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.9)] z-30 pointer-events-none rounded-full flex items-center">
-            <div className="w-2 h-2 -ml-1 rounded-full bg-sky-400 border border-[#0d1117]" />
-          </div>
-        )}
-      </div>
+          <span className="w-4 shrink-0" />
+          {canvas ? (
+            <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
+          ) : (
+            <FileText className="w-5 h-5 text-[#8b949e] shrink-0" />
+          )}
+          <span className="flex-1 min-w-0 truncate text-[16px] text-[#e6edf3]">{displayName(node.name)}</span>
+          <StatusDot path={node.path} />
+        </button>
+        <IconButton icon={MoreHorizontal} label={`Actions for ${displayName(node.name)}`} onClick={openMenu} />
+      </li>
     );
   };
 
-  return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#10141a] text-[#dfe2eb] select-none">
-      {/* Android Top Bar (Sticky Header matching Stitch Screen 1) */}
-      <header className="h-14 px-3.5 pt-safe bg-[#10141a]/95 backdrop-blur-xl border-b border-[#30363d] flex items-center justify-between gap-2 shrink-0 z-40">
-        <div className="flex items-center gap-2 min-w-0">
+  const rootNodes = sorted(tree, "");
+  const sortLabel = sortMode === "custom" ? "Custom order" : sortMode === "alpha-asc" ? "Name A–Z" : "Name Z–A";
+
+  const notesTab = (
+    <>
+      <header className="pt-safe bg-[#0d1117] shrink-0">
+        <div className="h-14 pl-4 pr-3 flex items-center justify-between gap-3">
           <button
-            onClick={onOpenRepoSwitch}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] border border-[#30363d] text-left min-w-0 cursor-pointer active:scale-95 transition-transform"
+            type="button"
+            onClick={account ? onOpenRepoSwitch : onOpenOnboarding}
+            className="min-w-0 h-11 -ml-2 px-2 rounded-xl flex items-center gap-1.5 active:bg-[#161b22]"
+            aria-label={`Vault ${vaultName}. Switch repository`}
           >
-            <div className="w-5 h-5 rounded-full bg-sky-500/20 flex items-center justify-center shrink-0">
-              <Folder className="w-3 h-3 text-sky-400" />
-            </div>
-            <span className="font-mono text-xs text-[#f0f6fc] font-medium truncate max-w-[110px]">
-              {vaultPath.split(/[\\/]/).pop() || "GitVault"}
-            </span>
-            <ChevronDown className="w-3 h-3 text-[#8b949e] shrink-0" />
+            <span className="font-headline text-[22px] font-semibold text-[#f0f6fc] truncate">{vaultName}</span>
+            <ChevronDown className="w-4 h-4 text-[#8b949e] shrink-0 mt-1" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("sync")}
+            aria-label={`Sync status: ${sync.headline}`}
+            className={`h-9 px-3 rounded-full border flex items-center gap-2 text-[13px] font-medium shrink-0 ${tone.chip}`}
+          >
+            {isLoading ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <span className={`w-2 h-2 rounded-full ${tone.dot}`} />
+            )}
+            <span>{sync.chip}</span>
           </button>
         </div>
-
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Live Git Status Badge */}
-          {isDirty ? (
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[10px] font-mono font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-              <span>{status?.dirty_count} unsaved</span>
-            </div>
-          ) : isBehind ? (
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/15 border border-sky-500/30 text-sky-400 text-[10px] font-mono font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse"></span>
-              <span>↓ {status?.behind_count}</span>
-            </div>
-          ) : isAhead ? (
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-mono font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-              <span>↑ {status?.ahead_count} ahead</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-medium">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              <span>Synced</span>
-            </div>
-          )}
-
-          {/* Quick Sync Button */}
-          <button
-            onClick={onSync}
-            disabled={isLoading}
-            className="bg-sky-500 hover:bg-sky-400 text-[#0d1117] font-semibold text-xs px-3 py-1 rounded-full flex items-center gap-1 active:scale-95 transition-transform shadow-sm cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3 h-3 ${isLoading ? "animate-spin" : ""}`} />
-            <span>Sync</span>
-          </button>
-
-          {/* Avatar Profile Trigger */}
-          <button
-            onClick={() => setActiveTab("settings")}
-            className="w-7 h-7 rounded-full bg-[#1c2026] border border-[#30363d] flex items-center justify-center text-[#8b949e] hover:text-[#f0f6fc] cursor-pointer"
-            title="Settings & Account"
-          >
-            <User className="w-3.5 h-3.5 text-sky-400" />
-          </button>
+        <div className="px-4 pb-3">
+          <div className="h-11 rounded-xl bg-[#161b22] border border-[#21262d] focus-within:border-sky-500 flex items-center gap-2.5 px-3.5">
+            <Search className="w-[18px] h-[18px] text-[#6e7681] shrink-0" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search notes"
+              aria-label="Search notes"
+              enterKeyHint="search"
+              className="flex-1 min-w-0 bg-transparent text-[#f0f6fc] placeholder:text-[#6e7681] outline-none select-text [&::-webkit-search-cancel-button]:hidden"
+            />
+            {query && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setQuery("")}
+                className="w-11 h-11 -mr-3.5 flex items-center justify-center text-[#8b949e]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      {/* Main Tab Content */}
-      <div className="flex-1 overflow-hidden relative flex flex-col">
-        {/* ================= TAB 1: NOTES & EDITOR ================= */}
-        {activeTab === "notes" && (
-          <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0d1117]">
-            {/* Note Title & Local Auto-Save Row (Stitch Screen 1) */}
-            <div className="px-3 py-2 bg-[#161b22] border-b border-[#21262d] flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <FileText className="w-4 h-4 text-sky-400 shrink-0" />
-                <span className="font-mono text-xs text-[#f0f6fc] font-medium truncate">
-                  {activeFilePath || "No Note Selected"}
-                </span>
-                {activeFilePath && (
-                  <button
-                    onClick={() => {
-                      const newName = prompt("Rename note:", activeFilePath);
-                      if (newName && newName !== activeFilePath) {
-                        onRenameFile(activeFilePath, newName);
-                      }
-                    }}
-                    className="p-1 text-[#8b949e] hover:text-[#f0f6fc] cursor-pointer"
-                  >
-                    <Edit2 className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
-
-              <div className="shrink-0 px-2 py-0.5 rounded-full bg-[#21262d] flex items-center gap-1.5 text-[10px] text-[#8b949e] font-mono">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                <span>Auto-saved (500ms)</span>
-              </div>
+      <div className="flex-1 overflow-y-auto overscroll-contain px-2 pb-28">
+        {query.trim() ? (
+          searchResults.length === 0 ? (
+            <div className="px-6 pt-16 text-center">
+              <p className="text-[16px] text-[#f0f6fc] font-medium">No notes match “{query.trim()}”</p>
+              <p className="text-[14px] text-[#8b949e] mt-1.5">Search looks at note names and folder paths.</p>
             </div>
-
-            {/* Sticky Mobile Markdown Toolbar (Stitch Screen 1) */}
-            <div className="px-2 py-1.5 bg-[#10141a] border-b border-[#21262d] overflow-x-auto no-scrollbar flex items-center gap-1.5 shrink-0">
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n\n**Bold Text**");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <Bold className="w-3 h-3" />
-                <span>Bold</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n\n*Italic Text*");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <Italic className="w-3 h-3" />
-                <span>Italic</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n\n## Subheading");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <Heading2 className="w-3 h-3" />
-                <span>H2</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n- [ ] Todo item");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <CheckSquare className="w-3 h-3" />
-                <span>Task</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n```ts\n// Code snippet\n```");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <Code className="w-3 h-3" />
-                <span>Code</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + " [Link Title](https://)");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <Link className="w-3 h-3" />
-                <span>Link</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (activeFilePath) onDebouncedSave(activeFilePath, activeFileContent + "\n- List item");
-                }}
-                className="px-2.5 py-1 rounded-full bg-[#1c2026] hover:bg-[#262a31] text-[#8b949e] hover:text-[#f0f6fc] text-[11px] font-mono shrink-0 flex items-center gap-1 active:scale-95 transition-all"
-              >
-                <List className="w-3 h-3" />
-                <span>List</span>
-              </button>
+          ) : (
+            <ul>
+              <li className="px-3 pb-1 text-[13px] text-[#8b949e]">{plural(searchResults.length, "result")}</li>
+              {searchResults.map((f) => {
+                const parent = getParentPath(f.path);
+                return (
+                  <li key={f.path}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectFile(f.path)}
+                      className="w-full min-h-[56px] px-3 rounded-xl flex items-center gap-3 text-left active:bg-[#161b22]"
+                    >
+                      {isCanvasPath(f.name) ? (
+                        <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
+                      ) : (
+                        <FileText className="w-5 h-5 text-[#8b949e] shrink-0" />
+                      )}
+                      <span className="flex-1 min-w-0">
+                        <span className="block truncate text-[16px] text-[#e6edf3]">{displayName(f.name)}</span>
+                        {parent && <span className="block truncate text-[13px] text-[#6e7681]">{parent}</span>}
+                      </span>
+                      <StatusDot path={f.path} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )
+        ) : rootNodes.length === 0 ? (
+          <div className="px-6 pt-20 flex flex-col items-center text-center">
+            <div className="w-14 h-14 rounded-2xl bg-[#161b22] border border-[#21262d] flex items-center justify-center">
+              <FileText className="w-6 h-6 text-sky-400" />
             </div>
-
-            {/* Note Editor Area */}
-            <div className="flex-1 overflow-hidden relative">
-              {activeFilePath ? (
-                activeFilePath.endsWith(".canvas") ? (
-                  <CanvasView
-                    filePath={activeFilePath}
-                    initialContent={activeFileContent}
-                    vaultPath={vaultPath}
-                    vaultFiles={files}
-                    onDebouncedSave={onDebouncedSave}
-                    onOpenFile={onSelectFile}
-                    onRefreshFiles={onRefreshFiles}
-                    onPreviewImage={onPreviewImage}
-                  />
-                ) : (
-                  <Editor
-                    filePath={activeFilePath}
-                    initialContent={activeFileContent}
-                    onDebouncedSave={onDebouncedSave}
-                    onRenameFile={onRenameFile}
-                    onOpenFile={onSelectFile}
-                    onCreateFile={onCreateFile}
-                    vaultPath={vaultPath}
-                    vaultFiles={files}
-                    onRefreshFiles={onRefreshFiles}
-                    onPreviewImage={onPreviewImage}
-                    debounceMs={500}
-                  />
-                )
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full p-6 text-center space-y-3">
-                  <div className="w-12 h-12 rounded-full bg-[#161b22] flex items-center justify-center text-sky-400">
-                    <FileText className="w-6 h-6" />
-                  </div>
-                  <h3 className="font-headline text-sm font-semibold text-[#f0f6fc]">
-                    No note open
-                  </h3>
-                  <p className="text-xs text-[#8b949e] max-w-xs">
-                    Select a note from your vault or tap below to create a new markdown file.
-                  </p>
-                  <div className="flex gap-2 pt-2">
-                    <button
-                      onClick={() => handleStartCreate("file", "")}
-                      className="px-4 py-2 rounded-full bg-sky-500 text-[#0d1117] text-xs font-semibold cursor-pointer shadow-md"
-                    >
-                      + New Note
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("vault")}
-                      className="px-4 py-2 rounded-full bg-[#1c2026] text-[#f0f6fc] border border-[#30363d] text-xs font-medium cursor-pointer"
-                    >
-                      Browse Vault
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ================= TAB 2: VAULT BROWSER ================= */}
-        {activeTab === "vault" && (
-          <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0d1117] p-3 space-y-3 max-w-2xl mx-auto w-full">
-            {/* Search & Actions Bar */}
-            <div className="flex items-center gap-2 relative">
-              <div className="flex-1 relative">
-                <Search className="w-3.5 h-3.5 text-[#8b949e] absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Search notes & folders..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-[#161b22] border border-[#30363d] focus:border-sky-500 rounded-full pl-8 pr-3 py-1.5 text-xs text-[#f0f6fc] outline-none"
-                />
-              </div>
-
-              {/* Sort Menu Button */}
-              <button
-                onClick={() => setIsSortMenuOpen((prev) => !prev)}
-                title={`Sort: ${sortMode}`}
-                className={`p-2 rounded-full border transition-all cursor-pointer active:scale-95 ${
-                  isSortMenuOpen || sortMode === "custom"
-                    ? "bg-sky-500/15 border-sky-500/40 text-sky-400"
-                    : "bg-[#161b22] hover:bg-[#21262d] border-[#30363d] text-[#8b949e]"
-                }`}
-              >
-                <ArrowUpDown className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={() => handleStartCreate("folder", "")}
-                title="New Folder"
-                className="p-2 rounded-full bg-[#161b22] hover:bg-[#21262d] border border-[#30363d] text-amber-400 cursor-pointer active:scale-95"
-              >
-                <FolderPlus className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => handleStartCreate("file", "")}
-                title="New Note"
-                className="p-2 rounded-full bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-400 cursor-pointer active:scale-95"
-              >
-                <FilePlus className="w-4 h-4" />
-              </button>
-
-              {/* Sort Dropdown Popup */}
-              {isSortMenuOpen && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setIsSortMenuOpen(false)} />
-                  <div className="absolute right-0 top-full mt-2 w-52 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl py-1 z-50 text-xs">
-                    <div className="px-3 py-1 text-[10px] font-semibold text-[#8b949e] uppercase tracking-wider border-b border-[#21262d]">
-                      Sort Order
-                    </div>
-                    <button
-                      onClick={() => {
-                        setSortMode("custom");
-                        saveSortMode(vaultPath, "custom");
-                        setIsSortMenuOpen(false);
-                      }}
-                      className={`w-full px-3 py-2 flex items-center justify-between text-left hover:bg-[#21262d] ${
-                        sortMode === "custom" ? "text-sky-400 font-medium bg-sky-500/10" : "text-[#dfe2eb]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Custom Order</span>
-                      </div>
-                      {sortMode === "custom" && <Check className="w-3.5 h-3.5 text-sky-400" />}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSortMode("alpha-asc");
-                        saveSortMode(vaultPath, "alpha-asc");
-                        setIsSortMenuOpen(false);
-                      }}
-                      className={`w-full px-3 py-2 flex items-center justify-between text-left hover:bg-[#21262d] ${
-                        sortMode === "alpha-asc" ? "text-sky-400 font-medium bg-sky-500/10" : "text-[#dfe2eb]"
-                      }`}
-                    >
-                      <span>Name (A → Z)</span>
-                      {sortMode === "alpha-asc" && <Check className="w-3.5 h-3.5 text-sky-400" />}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSortMode("alpha-desc");
-                        saveSortMode(vaultPath, "alpha-desc");
-                        setIsSortMenuOpen(false);
-                      }}
-                      className={`w-full px-3 py-2 flex items-center justify-between text-left hover:bg-[#21262d] ${
-                        sortMode === "alpha-desc" ? "text-sky-400 font-medium bg-sky-500/10" : "text-[#dfe2eb]"
-                      }`}
-                    >
-                      <span>Name (Z → A)</span>
-                      {sortMode === "alpha-desc" && <Check className="w-3.5 h-3.5 text-sky-400" />}
-                    </button>
-                    <div className="border-t border-[#21262d] my-1" />
-                    <button
-                      onClick={() => {
-                        setCustomOrder({});
-                        saveCustomOrder(vaultPath, {});
-                        setSortMode("custom");
-                        saveSortMode(vaultPath, "custom");
-                        setIsSortMenuOpen(false);
-                      }}
-                      className="w-full px-3 py-2 flex items-center gap-2 text-left text-[#8b949e] hover:text-amber-400 hover:bg-[#21262d]"
-                    >
-                      <RotateCcw className="w-3 h-3 text-zinc-500" />
-                      <span>Reset Custom Order</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Root Inline Create */}
-            {creating && creating.parentPath === "" && (
-              <form onSubmit={handleCreateSubmit} className="p-2 bg-[#161b22] border border-sky-500/40 rounded-xl flex items-center gap-1.5 shadow-sm">
-                <input
-                  type="text"
-                  autoFocus
-                  placeholder={creating.type === "folder" ? "New folder name..." : "New note title (e.g. Ideas.md)..."}
-                  value={creatingValue}
-                  onChange={(e) => setCreatingValue(e.target.value)}
-                  className="w-full text-xs bg-[#0d1117] border border-[#30363d] rounded px-2 py-1 text-white outline-none"
-                />
-                <button type="submit" className="p-1 bg-sky-600 text-white rounded text-xs">
-                  <Check className="w-3.5 h-3.5" />
-                </button>
-                <button type="button" onClick={() => setCreating(null)} className="p-1 text-[#8b949e]">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </form>
-            )}
-
-            {/* File & Folder List */}
-            <div
-              onDragOver={(e) => {
-                if (draggedPath) {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  if (dragOverTarget !== "root") setDragOverTarget("root");
-                }
-              }}
-              onDragLeave={(e) => {
-                if (e.currentTarget === e.target) {
-                  setDragOverTarget(null);
-                }
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const source = draggedPath || e.dataTransfer.getData("text/plain");
-                setDragOverTarget(null);
-                setDraggedPath(null);
-                if (source && isValidDrop(source, "")) {
-                  handleMove(source, "");
-                }
-              }}
-              className={`flex-1 overflow-y-auto space-y-1 pr-1 transition-colors ${
-                dragOverTarget === "root" ? "bg-sky-500/10 ring-1 ring-sky-500/30 rounded-xl" : ""
-              }`}
+            <p className="font-headline text-[19px] font-semibold text-[#f0f6fc] mt-5">No notes yet</p>
+            <p className="text-[15px] text-[#8b949e] mt-1.5 max-w-[260px]">
+              Notes are plain Markdown files stored in your vault.
+            </p>
+            <button
+              type="button"
+              onClick={() => setCreating({ type: "note", parent: "" })}
+              className="mt-6 h-12 px-6 rounded-xl bg-sky-500 text-[#04121d] text-[15px] font-semibold active:bg-sky-400"
             >
-              {tree.length === 0 ? (
-                <div className="text-center py-10 text-xs text-[#8b949e]">
-                  No notes found. Tap + above to create one.
-                </div>
-              ) : (
-                tree
-                  .filter((n) =>
-                    searchQuery ? n.name.toLowerCase().includes(searchQuery.toLowerCase()) : true
-                  )
-                  .map((node) => renderTreeNode(node, 0, tree))
-              )}
-
-              {/* Visual drop indicator to move item to root when dragging a nested item */}
-              {draggedPath && draggedPath.includes("/") && (
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                    setDragOverTarget("root");
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const source = draggedPath || e.dataTransfer.getData("text/plain");
-                    setDragOverTarget(null);
-                    setDraggedPath(null);
-                    if (source && isValidDrop(source, "")) {
-                      handleMove(source, "");
-                    }
-                  }}
-                  className={`my-2 p-2.5 rounded-xl border-2 border-dashed flex items-center justify-center gap-2 text-xs font-medium transition-all ${
-                    dragOverTarget === "root"
-                      ? "border-sky-400 bg-sky-500/20 text-sky-300 ring-2 ring-sky-500/50"
-                      : "border-[#30363d] bg-[#161b22]/70 text-[#8b949e] hover:border-zinc-500"
-                  }`}
-                >
-                  <ArrowDownToLine className="w-4 h-4 text-sky-400" />
-                  <span>Drop here to move to Root (/)</span>
-                </div>
-              )}
-            </div>
+              Write your first note
+            </button>
           </div>
-        )}
-
-        {/* ================= TAB 3: SYNC & TELEMETRY ================= */}
-        {activeTab === "sync" && (
-          <div className="flex-1 overflow-y-auto bg-[#0d1117] p-4 space-y-4 pb-20 max-w-2xl mx-auto w-full">
-            {/* Cloud Sync Engine Card (Stitch Screen 3) */}
-            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 shadow-sm space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-full bg-sky-500/10 flex items-center justify-center text-sky-400">
-                    <Cloud className="w-4 h-4" />
-                  </div>
-                  <span className="font-headline text-sm font-semibold text-[#f0f6fc]">
-                    Cloud Sync Engine
-                  </span>
-                </div>
-                <span className="font-mono text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-medium">
-                  Connected & Healthy
-                </span>
-              </div>
-
-              {/* Telemetry Grid */}
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="bg-[#10141a] border border-[#21262d] p-3 rounded-xl flex flex-col">
-                  <span className="font-mono text-[10px] text-[#8b949e]">Vault Size</span>
-                  <div className="flex items-baseline gap-1 mt-1">
-                    <span className="font-headline text-lg font-bold text-[#f0f6fc]">
-                      {(files.length * 1.8).toFixed(1)}
-                    </span>
-                    <span className="font-mono text-[10px] text-[#8b949e]">
-                      KB / {files.length} notes
-                    </span>
-                  </div>
-                </div>
-
-                <div className="bg-[#10141a] border border-[#21262d] p-3 rounded-xl flex flex-col">
-                  <span className="font-mono text-[10px] text-[#8b949e]">Branch</span>
-                  <div className="flex items-baseline gap-1 mt-1">
-                    <span className="font-mono text-xs font-semibold text-emerald-400 truncate">
-                      {status?.branch || "main"}
-                    </span>
-                    <span className="font-mono text-[10px] text-[#8b949e]">
-                      [{status?.state || "CleanSynced"}]
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Progress Buffer Meter */}
-              <div className="w-full bg-[#10141a] rounded-full h-1.5 overflow-hidden flex">
-                <div className="bg-sky-400 h-full rounded-full" style={{ width: "35%" }}></div>
-                {isDirty && <div className="bg-amber-400 h-full" style={{ width: "15%" }}></div>}
-              </div>
-              <div className="flex justify-between items-center text-[#8b949e] font-mono text-[10px]">
-                <span>Local Git worktree</span>
-                <span>{isDirty ? `${status?.dirty_count} uncommitted` : "Up to date"}</span>
-              </div>
-
-              {/* Sync Actions */}
-              <div className="flex gap-2 pt-2">
-                <button
-                  onClick={onSync}
-                  disabled={isLoading}
-                  className="flex-1 py-2.5 px-4 rounded-full bg-sky-500 hover:bg-sky-400 text-[#0d1117] font-headline text-xs font-bold flex items-center justify-center gap-1.5 active:scale-95 transition-all shadow-md cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-                  <span>Sync & Pull</span>
-                </button>
-                <button
-                  onClick={onSave}
-                  disabled={isLoading}
-                  className="flex-1 py-2.5 px-4 rounded-full bg-[#1c2026] hover:bg-[#262a31] border border-[#30363d] text-[#f0f6fc] font-headline text-xs font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Save & Push</span>
-                </button>
-              </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between pl-3 pr-1">
+              <span className="text-[13px] text-[#8b949e]">{plural(noteCount, "note")}</span>
+              <button
+                type="button"
+                onClick={() => setSortSheetOpen(true)}
+                className="h-11 px-2.5 rounded-lg flex items-center gap-1.5 text-[13px] font-medium text-[#8b949e] active:bg-[#161b22]"
+              >
+                <ArrowUpDown className="w-3.5 h-3.5" />
+                <span>{sortLabel}</span>
+              </button>
             </div>
-
-            {/* Test Simulation Controls */}
-            {onSimulateState && (
-              <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3.5 space-y-2">
-                <div className="flex items-center gap-2">
-                  <GitBranch className="w-4 h-4 text-amber-400" />
-                  <span className="font-headline text-xs font-semibold text-[#f0f6fc]">
-                    Test Sync States
-                  </span>
-                </div>
-                <select
-                  onChange={(e) => onSimulateState(e.target.value)}
-                  defaultValue=""
-                  className="w-full bg-[#10141a] border border-[#30363d] text-xs text-[#f0f6fc] rounded-full py-2 px-3 outline-none"
-                >
-                  <option value="" disabled>Simulate a Git State...</option>
-                  <option value="clean_synced">1. Clean Synced (all green)</option>
-                  <option value="dirty_synced">2. Dirty Synced (uncommitted changes)</option>
-                  <option value="clean_behind">3. Clean Behind (remote updates)</option>
-                  <option value="dirty_behind">4. Dirty Behind (diverged)</option>
-                  <option value="ahead_offline">5. Ahead Offline (offline commits)</option>
-                  <option value="conflict_trigger">6. Trigger 3-Way Conflict</option>
-                </select>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ================= TAB 4: SETTINGS & ACCOUNT ================= */}
-        {activeTab === "settings" && (
-          <div className="flex-1 overflow-y-auto bg-[#0d1117] p-4 space-y-4 pb-20 max-w-2xl mx-auto w-full">
-            {/* User Profile Card (Stitch Screen 3) */}
-            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 shadow-sm space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-11 h-11 rounded-full bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
-                    <User className="w-5 h-5" />
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="font-headline text-xs font-semibold text-[#f0f6fc] truncate">
-                      Connected User
-                    </span>
-                    <span className="font-mono text-[10px] text-[#8b949e]">
-                      {status?.remote_name || "origin"} • {status?.branch || "main"}
-                    </span>
-                  </div>
-                </div>
-
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-medium shrink-0">
-                  Auth OK
-                </span>
-              </div>
-
-              <div className="pt-2 flex justify-end">
-                <button
-                  onClick={onOpenAccountSettings}
-                  className="px-3 py-1.5 rounded-full bg-[#1c2026] hover:bg-[#262a31] border border-[#30363d] text-xs font-medium text-[#f0f6fc] cursor-pointer"
-                >
-                  Configure GitHub Token...
-                </button>
-              </div>
-            </div>
-
-            {/* Sync & Versioning Rules */}
-            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 shadow-sm space-y-3">
-              <span className="font-mono text-[10px] uppercase tracking-wider text-[#8b949e] block">
-                Sync & Versioning Rules
-              </span>
-
-              {/* Auto-save Toggle */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-medium text-[#f0f6fc]">Auto-save changes</div>
-                  <div className="text-[11px] text-[#8b949e]">Writes to disk 500ms after editing</div>
-                </div>
-                <button
-                  onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
-                  className={`w-11 h-6 rounded-full p-0.5 transition-colors cursor-pointer ${
-                    autoSaveEnabled ? "bg-sky-500" : "bg-[#21262d]"
-                  }`}
-                >
-                  <div
-                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
-                      autoSaveEnabled ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  ></div>
-                </button>
-              </div>
-
-              {/* Background Updates Toggle */}
-              <div className="flex items-center justify-between pt-2 border-t border-[#21262d]">
-                <div>
-                  <div className="text-xs font-medium text-[#f0f6fc]">Periodic Git Polling</div>
-                  <div className="text-[11px] text-[#8b949e]">Fetches remote status every 12 seconds</div>
-                </div>
-                <button
-                  onClick={() => setAutoCheckUpdates(!autoCheckUpdates)}
-                  className={`w-11 h-6 rounded-full p-0.5 transition-colors cursor-pointer ${
-                    autoCheckUpdates ? "bg-sky-500" : "bg-[#21262d]"
-                  }`}
-                >
-                  <div
-                    className={`w-5 h-5 rounded-full bg-white transition-transform ${
-                      autoCheckUpdates ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  ></div>
-                </button>
-              </div>
-
-              {/* Conflict Handling Strategy */}
-              <div className="pt-2 border-t border-[#21262d] space-y-1">
-                <div className="text-xs font-medium text-[#f0f6fc]">Conflict Handling</div>
-                <select
-                  value={conflictStrategy}
-                  onChange={(e) => setConflictStrategy(e.target.value)}
-                  className="w-full bg-[#10141a] border border-[#30363d] rounded-full py-1.5 px-3 text-xs text-[#f0f6fc] outline-none"
-                >
-                  <option value="ask">Visual 3-Way Merge (Recommended)</option>
-                  <option value="remote">Favor Remote Changes</option>
-                  <option value="local">Favor Local Worktree</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Local Storage & Backup */}
-            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 shadow-sm space-y-3">
-              <span className="font-mono text-[10px] uppercase tracking-wider text-[#8b949e] block">
-                Local Storage & Backup
-              </span>
-              <div className="flex items-center justify-between bg-[#10141a] border border-[#21262d] rounded-full p-1.5 pl-3">
-                <span className="font-mono text-xs text-[#f0f6fc] truncate mr-2">
-                  {vaultPath}
-                </span>
-                <button
-                  onClick={onOpenRepoSwitch}
-                  className="px-3 py-1 rounded-full bg-[#21262d] text-xs font-medium text-[#f0f6fc] hover:bg-[#30363d] shrink-0 cursor-pointer"
-                >
-                  Change...
-                </button>
-              </div>
-
-              <div className="pt-1 flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-medium text-[#f0f6fc]">Snapshot & Archival</div>
-                  <div className="text-[11px] text-[#8b949e]">Full uncompressed Markdown files</div>
-                </div>
-                <button
-                  onClick={() => alert("Notes exported successfully to downloads folder.")}
-                  className="px-3 py-1.5 rounded-full bg-[#1c2026] hover:bg-[#262a31] border border-[#30363d] text-xs font-medium text-emerald-400 flex items-center gap-1 cursor-pointer"
-                >
-                  <Archive className="w-3.5 h-3.5" />
-                  <span>Export ZIP</span>
-                </button>
-              </div>
-            </div>
-          </div>
+            <ul>{rootNodes.map((n) => renderNode(n, 0, rootNodes))}</ul>
+          </>
         )}
       </div>
 
-      {/* Bottom Navigation Bar (Fixed Footer matching Stitch Screen 1) */}
-      <nav className="h-16 pb-safe bg-[#161b22]/95 backdrop-blur-xl border-t border-[#30363d] flex items-center justify-around shrink-0 z-40">
-        {/* Tab 1: Notes */}
-        <button
-          onClick={() => setActiveTab("notes")}
-          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] cursor-pointer transition-all ${
-            activeTab === "notes" ? "text-sky-400" : "text-[#8b949e] hover:text-[#f0f6fc]"
-          }`}
-        >
-          <div
-            className={`w-9 h-6 rounded-full flex items-center justify-center transition-all ${
-              activeTab === "notes" ? "bg-sky-500/15" : ""
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-          </div>
-          <span className="font-mono text-[10px] tracking-tight mt-0.5">Notes</span>
-        </button>
+      <button
+        type="button"
+        aria-label="Create new"
+        onClick={() => setCreateMenuOpen(true)}
+        className="absolute right-4 bottom-4 w-14 h-14 rounded-2xl bg-sky-500 text-[#04121d] shadow-lg shadow-black/50 flex items-center justify-center active:scale-95 active:bg-sky-400 transition-transform"
+      >
+        <Plus className="w-6 h-6" strokeWidth={2.5} />
+      </button>
+    </>
+  );
 
-        {/* Tab 2: Vault */}
-        <button
-          onClick={() => setActiveTab("vault")}
-          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] cursor-pointer transition-all ${
-            activeTab === "vault" ? "text-sky-400" : "text-[#8b949e] hover:text-[#f0f6fc]"
-          }`}
-        >
-          <div
-            className={`w-9 h-6 rounded-full flex items-center justify-center transition-all ${
-              activeTab === "vault" ? "bg-sky-500/15" : ""
-            }`}
-          >
-            <Folder className="w-4 h-4" />
-          </div>
-          <span className="font-mono text-[10px] tracking-tight mt-0.5">Vault</span>
-        </button>
+  // ---- sync tab ----------------------------------------------------------
+  const changedFiles = (status?.files ?? []).filter((f) => f.is_modified || f.is_untracked || f.has_remote_update);
+  const remoteLabel = status?.remote_url
+    ? status.remote_url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "")
+    : "None";
 
-        {/* Tab 3: Sync */}
-        <button
-          onClick={() => setActiveTab("sync")}
-          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] cursor-pointer transition-all ${
-            activeTab === "sync" ? "text-sky-400" : "text-[#8b949e] hover:text-[#f0f6fc]"
-          }`}
-        >
-          <div
-            className={`w-9 h-6 rounded-full flex items-center justify-center transition-all ${
-              activeTab === "sync" ? "bg-sky-500/15" : ""
+  const syncTab = (
+    <>
+      <header className="pt-safe bg-[#0d1117] shrink-0">
+        <div className="h-14 px-4 flex items-center">
+          <h1 className="font-headline text-[22px] font-semibold text-[#f0f6fc]">Sync</h1>
+        </div>
+      </header>
+      <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-8 space-y-6">
+        <section className="rounded-2xl bg-[#161b22] border border-[#21262d] p-5">
+          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${tone.iconWrap}`}>
+            <sync.icon className="w-6 h-6" />
+          </div>
+          <h2 className="font-headline text-[20px] font-semibold text-[#f0f6fc] mt-4">{sync.headline}</h2>
+          <p className="text-[15px] leading-relaxed text-[#8b949e] mt-1.5">{sync.detail}</p>
+          <button
+            type="button"
+            disabled={isLoading}
+            onClick={() => runSyncAction(sync.action)}
+            className={`mt-5 w-full h-12 rounded-xl text-[15px] font-semibold flex items-center justify-center gap-2 disabled:opacity-60 transition-colors ${
+              sync.action === "fetch"
+                ? "bg-[#21262d] text-[#f0f6fc] active:bg-[#30363d]"
+                : "bg-sky-500 text-[#04121d] active:bg-sky-400"
             }`}
           >
-            <Cloud className="w-4 h-4" />
-          </div>
-          <span className="font-mono text-[10px] tracking-tight mt-0.5">Sync</span>
-        </button>
+            {isLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
+            <span>{isLoading ? "Working…" : sync.actionLabel}</span>
+          </button>
+          {sync.action !== "fetch" && sync.action !== "connect" && (
+            <button
+              type="button"
+              disabled={isLoading}
+              onClick={onFetch}
+              className="mt-1 w-full h-11 text-[14px] font-medium text-[#8b949e] active:text-[#f0f6fc] disabled:opacity-60"
+            >
+              Check for updates
+            </button>
+          )}
+        </section>
 
-        {/* Tab 4: Settings */}
-        <button
-          onClick={() => setActiveTab("settings")}
-          className={`flex flex-col items-center justify-center min-w-[56px] min-h-[44px] cursor-pointer transition-all ${
-            activeTab === "settings" ? "text-sky-400" : "text-[#8b949e] hover:text-[#f0f6fc]"
-          }`}
-        >
-          <div
-            className={`w-9 h-6 rounded-full flex items-center justify-center transition-all ${
-              activeTab === "settings" ? "bg-sky-500/15" : ""
-            }`}
-          >
-            <Settings className="w-4 h-4" />
+        {changedFiles.length > 0 && (
+          <section>
+            <SectionLabel>Changed files</SectionLabel>
+            <ul className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
+              {changedFiles.map((f) => (
+                <li key={f.path}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectFile(f.path)}
+                    className="w-full min-h-[56px] px-4 flex items-center gap-3 text-left active:bg-[#1c2128]"
+                  >
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate text-[15px] text-[#e6edf3]">
+                        {displayName(f.path.split("/").pop() || f.path)}
+                      </span>
+                      <span className="block text-[13px] text-[#8b949e]">
+                        {f.has_remote_update ? "Update on GitHub" : f.is_untracked ? "New" : "Edited"}
+                      </span>
+                    </span>
+                    <StatusDot path={f.path} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <section>
+          <SectionLabel>Repository</SectionLabel>
+          <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
+            <SettingsRow icon={Link2} label="Remote" value={remoteLabel} mono={!!status?.remote_url} />
+            <SettingsRow icon={GitBranch} label="Branch" value={status?.branch || "main"} mono />
+            {status?.last_synced_at && (
+              <SettingsRow icon={RefreshCw} label="Last checked" value={status.last_synced_at} />
+            )}
           </div>
-          <span className="font-mono text-[10px] tracking-tight mt-0.5">Settings</span>
-        </button>
+        </section>
+
+        {import.meta.env.DEV && onSimulateState && (
+          <section>
+            <SectionLabel>Developer · simulate a sync state</SectionLabel>
+            <select
+              onChange={(e) => {
+                if (e.target.value) onSimulateState(e.target.value);
+                e.target.value = "";
+              }}
+              defaultValue=""
+              aria-label="Simulate a sync state"
+              className="w-full h-12 rounded-xl bg-[#161b22] border border-dashed border-[#30363d] text-[#c9d1d9] px-3 outline-none"
+            >
+              <option value="" disabled>
+                Choose a state…
+              </option>
+              <option value="clean_synced">Clean, synced</option>
+              <option value="dirty_synced">Unsaved changes</option>
+              <option value="clean_behind">Remote ahead</option>
+              <option value="dirty_behind">Remote ahead + unsaved changes</option>
+              <option value="ahead_offline">Offline commits</option>
+              <option value="conflict_trigger">Trigger a merge conflict</option>
+            </select>
+          </section>
+        )}
+      </div>
+    </>
+  );
+
+  // ---- settings tab ------------------------------------------------------
+  const settingsTab = (
+    <>
+      <header className="pt-safe bg-[#0d1117] shrink-0">
+        <div className="h-14 px-4 flex items-center">
+          <h1 className="font-headline text-[22px] font-semibold text-[#f0f6fc]">Settings</h1>
+        </div>
+      </header>
+      <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-8 space-y-6">
+        <section>
+          <SectionLabel>Account</SectionLabel>
+          <button
+            type="button"
+            onClick={account ? onOpenAccountSettings : onOpenOnboarding}
+            className="w-full rounded-2xl bg-[#161b22] border border-[#21262d] p-4 flex items-center gap-3.5 text-left active:bg-[#1c2128]"
+          >
+            {account?.user.avatar_url ? (
+              <img src={account.user.avatar_url} alt="" className="w-12 h-12 rounded-full bg-[#21262d] shrink-0" />
+            ) : (
+              <span className="w-12 h-12 rounded-full bg-[#21262d] flex items-center justify-center shrink-0">
+                <User className="w-5 h-5 text-[#8b949e]" />
+              </span>
+            )}
+            <span className="flex-1 min-w-0">
+              <span className="block text-[16px] font-medium text-[#f0f6fc] truncate">
+                {account ? account.user.name || account.user.login : "Not signed in"}
+              </span>
+              <span className="block text-[14px] text-[#8b949e] truncate">
+                {account ? `@${account.user.login} on GitHub` : "Sign in with GitHub to sync"}
+              </span>
+            </span>
+            <ChevronRight className="w-4 h-4 text-[#6e7681] shrink-0" />
+          </button>
+        </section>
+
+        <section>
+          <SectionLabel>Vault</SectionLabel>
+          <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
+            <SettingsRow icon={Folder} label="Location on this device" value={vaultPath} mono />
+            <SettingsRow
+              icon={Link2}
+              label="Repository"
+              value={status?.remote_url ? remoteLabel : "Not connected"}
+              mono={!!status?.remote_url}
+              onClick={account ? onOpenRepoSwitch : onOpenOnboarding}
+            />
+            <SettingsRow icon={ArrowUpDown} label="Note order" value={sortLabel} onClick={() => setSortSheetOpen(true)} />
+          </div>
+        </section>
+
+        <section>
+          <SectionLabel>How saving works</SectionLabel>
+          <p className="rounded-2xl bg-[#161b22] border border-[#21262d] p-4 text-[14px] leading-relaxed text-[#8b949e]">
+            Notes save to this device as you type. They reach GitHub when you tap{" "}
+            <span className="text-[#e6edf3]">Save &amp; push</span> on the Sync tab.
+          </p>
+        </section>
+
+        <p className="text-center text-[13px] text-[#6e7681]">Noty 0.1.0</p>
+      </div>
+    </>
+  );
+
+  // ---- editor screen -----------------------------------------------------
+  const activeName = activeFilePath ? activeFilePath.split("/").pop() || activeFilePath : "";
+  const activeParent = activeFilePath ? getParentPath(activeFilePath) : "";
+  const activeIsCanvas = !!activeFilePath && isCanvasPath(activeFilePath);
+
+  const fmt = (run: (api: EditorHandle) => void) => () => {
+    if (editorApi.current) run(editorApi.current);
+  };
+  const formatButtons: { icon: LucideIcon; label: string; run: () => void }[] = [
+    { icon: Bold, label: "Bold", run: fmt((a) => a.wrapSelection("**", "**", "bold")) },
+    { icon: Italic, label: "Italic", run: fmt((a) => a.wrapSelection("*", "*", "italic")) },
+    { icon: Heading, label: "Heading", run: fmt((a) => a.toggleLinePrefix("## ")) },
+    { icon: List, label: "Bulleted list", run: fmt((a) => a.toggleLinePrefix("- ")) },
+    { icon: ListChecks, label: "Task", run: fmt((a) => a.toggleLinePrefix("- [ ] ")) },
+    { icon: Quote, label: "Quote", run: fmt((a) => a.toggleLinePrefix("> ")) },
+    { icon: Code, label: "Code", run: fmt((a) => a.wrapSelection("`", "`", "code")) },
+    { icon: LinkIcon, label: "Link to a note", run: fmt((a) => a.wrapSelection("[[", "]]", "Note name")) },
+    { icon: Link2, label: "Web link", run: fmt((a) => a.wrapSelection("[", "](https://)", "link text")) },
+    { icon: ImageIcon, label: "Insert image", run: fmt((a) => a.openInsertImage()) },
+  ];
+
+  const editorScreen = activeFilePath && (
+    <div className="absolute inset-0 z-30 flex flex-col bg-[#0d1117] m-screen-in">
+      <header className="pt-safe bg-[#0d1117] border-b border-[#21262d] shrink-0">
+        <div className="h-14 px-1.5 flex items-center gap-0.5">
+          <IconButton icon={ArrowLeft} label="Back to notes" onClick={() => onSelectFile("")} />
+          <button
+            type="button"
+            onClick={() => setRenaming({ path: activeFilePath, name: activeName, isDirectory: false })}
+            aria-label={`${displayName(activeName)}. Rename`}
+            className="flex-1 min-w-0 h-11 px-2 rounded-xl text-left active:bg-[#161b22]"
+          >
+            <span className="block truncate text-[16px] font-semibold text-[#f0f6fc] leading-tight">
+              {displayName(activeName)}
+            </span>
+            <span className="block truncate text-[12px] text-[#8b949e] leading-tight mt-0.5" aria-live="polite">
+              {activeIsCanvas
+                ? activeParent || "Canvas"
+                : saveState === "saving"
+                ? "Saving…"
+                : `Saved on device${activeParent ? ` · ${activeParent}` : ""}`}
+            </span>
+          </button>
+          <IconButton icon={MoreVertical} label="Note options" onClick={() => setEditorMenuOpen(true)} />
+        </div>
+      </header>
+
+      <div className="flex-1 min-h-0 relative overflow-hidden">
+        {activeIsCanvas ? (
+          <CanvasView
+            key={activeFilePath}
+            filePath={activeFilePath}
+            initialContent={activeFileContent}
+            vaultPath={vaultPath}
+            vaultFiles={files}
+            onDebouncedSave={onDebouncedSave}
+            onOpenFile={onSelectFile}
+            onRefreshFiles={onRefreshFiles}
+            onPreviewImage={onPreviewImage}
+          />
+        ) : (
+          <Editor
+            chrome="minimal"
+            apiRef={editorApi}
+            onSaveStatusChange={handleSaveStatus}
+            filePath={activeFilePath}
+            initialContent={activeFileContent}
+            onDebouncedSave={onDebouncedSave}
+            onRenameFile={onRenameFile}
+            onOpenFile={onSelectFile}
+            onCreateFile={onCreateFile}
+            vaultPath={vaultPath}
+            vaultFiles={files}
+            onRefreshFiles={onRefreshFiles}
+            onPreviewImage={onPreviewImage}
+            debounceMs={500}
+          />
+        )}
+      </div>
+
+      {!activeIsCanvas && (
+        <div className="shrink-0 bg-[#161b22] border-t border-[#21262d] pb-safe">
+          <div role="toolbar" aria-label="Formatting" className="h-12 px-1 flex items-center overflow-x-auto no-scrollbar">
+            {formatButtons.map((b) => (
+              <button
+                key={b.label}
+                type="button"
+                aria-label={b.label}
+                // Keep the editor focused (and the keyboard open) while tapping toolbar buttons.
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={b.run}
+                className="w-11 h-11 shrink-0 rounded-lg flex items-center justify-center text-[#c9d1d9] active:bg-[#30363d] active:text-white"
+              >
+                <b.icon className="w-5 h-5" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // ---- shell -------------------------------------------------------------
+  const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
+    { id: "notes", label: "Notes", icon: Home },
+    { id: "sync", label: "Sync", icon: RefreshCw },
+    { id: "settings", label: "Settings", icon: Settings },
+  ];
+  const sheetNode = itemSheet?.node;
+  const sheetIndex = itemSheet ? itemSheet.siblings.findIndex((s) => s.path === itemSheet.node.path) : -1;
+  const closeItemSheet = () => setItemSheet(null);
+  const moveTargets = moving
+    ? ["", ...folders].filter(
+        (f) => f !== getParentPath(moving) && f !== moving && !f.startsWith(`${moving}/`)
+      )
+    : [];
+
+  return (
+    <div className="m-shell relative flex flex-col h-app w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] select-none">
+      <main className="flex-1 min-h-0 relative flex flex-col">
+        {tab === "notes" && notesTab}
+        {tab === "sync" && syncTab}
+        {tab === "settings" && settingsTab}
+      </main>
+
+      <nav aria-label="Primary" className="shrink-0 bg-[#161b22] border-t border-[#21262d] pb-safe">
+        <div className="h-16 flex items-stretch">
+          {tabs.map((t) => {
+            const active = tab === t.id;
+            const showBadge = t.id === "sync" && sync.tone !== "ok" && sync.tone !== "off";
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                aria-current={active ? "page" : undefined}
+                className={`flex-1 flex flex-col items-center justify-center gap-1 transition-colors ${
+                  active ? "text-sky-400" : "text-[#8b949e] active:text-[#f0f6fc]"
+                }`}
+              >
+                <span className={`relative w-14 h-7 rounded-full flex items-center justify-center ${active ? "bg-sky-500/15" : ""}`}>
+                  <t.icon className="w-5 h-5" />
+                  {showBadge && <span className={`absolute top-0.5 right-3.5 w-2 h-2 rounded-full ${tone.dot}`} />}
+                </span>
+                <span className={`text-[12px] ${active ? "font-semibold" : "font-medium"}`}>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
+
+      {editorScreen}
+
+      {/* Create menu */}
+      <Sheet open={createMenuOpen} onClose={() => setCreateMenuOpen(false)} title="Create">
+        <SheetAction
+          icon={FilePlus}
+          label="Note"
+          hint="A Markdown document"
+          onClick={() => {
+            setCreateMenuOpen(false);
+            setCreating({ type: "note", parent: "" });
+          }}
+        />
+        <SheetAction
+          icon={FolderPlus}
+          label="Folder"
+          hint="Group related notes"
+          onClick={() => {
+            setCreateMenuOpen(false);
+            setCreating({ type: "folder", parent: "" });
+          }}
+        />
+        <SheetAction
+          icon={LayoutGrid}
+          label="Canvas"
+          hint="A freeform board of cards and notes"
+          onClick={() => {
+            setCreateMenuOpen(false);
+            setCreating({ type: "canvas", parent: "" });
+          }}
+        />
+      </Sheet>
+
+      {/* Sort order */}
+      <Sheet open={sortSheetOpen} onClose={() => setSortSheetOpen(false)} title="Note order">
+        {(
+          [
+            ["custom", "Custom order", "Arrange with Move up / Move down"],
+            ["alpha-asc", "Name A–Z", undefined],
+            ["alpha-desc", "Name Z–A", undefined],
+          ] as const
+        ).map(([mode, label, hint]) => (
+          <SheetAction
+            key={mode}
+            icon={sortMode === mode ? Check : ArrowUpDown}
+            label={label}
+            hint={hint}
+            selected={sortMode === mode}
+            onClick={() => {
+              setSortMode(mode);
+              setSortSheetOpen(false);
+            }}
+          />
+        ))}
+      </Sheet>
+
+      {/* Row actions */}
+      <Sheet
+        open={!!sheetNode}
+        onClose={closeItemSheet}
+        title={sheetNode ? (sheetNode.isDirectory ? sheetNode.name : displayName(sheetNode.name)) : undefined}
+        subtitle={sheetNode ? getParentPath(sheetNode.path) || undefined : undefined}
+      >
+        {sheetNode && itemSheet && (
+          <>
+            {sheetNode.isDirectory && (
+              <>
+                <SheetAction
+                  icon={FilePlus}
+                  label="New note here"
+                  onClick={() => {
+                    closeItemSheet();
+                    setCreating({ type: "note", parent: sheetNode.path });
+                  }}
+                />
+                <SheetAction
+                  icon={FolderPlus}
+                  label="New folder here"
+                  onClick={() => {
+                    closeItemSheet();
+                    setCreating({ type: "folder", parent: sheetNode.path });
+                  }}
+                />
+              </>
+            )}
+            <SheetAction
+              icon={Pencil}
+              label="Rename"
+              onClick={() => {
+                closeItemSheet();
+                setRenaming({ path: sheetNode.path, name: sheetNode.name, isDirectory: sheetNode.isDirectory });
+              }}
+            />
+            <SheetAction
+              icon={FolderInput}
+              label="Move to folder"
+              onClick={() => {
+                closeItemSheet();
+                setMoving(sheetNode.path);
+              }}
+            />
+            <SheetAction
+              icon={ArrowUp}
+              label="Move up"
+              disabled={sheetIndex <= 0}
+              onClick={() => {
+                moveStep(sheetNode, itemSheet.siblings, "up");
+                closeItemSheet();
+              }}
+            />
+            <SheetAction
+              icon={ArrowDown}
+              label="Move down"
+              disabled={sheetIndex === -1 || sheetIndex >= itemSheet.siblings.length - 1}
+              onClick={() => {
+                moveStep(sheetNode, itemSheet.siblings, "down");
+                closeItemSheet();
+              }}
+            />
+            <SheetAction
+              icon={Trash2}
+              label="Delete"
+              tone="danger"
+              onClick={() => {
+                closeItemSheet();
+                setDeleting({ path: sheetNode.path, name: sheetNode.name, isDirectory: sheetNode.isDirectory });
+              }}
+            />
+          </>
+        )}
+      </Sheet>
+
+      {/* Editor overflow menu */}
+      <Sheet open={editorMenuOpen} onClose={() => setEditorMenuOpen(false)} title={displayName(activeName)}>
+        {!activeIsCanvas && (
+          <>
+            <SheetAction
+              icon={ArrowLeftRight}
+              label="Links & backlinks"
+              hint="Notes this one links to, and notes linking here"
+              onClick={() => {
+                setEditorMenuOpen(false);
+                editorApi.current?.toggleLinks();
+              }}
+            />
+            <SheetAction
+              icon={ImageIcon}
+              label="Insert image"
+              onClick={() => {
+                setEditorMenuOpen(false);
+                editorApi.current?.openInsertImage();
+              }}
+            />
+          </>
+        )}
+        <SheetAction
+          icon={Pencil}
+          label="Rename"
+          onClick={() => {
+            setEditorMenuOpen(false);
+            if (activeFilePath) setRenaming({ path: activeFilePath, name: activeName, isDirectory: false });
+          }}
+        />
+        <SheetAction
+          icon={FolderInput}
+          label="Move to folder"
+          onClick={() => {
+            setEditorMenuOpen(false);
+            if (activeFilePath) setMoving(activeFilePath);
+          }}
+        />
+        <SheetAction
+          icon={Trash2}
+          label="Delete"
+          tone="danger"
+          onClick={() => {
+            setEditorMenuOpen(false);
+            if (activeFilePath) setDeleting({ path: activeFilePath, name: activeName, isDirectory: false });
+          }}
+        />
+      </Sheet>
+
+      {/* Move destination picker */}
+      <Sheet
+        open={!!moving}
+        onClose={() => setMoving(null)}
+        title="Move to"
+        subtitle={moving ? displayName(moving.split("/").pop() || moving) : undefined}
+      >
+        {moveTargets.length === 0 ? (
+          <p className="px-3 py-4 text-[15px] text-[#8b949e]">
+            There's nowhere else to move this yet. Create a folder first.
+          </p>
+        ) : (
+          moveTargets.map((f) => (
+            <SheetAction
+              key={f || "/"}
+              icon={f ? Folder : Home}
+              label={f ? f.split("/").pop() || f : "Top level"}
+              hint={f.includes("/") ? getParentPath(f) : undefined}
+              onClick={() => moving && moveTo(moving, f)}
+            />
+          ))
+        )}
+      </Sheet>
+
+      <TextPromptSheet
+        open={!!creating}
+        title={
+          creating?.type === "folder" ? "New folder" : creating?.type === "canvas" ? "New canvas" : "New note"
+        }
+        subtitle={creating?.parent ? `In ${creating.parent}` : undefined}
+        placeholder={creating?.type === "folder" ? "Folder name" : creating?.type === "canvas" ? "Canvas name" : "Note title"}
+        suffix={creating?.type === "folder" ? undefined : creating?.type === "canvas" ? ".canvas" : ".md"}
+        confirmLabel="Create"
+        onSubmit={submitCreate}
+        onClose={() => setCreating(null)}
+      />
+
+      <TextPromptSheet
+        open={!!renaming}
+        title={renaming?.isDirectory ? "Rename folder" : "Rename"}
+        initialValue={renaming ? (renaming.isDirectory ? renaming.name : displayName(renaming.name)) : ""}
+        suffix={renaming && !renaming.isDirectory ? fileExt(renaming.name) || ".md" : undefined}
+        confirmLabel="Rename"
+        onSubmit={submitRename}
+        onClose={() => setRenaming(null)}
+      />
+
+      <ConfirmSheet
+        open={!!deleting}
+        title={deleting?.isDirectory ? `Delete folder “${deleting.name}”?` : `Delete “${displayName(deleting?.name ?? "")}”?`}
+        message={
+          deleting?.isDirectory
+            ? "The folder and everything inside it will be removed from this device. The deletion reaches GitHub the next time you save & push."
+            : "This removes the file from this device. The deletion reaches GitHub the next time you save & push."
+        }
+        confirmLabel="Delete"
+        onConfirm={() => {
+          if (deleting) onDeleteFile(deleting.path);
+          setDeleting(null);
+        }}
+        onClose={() => setDeleting(null)}
+      />
     </div>
   );
 };
