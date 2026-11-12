@@ -119,7 +119,7 @@ export const GitHubService = {
     return GitVaultBridge.pollDeviceToken(deviceCode, clientId);
   },
   /**
-   * Validate a Personal Access Token and fetch user profile
+   * Check an access token with GitHub and fetch the signed-in user's profile
    */
   async validateToken(token: string): Promise<GitHubUser> {
     const cleanToken = token.trim();

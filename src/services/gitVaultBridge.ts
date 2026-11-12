@@ -380,7 +380,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       // GitHub's sign-in endpoints don't allow calls from a web page, so a browser with no backend
       // can't do the code sign-in. The apps and the dev server can.
       throw new Error(
-        "Signing in with a browser code works in the Noty desktop and mobile apps. Here, use a personal access token instead."
+        "Signing in with GitHub works in the Noty desktop and mobile apps, not in a plain web browser."
       );
 
     default:

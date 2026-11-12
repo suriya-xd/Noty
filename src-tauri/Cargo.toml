@@ -21,7 +21,12 @@ tokio = { version = "1", features = ["full"] }
 similar = "2.6"
 chrono = "0.4"
 walkdir = "2.5"
-ureq = { version = "2.10", default-features = false, features = ["native-tls", "json"] }
+# HTTPS for the GitHub sign-in calls (src/github_auth.rs). The "tls" feature is rustls with bundled
+# root certificates, so it works the same on every platform, including Android, which has no
+# system OpenSSL certificate store to rely on. The earlier "native-tls" feature on its own enables
+# no HTTPS at all: ureq only uses it when the code also passes it a connector, which was never
+# done, so every request failed with "no TLS backend is configured".
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
 # Desktop (Windows, macOS, Linux): use native TLS (Schannel on Windows, SecureTransport on macOS, OpenSSL on Linux)
 [target.'cfg(not(target_os = "android"))'.dependencies]

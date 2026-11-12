@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FC } from "react";
-import { ArrowLeft, Check, Copy, ExternalLink, FileText, KeyRound, RefreshCw } from "lucide-react";
+import { ArrowLeft, Check, Copy, ExternalLink, FileText, RefreshCw } from "lucide-react";
 import { GitHubService, pollDeviceFlow } from "../../services/githubService";
 import { openExternal } from "../../services/gitVaultBridge";
 import type { DeviceCodeResponse } from "../../types/gitVault";
@@ -12,7 +12,7 @@ interface MobileOnboardingViewProps {
   onCancel: () => void;
 }
 
-type Step = "welcome" | "code" | "token";
+type Step = "welcome" | "code";
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -23,8 +23,6 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [pat, setPat] = useState("");
-  const [isCheckingPat, setIsCheckingPat] = useState(false);
 
   const cancelPoll = useRef<(() => void) | null>(null);
   const stopPolling = useCallback(() => {
@@ -39,7 +37,6 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
     setStep("welcome");
     setDevice(null);
     setError(null);
-    setPat("");
   }, [isOpen, stopPolling]);
 
   useEffect(() => stopPolling, [stopPolling]);
@@ -100,18 +97,6 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
     }
   };
 
-  const submitPat = async () => {
-    setError(null);
-    setIsCheckingPat(true);
-    try {
-      await finish(pat.trim());
-    } catch (err) {
-      setError(`GitHub didn't accept that token. ${errorText(err)}`);
-    } finally {
-      setIsCheckingPat(false);
-    }
-  };
-
   if (!isOpen) return null;
 
   const back = () => {
@@ -168,16 +153,6 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
                 >
                   {isStarting && <RefreshCw className="w-4 h-4 animate-spin" />}
                   <span>{isStarting ? "Contacting GitHub…" : "Sign in with GitHub"}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError(null);
-                    setStep("token");
-                  }}
-                  className="w-full h-[52px] rounded-xl bg-[#161b22] border border-[#30363d] text-[#f0f6fc] text-[16px] font-medium active:bg-[#21262d]"
-                >
-                  Use an access token
                 </button>
                 <button
                   type="button"
@@ -254,49 +229,6 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
                 )}
               </div>
             </div>
-          )}
-
-          {step === "token" && (
-            <form
-              className="flex-1 flex flex-col pt-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (pat.trim()) submitPat();
-              }}
-            >
-              <h1 className="font-headline text-[26px] font-semibold text-[#f0f6fc]">Use an access token</h1>
-              <p className="text-[15px] leading-relaxed text-[#8b949e] mt-2">
-                Paste a GitHub personal access token with the <span className="font-mono text-[#c9d1d9]">repo</span>{" "}
-                scope. It is stored only on this device.
-              </p>
-              <label className="mt-6 block">
-                <span className="block text-[14px] font-medium text-[#c9d1d9] mb-2">Personal access token</span>
-                <span className="flex items-center h-[52px] rounded-xl bg-[#161b22] border border-[#30363d] focus-within:border-sky-500 px-3.5 gap-2.5">
-                  <KeyRound className="w-[18px] h-[18px] text-[#6e7681] shrink-0" />
-                  <input
-                    type="password"
-                    value={pat}
-                    onChange={(e) => setPat(e.target.value)}
-                    placeholder="ghp_…"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    className="flex-1 min-w-0 bg-transparent font-mono text-[#f0f6fc] placeholder:text-[#6e7681] outline-none select-text"
-                  />
-                </span>
-              </label>
-              <div className="mt-4 space-y-3">
-                {errorBox}
-                <button
-                  type="submit"
-                  disabled={!pat.trim() || isCheckingPat}
-                  className="w-full h-[52px] rounded-xl bg-sky-500 text-[#04121d] text-[16px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400 disabled:opacity-40"
-                >
-                  {isCheckingPat && <RefreshCw className="w-4 h-4 animate-spin" />}
-                  <span>{isCheckingPat ? "Checking…" : "Continue"}</span>
-                </button>
-              </div>
-            </form>
           )}
         </div>
       </div>
