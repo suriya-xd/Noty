@@ -145,20 +145,24 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     })
 }
 
-/// Fetch from origin remote without modifying worktree
+/// Fetches every branch from origin into `refs/remotes/origin/*`, reporting failures. A repo with
+/// no origin is not an error (nothing to fetch).
+fn fetch_origin(repo: &Repository) -> Result<(), String> {
+    let Ok(mut remote) = repo.find_remote("origin") else {
+        return Ok(());
+    };
+    let mut fetch_opts = FetchOptions::new();
+    fetch_opts.remote_callbacks(create_remote_callbacks(repo));
+    remote
+        .fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
+        .map_err(|e| format!("Couldn't reach GitHub: {}", e))
+}
+
+/// Fetch from origin remote without modifying worktree. This runs in the background, so a failed
+/// fetch is ignored and offline use keeps working; the explicit Sync and connect actions report it.
 pub fn fetch_remote(repo_path: &str) -> Result<RepoStatusPayload, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-
-    if let Ok(mut remote) = repo.find_remote("origin") {
-        let callbacks = create_remote_callbacks(&repo);
-        let mut fetch_opts = FetchOptions::new();
-        fetch_opts.remote_callbacks(callbacks);
-
-        let refspecs = ["+refs/heads/*:refs/remotes/origin/*"];
-        // Attempt fetch, ignore network failures gracefully so offline use works
-        let _ = remote.fetch(&refspecs, Some(&mut fetch_opts), None);
-    }
-
+    let _ = fetch_origin(&repo);
     get_repo_status(repo_path)
 }
 
@@ -247,8 +251,13 @@ pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<
 /// - If same file modified both locally and remotely: run in-memory 3-way merge.
 ///   If line-level conflicts: return conflict hunks for the Visual Conflict Resolver Modal.
 pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
-    // 1. Fetch remote first to ensure latest remote refs
-    let pre_status = fetch_remote(repo_path)?;
+    // 1. Fetch remote first to ensure latest remote refs. Sync is an explicit action, so a failed
+    // fetch is reported instead of looking like "already up to date".
+    {
+        let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        fetch_origin(&repo)?;
+    }
+    let pre_status = get_repo_status(repo_path)?;
 
     let mut repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let branch_name = pre_status.branch.clone();
@@ -724,7 +733,18 @@ pub fn connect_vault(
     }
 
     let target_branch = branch.unwrap_or_else(|| "main".to_string());
-    let _ = fetch_remote(repo_path);
+
+    // A new vault has no commits yet, so the notes come from this fetch. If it fails, stop here:
+    // carrying on would start a local history unrelated to the repository, which could never be
+    // pushed to it. A vault that already has commits can connect while offline.
+    let fresh = repo.head().is_err();
+    if fresh {
+        // New commits go on the repository's own branch, not libgit2's default of "master".
+        let _ = repo.set_head(&format!("refs/heads/{}", target_branch));
+        fetch_origin(&repo)?;
+    } else {
+        let _ = fetch_origin(&repo);
+    }
 
     // Fast forward if remote branch exists and local HEAD is empty
     let (_, remote_oid) = find_remote_tracking_branch(&repo, &target_branch);

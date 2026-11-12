@@ -154,8 +154,26 @@ fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Resul
     fs_engine::save_image_file(&vault_path, &rel_path, data)
 }
 
+/// Android keeps its trusted root certificates in a system folder. The OpenSSL bundled with the
+/// app (used by git for https://github.com) looks in a folder that doesn't exist on Android, so
+/// without this every fetch and push fails with "the SSL certificate is invalid". Setting
+/// SSL_CERT_DIR points OpenSSL at the system folder. Runs once, before git makes any connection.
+#[cfg(target_os = "android")]
+fn trust_android_system_certificates() {
+    let dirs: Vec<&str> = ["/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"]
+        .into_iter()
+        .filter(|d| std::path::Path::new(d).is_dir())
+        .collect();
+    if !dirs.is_empty() {
+        std::env::set_var("SSL_CERT_DIR", dirs.join(":"));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "android")]
+    trust_android_system_certificates();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
