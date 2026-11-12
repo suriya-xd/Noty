@@ -1,7 +1,16 @@
-# GitVault — Technical Specification & MVP Architecture
+# Noetic — Technical Specification & MVP Architecture
 
 ## 1. System Overview
-GitVault is a cross-platform Markdown note-taking application (Windows, macOS, Android) built on **Tauri v2**, **React (Vite + Tailwind CSS)**, **CodeMirror 6**, and a **Rust (`git2`)** backend. A GitHub repository acts as the single source of truth and local vault.
+Noetic is a cross-platform Markdown note-taking application (Windows, macOS, Android) built on **Tauri v2**, **React (Vite + Tailwind CSS)**, **CodeMirror 6**, and a **Rust (`git2`)** backend. One private GitHub repository per account (`noetic-notes`) is the single source of truth; see section 1.1.
+
+### 1.1 Storage and Workspaces
+- After sign-in the app finds or creates a private repository named `noetic-notes` in the user's account. The repository is fixed: the UI offers no way to pick or switch it.
+- `main` holds a single empty commit and is never written to again.
+- A **workspace** is a branch created from that empty commit and named by the user (spaces become dashes; `main` is reserved). The UI only ever says "workspace".
+- The local notes folder is one clone. Switching workspace commits (and, when online, uploads) the open one, then checks out the other. A switch is refused when the open workspace has both unsaved changes and incoming updates.
+- The first workspace created on a device adopts notes already in the folder; later workspaces start blank.
+- In the state definitions below, `origin/main` means the open workspace's branch on origin (`origin/<workspace>`).
+- Commands: `connect_vault` (link the folder, ensure `main`), `list_workspaces`, `create_workspace`, `switch_workspace`.
 
 ## 2. Git Worktree State Machine
 Local edits are written directly to disk (debounced 500ms) without committing. Git's native working tree and commit pointers drive the UI state.

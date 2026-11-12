@@ -1,6 +1,7 @@
 import type { Plugin } from "vite";
 import { exec, execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import util from "node:util";
 
@@ -12,6 +13,9 @@ const execFileAsync = util.promisify(execFile);
  * request (remote URL, branch, name, email, token, commit message) can't be turned into commands.
  */
 const git = (args: string[], cwd: string) => execFileAsync("git", args, { cwd });
+
+/** The branch every notes repository keeps empty; workspaces are the other branches. */
+const STORAGE_BRANCH = "main";
 
 /** Branch names go to git as arguments; refuse anything that could be read as an option. */
 function safeBranch(name: unknown): string {
@@ -27,12 +31,12 @@ function safeRemoteUrl(url: unknown): string {
   return value;
 }
 
-export function gitVaultPlugin(): Plugin {
+export function noeticPlugin(): Plugin {
   return {
-    name: "vite-gitvault-backend",
+    name: "vite-noetic-backend",
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        if (!req.url?.startsWith("/api/gitvault/")) {
+        if (!req.url?.startsWith("/api/noetic/")) {
           return next();
         }
 
@@ -53,7 +57,7 @@ export function gitVaultPlugin(): Plugin {
           }
         }
 
-        const endpoint = req.url.replace("/api/gitvault/", "").split("?")[0];
+        const endpoint = req.url.replace("/api/noetic/", "").split("?")[0];
 
         // Parse JSON body or URL query parameters
         let body: Record<string, any> = {};
@@ -82,7 +86,7 @@ export function gitVaultPlugin(): Plugin {
         }
 
         const userHome = process.env.USERPROFILE || process.env.HOME || process.cwd();
-        const defaultVaultPath = path.join(userHome, "GitVault");
+        const defaultVaultPath = path.join(userHome, "Noetic");
         const vaultPath = body.repo_path || body.vault_path || defaultVaultPath;
 
         const sendJson = (data: any, statusCode = 200) => {
@@ -117,15 +121,9 @@ export function gitVaultPlugin(): Plugin {
                 remoteUrl = rUrl.trim() || null;
               } catch {}
 
-              let repoName = path.basename(vaultPath);
-              if (remoteUrl) {
-                const match = remoteUrl.match(/[:/]([^/:]+\/[^/:]+?)(?:\.git)?$/);
-                if (match) repoName = match[1];
-              }
-
               sendJson({
                 path: vaultPath,
-                name: repoName,
+                name: path.basename(vaultPath),
                 is_git_repo: true,
                 remote_url: remoteUrl,
               });
@@ -300,7 +298,7 @@ export function gitVaultPlugin(): Plugin {
 
             case "fetch_remote": {
               try {
-                await execAsync("git fetch origin", { cwd: vaultPath });
+                await git(["fetch", "--prune", "origin"], vaultPath);
               } catch (e) {
                 console.warn("fetch failed (offline?):", e);
               }
@@ -311,24 +309,21 @@ export function gitVaultPlugin(): Plugin {
 
             case "save_and_push": {
               const preStatus = await getGitStatus(vaultPath);
-              if (preStatus.behind_count > 0) {
-                return sendError(`Cannot save and push: remote is ahead by ${preStatus.behind_count} commit(s). Please click 'Sync' first.`);
-              }
-              // Stage all files
-              await execAsync("git add -A", { cwd: vaultPath });
-              const msg = body.commit_message || `Vault update: ${new Date().toISOString()}`;
-              await git(["commit", "-m", String(msg)], vaultPath);
-              
-              // Push to origin
               if (!preStatus.remote_url) {
-                return sendError("Committed locally, but no remote 'origin' is configured. Click the Settings icon to link your GitHub repository.");
+                return sendError("Your notes are kept on this device. Sign in to back them up and sync them.");
               }
+              if (!preStatus.branch) {
+                return sendError("Choose or create a workspace first.");
+              }
+              if (preStatus.behind_count > 0) {
+                return sendError("There are updates waiting from your other devices. Sync first, then save.");
+              }
+              await commitAll(vaultPath, body.commit_message || `Notes update: ${new Date().toISOString()}`);
 
               try {
-                const branch = preStatus.branch || "main";
-                await git(["push", "-u", "origin", safeBranch(branch)], vaultPath);
+                await git(["push", "-u", "origin", safeBranch(preStatus.branch)], vaultPath);
               } catch (pushErr: any) {
-                return sendError(`Committed locally, but failed to push to GitHub: ${pushErr.message}. Check your remote URL and credentials in Settings.`);
+                return sendError(`Saved on this device, but it couldn't be uploaded: ${pushErr.message}. It will be sent the next time you save while online.`);
               }
 
               const postStatus = await getGitStatus(vaultPath);
@@ -343,11 +338,7 @@ export function gitVaultPlugin(): Plugin {
                 remoteUrl = rUrl.trim() || null;
               } catch {}
 
-              let branch = "main";
-              try {
-                const { stdout: b } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
-                branch = b.trim() || "main";
-              } catch {}
+              const branch = (await currentWorkspace(vaultPath)) ?? "";
 
               let userName: string | null = null;
               let userEmail: string | null = null;
@@ -362,7 +353,7 @@ export function gitVaultPlugin(): Plugin {
 
               let hasToken = false;
               try {
-                const { stdout: t } = await execAsync("git config gitvault.token", { cwd: vaultPath });
+                const { stdout: t } = await execAsync("git config noetic.token", { cwd: vaultPath });
                 hasToken = Boolean(t.trim());
               } catch {}
 
@@ -379,28 +370,6 @@ export function gitVaultPlugin(): Plugin {
 
             case "set_vault_config": {
               const cfg = body.config || body;
-              if (cfg.remote_url) {
-                const cleanUrl = cfg.remote_url.trim();
-                let hasOrigin = false;
-                try {
-                  await execAsync("git remote get-url origin", { cwd: vaultPath });
-                  hasOrigin = true;
-                } catch {}
-
-                if (hasOrigin) {
-                  await git(["remote", "set-url", "origin", safeRemoteUrl(cleanUrl)], vaultPath);
-                } else {
-                  await git(["remote", "add", "origin", safeRemoteUrl(cleanUrl)], vaultPath);
-                }
-              }
-
-              if (cfg.branch) {
-                const cleanBranch = cfg.branch.trim();
-                try {
-                  await git(["branch", "-M", safeBranch(cleanBranch)], vaultPath);
-                } catch {}
-              }
-
               if (cfg.user_name) {
                 await git(["config", "user.name", String(cfg.user_name).trim()], vaultPath);
               }
@@ -408,7 +377,7 @@ export function gitVaultPlugin(): Plugin {
                 await git(["config", "user.email", String(cfg.user_email).trim()], vaultPath);
               }
               if (cfg.github_token !== undefined) {
-                await git(["config", "gitvault.token", String(cfg.github_token).trim()], vaultPath);
+                await git(["config", "noetic.token", String(cfg.github_token).trim()], vaultPath);
               }
 
               // Return updated config
@@ -418,11 +387,7 @@ export function gitVaultPlugin(): Plugin {
                 remoteUrl = rUrl.trim() || null;
               } catch {}
 
-              let currentBranch = "main";
-              try {
-                const { stdout: b } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
-                currentBranch = b.trim() || "main";
-              } catch {}
+              const currentBranch = (await currentWorkspace(vaultPath)) ?? "";
 
               sendJson({
                 vault_path: vaultPath,
@@ -432,19 +397,6 @@ export function gitVaultPlugin(): Plugin {
                 user_email: cfg.user_email || null,
                 has_token: Boolean(cfg.github_token),
               });
-              break;
-            }
-
-            case "test_remote_connection": {
-              const targetUrl = body.remote_url;
-              if (!targetUrl) return sendError("Remote URL is required", 400);
-
-              try {
-                await git(["ls-remote", safeRemoteUrl(targetUrl)], vaultPath);
-                sendJson({ success: true, message: "Successfully connected to GitHub repository!" });
-              } catch (testErr: any) {
-                sendError(`Connection failed: ${testErr.message}`, 400);
-              }
               break;
             }
 
@@ -538,95 +490,158 @@ export function gitVaultPlugin(): Plugin {
             case "connect_vault": {
               const targetPath = body.vault_path || vaultPath;
               const remoteUrl = body.remote_url;
-              const branch = body.branch || "main";
               const token = body.github_token;
               const userName = body.user_name;
               const userEmail = body.user_email;
 
               if (!remoteUrl) {
-                return sendError("Remote URL is required to connect vault", 400);
+                return sendError("Remote URL is required", 400);
               }
 
               if (!fs.existsSync(targetPath)) {
                 fs.mkdirSync(targetPath, { recursive: true });
               }
-
-              const gitDir = path.join(targetPath, ".git");
-              if (!fs.existsSync(gitDir)) {
-                await execAsync("git init", { cwd: targetPath });
+              if (!fs.existsSync(path.join(targetPath, ".git"))) {
+                await git(["init"], targetPath);
               }
 
-              // Configure origin
               let hasOrigin = false;
               try {
-                await execAsync("git remote get-url origin", { cwd: targetPath });
+                await git(["remote", "get-url", "origin"], targetPath);
                 hasOrigin = true;
               } catch {}
-
-              if (hasOrigin) {
-                await git(["remote", "set-url", "origin", safeRemoteUrl(remoteUrl)], targetPath);
-              } else {
-                await git(["remote", "add", "origin", safeRemoteUrl(remoteUrl)], targetPath);
-              }
+              await git(["remote", hasOrigin ? "set-url" : "add", "origin", safeRemoteUrl(remoteUrl)], targetPath);
 
               if (userName) await git(["config", "user.name", String(userName)], targetPath);
               if (userEmail) await git(["config", "user.email", String(userEmail)], targetPath);
-              if (token) await git(["config", "gitvault.token", String(token)], targetPath);
+              if (token) await git(["config", "noetic.token", String(token)], targetPath);
 
-              // Fetch from origin
-              try {
-                await execAsync("git fetch origin", { cwd: targetPath });
+              await git(["fetch", "--prune", "origin"], targetPath);
+
+              // The storage branch stays empty; create it if the repository is brand new.
+              if (!(await refExists(targetPath, `refs/remotes/origin/${STORAGE_BRANCH}`))) {
+                const root = await emptyRootCommit(targetPath);
+                await git(["push", "origin", `${root}:refs/heads/${STORAGE_BRANCH}`], targetPath);
+                await git(["fetch", "--prune", "origin"], targetPath);
+              }
+
+              sendJson(await listWorkspaces(targetPath));
+              break;
+            }
+
+            case "list_workspaces": {
+              if (body.refresh) {
                 try {
-                  await git(["checkout", "-B", safeBranch(branch), `origin/${safeBranch(branch)}`], targetPath);
+                  await git(["fetch", "--prune", "origin"], vaultPath);
+                } catch {}
+              }
+              sendJson(await listWorkspaces(vaultPath));
+              break;
+            }
+
+            case "create_workspace": {
+              const name = String(body.name ?? "").trim().split(/\s+/).filter(Boolean).join("-");
+              if (!name) return sendError("Give the workspace a name.", 400);
+              if (name.toLowerCase() === STORAGE_BRANCH || name.toUpperCase() === "HEAD") {
+                return sendError(`"${name}" is reserved. Pick a different name.`, 400);
+              }
+              let valid = !name.startsWith("-") && !name.includes("/");
+              if (valid) {
+                try {
+                  await git(["check-ref-format", "--branch", name], vaultPath);
                 } catch {
-                  await git(["branch", "-M", safeBranch(branch)], targetPath);
+                  valid = false;
                 }
-              } catch (e) {
-                console.warn("fetch failed during connect:", e);
-                await git(["branch", "-M", safeBranch(branch)], targetPath);
+              }
+              if (!valid) {
+                return sendError("Workspace names can use letters, numbers, spaces, dashes and underscores.", 400);
+              }
+              const existing = await listWorkspaces(vaultPath);
+              if (existing.workspaces.some((w) => w.toLowerCase() === name.toLowerCase())) {
+                return sendError(`A workspace named "${name}" already exists.`, 400);
               }
 
-              // If no markdown notes exist, create initial Welcome note
-              const welcomePath = path.join(targetPath, "Welcome.md");
-              const files = fs.readdirSync(targetPath);
-              const hasNotes = files.some((f) => f.endsWith(".md"));
-              if (!hasNotes && !fs.existsSync(welcomePath)) {
-                fs.writeFileSync(
-                  welcomePath,
-                  `# Welcome to GitVault\n\nYour vault is now connected to GitHub repository: \`${remoteUrl}\`.\n\n- Every note is written locally to disk\n- Hit **Save** to stage, commit, and push directly to GitHub\n`,
-                  "utf-8"
-                );
+              if (existing.current) {
+                // A later workspace starts blank; the open one is saved first.
+                const blocked = await saveBeforeLeaving(vaultPath, existing.current);
+                if (blocked) return sendError(blocked, 400);
+                await git(["branch", name, await workspaceBase(vaultPath)], vaultPath);
+                await git(["checkout", "-f", name], vaultPath);
+                removeEmptyFolders(vaultPath);
+              } else {
+                // The first workspace on this device takes the notes already in the folder.
+                const base = await workspaceBase(vaultPath);
+                await git(["update-ref", `refs/heads/${name}`, base], vaultPath);
+                await git(["symbolic-ref", "HEAD", `refs/heads/${name}`], vaultPath);
+                await git(["reset", "-q"], vaultPath);
+                if (!hasNotes(vaultPath)) {
+                  fs.writeFileSync(path.join(vaultPath, "Welcome.md"), WELCOME_NOTE, "utf-8");
+                }
+                await commitAll(vaultPath, "First notes in this workspace");
               }
 
-              const status = await getGitStatus(targetPath);
-              sendJson(status);
+              try {
+                await git(["push", "-u", "origin", name], vaultPath);
+              } catch {}
+              sendJson(await getGitStatus(vaultPath));
+              break;
+            }
+
+            case "switch_workspace": {
+              const name = String(body.name ?? "").trim();
+              const list = await listWorkspaces(vaultPath);
+              if (list.current === name) return sendJson(await getGitStatus(vaultPath));
+              if (!list.workspaces.includes(name)) {
+                return sendError(`The workspace "${name}" no longer exists.`, 400);
+              }
+              const target = safeBranch(name);
+
+              if (list.current) {
+                const blocked = await saveBeforeLeaving(vaultPath, list.current);
+                if (blocked) return sendError(blocked, 400);
+              }
+              if (!(await refExists(vaultPath, `refs/heads/${target}`))) {
+                await git(["branch", target, `origin/${target}`], vaultPath);
+              }
+              if (list.current) {
+                await git(["checkout", "-f", target], vaultPath);
+                removeEmptyFolders(vaultPath);
+              } else {
+                // Notes in the folder belong to no workspace yet: keep them, refuse on a name clash.
+                try {
+                  await git(["checkout", target], vaultPath);
+                } catch {
+                  return sendError(
+                    "Some notes on this device have the same names as notes in this workspace. Rename or move them, then try again.",
+                    400
+                  );
+                }
+              }
+              sendJson(await getGitStatus(vaultPath));
               break;
             }
 
             case "sync_and_pull": {
-              try {
-                await execAsync("git fetch origin", { cwd: vaultPath });
-              } catch (e) {
-                console.warn("Fetch failed during sync:", e);
-              }
+              await git(["fetch", "--prune", "origin"], vaultPath).catch((e) => {
+                throw new Error(`Couldn't reach your cloud storage: ${e.message}`);
+              });
 
               const status = await getGitStatus(vaultPath);
-              if (status.behind_count === 0) {
+              if (!status.branch || status.behind_count === 0) {
                 return sendJson({
                   success: true,
-                  message: "Repository is already up to date.",
+                  message: "Everything is up to date.",
                   state: status.state,
                   conflicts: [],
                 });
               }
+              const upstream = `origin/${safeBranch(status.branch)}`;
 
-              // Check if overlapping
               const dirtyFiles = status.files.filter((f: any) => f.is_modified || f.is_untracked).map((f: any) => f.path);
               const remoteFiles = status.files.filter((f: any) => f.has_remote_update).map((f: any) => f.path);
               const overlapping = dirtyFiles.filter((p: string) => remoteFiles.includes(p));
 
               if (overlapping.length > 0) {
-                // In-memory 3-way conflict simulation/detection
                 const conflicts = [];
                 for (const p of overlapping) {
                   let base = "";
@@ -636,7 +651,7 @@ export function gitVaultPlugin(): Plugin {
                     base = b;
                   } catch {}
                   try {
-                    const { stdout: r } = await git(["show", `origin/main:${p}`], vaultPath);
+                    const { stdout: r } = await git(["show", `${upstream}:${p}`], vaultPath);
                     remote = r;
                   } catch {}
                   const local = fs.existsSync(path.join(vaultPath, p)) ? fs.readFileSync(path.join(vaultPath, p), "utf-8") : "";
@@ -646,39 +661,32 @@ export function gitVaultPlugin(): Plugin {
                     base_content: base,
                     local_content: local,
                     remote_content: remote,
-                    hunks: [
-                      {
-                        id: `hunk_${p}`,
-                        base_lines: base,
-                        local_lines: local,
-                        remote_lines: remote,
-                      },
-                    ],
+                    hunks: [{ id: `hunk_${p}`, base_lines: base, local_lines: local, remote_lines: remote }],
                   });
                 }
 
                 return sendJson({
                   success: false,
-                  message: `Conflict detected in ${conflicts.length} file(s). Please resolve in the Visual Conflict Resolver.`,
+                  message: `${conflicts.length} note(s) changed both here and on another device. Choose which version to keep.`,
                   state: "DirtyBehind",
                   conflicts,
                 });
               }
 
-              // Non-overlapping: stash if dirty, pull, pop stash
+              // Non-overlapping: stash if dirty, fast-forward, pop stash
               const hadDirty = dirtyFiles.length > 0;
               if (hadDirty) {
-                try { await execAsync("git stash save -u 'GitVault sync auto-stash'", { cwd: vaultPath }); } catch {}
+                try { await git(["stash", "push", "-u", "-m", "Noetic sync"], vaultPath); } catch {}
               }
-              await execAsync("git merge --ff-only origin/main", { cwd: vaultPath });
+              await git(["merge", "--ff-only", upstream], vaultPath);
               if (hadDirty) {
-                try { await execAsync("git stash pop", { cwd: vaultPath }); } catch {}
+                try { await git(["stash", "pop"], vaultPath); } catch {}
               }
 
               const postStatus = await getGitStatus(vaultPath);
               sendJson({
                 success: true,
-                message: "Successfully synced with GitHub!",
+                message: "Synced. Your notes are up to date.",
                 state: postStatus.state,
                 conflicts: [],
               });
@@ -686,20 +694,20 @@ export function gitVaultPlugin(): Plugin {
             }
 
             case "resolve_conflicts": {
+              // Take the incoming version of everything, then put the chosen text on top of it,
+              // left as unsaved edits (the same result as the app's own backend).
               const resolutions = body.resolutions || [];
+              const workspace = await currentWorkspace(vaultPath);
+              if (!workspace) return sendError("Choose or create a workspace first.", 400);
+              await git(["reset", "--hard", `origin/${safeBranch(workspace)}`], vaultPath);
               for (const resItem of resolutions) {
                 if (resItem.custom_content !== undefined) {
                   const targetPath = path.join(vaultPath, resItem.path);
+                  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
                   fs.writeFileSync(targetPath, resItem.custom_content, "utf-8");
                 }
               }
-              await execAsync("git add -A", { cwd: vaultPath });
-              await execAsync('git commit -m "Merge branch origin/main: Resolved conflicts via GitVault"', { cwd: vaultPath });
-              try {
-                await execAsync("git push origin main", { cwd: vaultPath });
-              } catch {}
-              const postStatus = await getGitStatus(vaultPath);
-              sendJson(postStatus);
+              sendJson(await getGitStatus(vaultPath));
               break;
             }
 
@@ -713,6 +721,111 @@ export function gitVaultPlugin(): Plugin {
       });
     },
   };
+}
+
+const WELCOME_NOTE =
+  "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Save** uploads your changes so your other devices can get them.\n- **Sync** brings in changes made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
+
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  try {
+    await git(["rev-parse", "--verify", "--quiet", ref], cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The open workspace: the checked-out branch, unless it has no saves yet or is the storage branch. */
+async function currentWorkspace(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await git(["symbolic-ref", "--short", "-q", "HEAD"], cwd);
+    const name = stdout.trim();
+    if (!name || name === STORAGE_BRANCH) return null;
+    return (await refExists(cwd, `refs/heads/${name}`)) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listWorkspaces(cwd: string): Promise<{ current: string | null; workspaces: string[] }> {
+  const names = new Set<string>();
+  try {
+    const { stdout } = await git(
+      ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"],
+      cwd
+    );
+    for (const ref of stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const name = ref.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\/origin\//, "");
+      if (name !== STORAGE_BRANCH && name !== "HEAD") names.add(name);
+    }
+  } catch {}
+  const workspaces = [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  return { current: await currentWorkspace(cwd), workspaces };
+}
+
+/** A commit with no files and no parent. */
+async function emptyRootCommit(cwd: string): Promise<string> {
+  // Git's well-known id for a tree with nothing in it; written so it exists before it is pushed.
+  let tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  try {
+    const { stdout: written } = await git(["hash-object", "-t", "tree", "-w", os.devNull], cwd);
+    tree = written.trim() || tree;
+  } catch {}
+  const { stdout } = await git(["commit-tree", tree, "-m", "Noetic storage"], cwd);
+  return stdout.trim();
+}
+
+/** Where a new workspace starts: the empty commit on the storage branch. */
+async function workspaceBase(cwd: string): Promise<string> {
+  const ref = `refs/remotes/origin/${STORAGE_BRANCH}`;
+  if (await refExists(cwd, ref)) {
+    const { stdout: files } = await git(["ls-tree", "--name-only", ref], cwd);
+    if (!files.trim()) {
+      const { stdout } = await git(["rev-parse", ref], cwd);
+      return stdout.trim();
+    }
+  }
+  return emptyRootCommit(cwd);
+}
+
+/** Stages and commits everything; does nothing when there is nothing new. */
+async function commitAll(cwd: string, message: string): Promise<void> {
+  await git(["add", "-A"], cwd);
+  const { stdout } = await git(["status", "--porcelain"], cwd);
+  if (stdout.trim()) await git(["commit", "-q", "-m", String(message)], cwd);
+}
+
+/** Saves the open workspace before another is opened. Returns a message when that isn't safe. */
+async function saveBeforeLeaving(cwd: string, workspace: string): Promise<string | null> {
+  const status = await getGitStatus(cwd);
+  if (status.dirty_count === 0) return null;
+  if (status.behind_count > 0) {
+    return "This workspace has unsaved changes and updates waiting from your other devices. Sync it first, then switch.";
+  }
+  await commitAll(cwd, `Saved before leaving workspace: ${new Date().toISOString()}`);
+  try {
+    await git(["push", "-u", "origin", safeBranch(workspace)], cwd);
+  } catch {}
+  return null;
+}
+
+function hasNotes(dir: string): boolean {
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (item.name.startsWith(".")) continue;
+    if (item.isDirectory() ? hasNotes(path.join(dir, item.name)) : /\.(md|canvas)$/.test(item.name)) return true;
+  }
+  return false;
+}
+
+/** Empty folders aren't part of a save, so they would otherwise follow the user between workspaces. */
+function removeEmptyFolders(dir: string): boolean {
+  let empty = true;
+  for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, item.name);
+    if (item.isDirectory() && item.name !== ".git" && removeEmptyFolders(full)) fs.rmdirSync(full);
+    else empty = false;
+  }
+  return empty;
 }
 
 async function getGitStatus(vaultPath: string) {
@@ -739,19 +852,29 @@ async function getGitStatus(vaultPath: string) {
     console.error("git status failed:", e);
   }
 
+  const branchName = (await currentWorkspace(vaultPath)) ?? "";
+  const upstream = branchName ? `refs/remotes/origin/${branchName}` : "";
+  const hasUpstream = Boolean(upstream) && (await refExists(vaultPath, upstream));
+
   let aheadCount = 0;
   let behindCount = 0;
   try {
-    const { stdout: revCount } = await execAsync("git rev-list HEAD...origin/main --count --left-right", { cwd: vaultPath });
-    const [ahead, behind] = revCount.trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
-    aheadCount = ahead;
-    behindCount = behind;
+    if (hasUpstream) {
+      const { stdout: revCount } = await git(["rev-list", "--count", "--left-right", `HEAD...${upstream}`], vaultPath);
+      const [ahead, behind] = revCount.trim().split(/\s+/).map((n) => parseInt(n, 10) || 0);
+      aheadCount = ahead;
+      behindCount = behind;
+    } else if (branchName) {
+      // Not uploaded yet: every save on it is waiting.
+      const { stdout } = await git(["rev-list", "--count", "HEAD"], vaultPath);
+      aheadCount = parseInt(stdout.trim(), 10) || 0;
+    }
   } catch {}
 
-  // Check diff against remote
+  // Check diff against the cloud copy
   if (behindCount > 0) {
     try {
-      const { stdout: diffFiles } = await execAsync("git diff --name-only HEAD origin/main", { cwd: vaultPath });
+      const { stdout: diffFiles } = await git(["diff", "--name-only", "HEAD", upstream], vaultPath);
       const changed = diffFiles.split("\n").map((s) => s.trim().replace(/\\/g, "/")).filter(Boolean);
       for (const p of changed) {
         const existing = fileStatuses.find((f) => f.path === p);
@@ -773,12 +896,6 @@ async function getGitStatus(vaultPath: string) {
   try {
     const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
     remoteUrl = rUrl.trim() || null;
-  } catch {}
-
-  let branchName = "main";
-  try {
-    const { stdout: bName } = await execAsync("git rev-parse --abbrev-ref HEAD", { cwd: vaultPath });
-    branchName = bName.trim() || "main";
   } catch {}
 
   let state = "CleanSynced";

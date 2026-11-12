@@ -1,7 +1,7 @@
 # ============================================================================
-# GitVault - Build Android APK Release (PowerShell)
+# Noetic - Build Android APK Release (PowerShell)
 # ============================================================================
-Write-Host ">>> Building GitVault Android Release APK..." -ForegroundColor Cyan
+Write-Host ">>> Building Noetic Android Release APK..." -ForegroundColor Cyan
 
 # 1. Resolve Android SDK and NDK
 if (-not $env:ANDROID_HOME -and (Test-Path "$env:LOCALAPPDATA\Android\Sdk")) {
@@ -44,5 +44,14 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Gradle names its output app-<abi>-<type>.apk; keep a copy under the app's own name.
+$apkDir = "src-tauri/gen/android/app/build/outputs/apk"
+$outDir = "src-tauri/gen/android/app/build/outputs/noetic"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+Get-ChildItem -Path $apkDir -Recurse -Filter *.apk | ForEach-Object {
+    $name = $_.BaseName -replace '^app-', ''
+    Copy-Item $_.FullName (Join-Path $outDir "Noetic-$name.apk") -Force
+}
+
 Write-Host "`n[OK] Android APK successfully built!" -ForegroundColor Green
-Write-Host "APK output located in: src-tauri/gen/android/app/build/outputs/apk/" -ForegroundColor Cyan
+Write-Host "APK output located in: $outDir" -ForegroundColor Cyan

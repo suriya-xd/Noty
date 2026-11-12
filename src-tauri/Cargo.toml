@@ -1,12 +1,12 @@
 [package]
-name = "gitvault"
+name = "noetic"
 version = "0.1.0"
-description = "GitVault - Native Git-backed Markdown Note-taking App"
-authors = ["GitVault Team"]
+description = "Noetic - Native Git-backed Markdown Note-taking App"
+authors = ["Noetic Team"]
 edition = "2021"
 
 [lib]
-name = "gitvault_lib"
+name = "noetic_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

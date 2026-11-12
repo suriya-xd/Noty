@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
-# GitVault - Cross-Platform Toolchain Setup (macOS / Linux)
+# Noetic - Cross-Platform Toolchain Setup (macOS / Linux)
 # ============================================================================
 set -euo pipefail
 
-echo ">>> Checking GitVault Toolchain (macOS / Linux)..."
+echo ">>> Checking Noetic Toolchain (macOS / Linux)..."
 
 # 1. Node.js
 if command -v node >/dev/null 2>&1; then

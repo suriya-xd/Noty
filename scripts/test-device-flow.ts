@@ -1,6 +1,6 @@
 import { GitHubService, pollDeviceFlow } from "../src/services/githubService";
-import { GitVaultBridge } from "../src/services/gitVaultBridge";
-import type { DeviceTokenResponse } from "../src/types/gitVault";
+import { NoeticBridge } from "../src/services/noeticBridge";
+import type { DeviceTokenResponse } from "../src/types/noetic";
 
 // Fake clock: timers only fire when the test advances time.
 const realSetTimeout = globalThis.setTimeout;
@@ -173,8 +173,8 @@ console.log("\nBridge error handling");
       transformCallback: () => 0,
     },
   };
-  eq("native failure is reported as itself", await rejection(GitVaultBridge.startDeviceFlow()), "Couldn't connect to GitHub: timed out");
-  eq("native failure on poll too", await rejection(GitVaultBridge.pollDeviceToken("dc")), "Couldn't connect to GitHub: timed out");
+  eq("native failure is reported as itself", await rejection(NoeticBridge.startDeviceFlow()), "Couldn't connect to GitHub: timed out");
+  eq("native failure on poll too", await rejection(NoeticBridge.pollDeviceToken("dc")), "Couldn't connect to GitHub: timed out");
 
   // Plain browser with no backend: a clear message instead of "Unknown command".
   delete (globalThis as any).window;
@@ -183,9 +183,9 @@ console.log("\nBridge error handling");
   };
   const origWarn = console.warn;
   console.warn = () => {};
-  const msg = await rejection(GitVaultBridge.startDeviceFlow());
+  const msg = await rejection(NoeticBridge.startDeviceFlow());
   console.warn = origWarn;
-  eq("browser-only: explains instead of 'Unknown command'", msg.startsWith("Signing in with a browser code works in the Noty"), true);
+  eq("browser-only: explains instead of 'Unknown command'", msg.startsWith("Signing in with GitHub works in the Noetic"), true);
 }
 
 if (failures) {

@@ -6,7 +6,7 @@ import { Copy, Check, Maximize2 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { WikiLink } from "./WikiLink";
 import { transformWikiLinksToMarkdown } from "../utils/wikilinks/wikilinkParser";
-import { resolveImageUrl } from "../services/gitVaultBridge";
+import { resolveImageUrl } from "../services/noeticBridge";
 
 const REMARK_PLUGINS = [remarkGfm];
 

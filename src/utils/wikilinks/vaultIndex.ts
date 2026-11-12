@@ -9,7 +9,7 @@ export class VaultIndex {
   private subscribers = new Set<() => void>();
 
   /**
-   * Re-indexes the vault from relative file paths (e.g. from gitVaultBridge.listVaultFiles)
+   * Re-indexes the vault from relative file paths (e.g. from noeticBridge.listVaultFiles)
    */
   public reindex(filePaths: string[]): void {
     this.byBaseName.clear();

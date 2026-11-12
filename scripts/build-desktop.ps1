@@ -1,7 +1,7 @@
 # ============================================================================
-# GitVault - Build Desktop Release Bundle (Windows / Desktop)
+# Noetic - Build Desktop Release Bundle (Windows / Desktop)
 # ============================================================================
-Write-Host ">>> Building GitVault Desktop Production Release..." -ForegroundColor Cyan
+Write-Host ">>> Building Noetic Desktop Production Release..." -ForegroundColor Cyan
 
 # 1. Build frontend bundle
 Write-Host ">>> Building frontend with Vite..." -ForegroundColor Cyan

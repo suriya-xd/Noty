@@ -21,7 +21,7 @@ import {
   LayoutDashboard,
   LayoutGrid,
 } from "lucide-react";
-import { FileStatus, VaultEntry } from "../types/gitVault";
+import { FileStatus, VaultEntry } from "../types/noetic";
 import { ConfirmDialog } from "./dialogs";
 import {
   CustomOrderMap,
@@ -49,7 +49,7 @@ interface SidebarProps {
   onDeleteFile: (path: string) => void;
   onRenameFile: (oldPath: string, newPath: string) => void;
   onOpenSettings: () => void;
-  /** Whether the vault is linked to a GitHub remote. */
+  /** Whether this device is linked to the signed-in account's storage. */
   isConnected?: boolean;
 }
 
@@ -244,8 +244,8 @@ export const Sidebar: FC<SidebarProps> = ({
 
   const handleDelete = (path: string, isDirectory: boolean, name: string) => {
     const msg = isDirectory
-      ? "The folder and everything inside it will be removed from this device. The deletion reaches GitHub the next time you save."
-      : "The file will be removed from this device. The deletion reaches GitHub the next time you save.";
+      ? "The folder and everything inside it will be removed from this device. The deletion reaches your other devices the next time you save."
+      : "The file will be removed from this device. The deletion reaches your other devices the next time you save.";
     setPendingDelete({ path, title: isDirectory ? `Delete folder "${name}"?` : `Delete "${name}"?`, message: msg });
   };
 
@@ -395,7 +395,7 @@ export const Sidebar: FC<SidebarProps> = ({
     if (status.is_modified) {
       return (
         <span
-          title="Modified in local worktree"
+          title="Edited, not saved yet"
           className="text-amber-400 font-semibold text-[10px] leading-tight bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono"
         >
           M
@@ -415,10 +415,10 @@ export const Sidebar: FC<SidebarProps> = ({
     if (status.has_remote_update) {
       return (
         <span
-          title="Updated on remote (incoming changes)"
+          title="A newer version is waiting. Sync to get it."
           className="text-sky-400 font-semibold text-[10px] leading-tight bg-sky-500/15 border border-sky-500/30 px-1.5 py-0.5 rounded font-mono"
         >
-          ↓ Remote
+          ↓ Update
         </span>
       );
     }
@@ -737,7 +737,7 @@ export const Sidebar: FC<SidebarProps> = ({
 
           {/* Badges & Actions */}
           <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-            {/* Live Git Status Badge */}
+            {/* Sync status badge */}
             {badge}
 
             {/* Quick action buttons on hover */}
@@ -775,7 +775,7 @@ export const Sidebar: FC<SidebarProps> = ({
 
   return (
     <aside className="w-64 border-r border-[#30363d] bg-[#0d1117] flex flex-col h-full select-none">
-      {/* Vault Header */}
+      {/* Notes header */}
       <div className="px-3 py-2.5 border-b border-[#21262d] flex items-center justify-between relative">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 font-mono truncate">
@@ -783,7 +783,7 @@ export const Sidebar: FC<SidebarProps> = ({
           </span>
           <span
             className="bg-[#21262d] text-zinc-400 font-mono text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
-            title="Notes and canvases in this vault"
+            title="Notes and canvases in this workspace"
           >
             {files.filter((f) => !f.is_directory).length}
           </span>
@@ -921,7 +921,7 @@ export const Sidebar: FC<SidebarProps> = ({
               ? "bg-sky-500/15 text-sky-300 border border-sky-500/30 shadow-sm"
               : "text-zinc-400 hover:bg-[#161b22] hover:text-zinc-200 border border-transparent"
           }`}
-          title="Open Vault Dashboard"
+          title="Open dashboard"
         >
           <LayoutDashboard className={`w-3.5 h-3.5 ${!activeFilePath ? "text-sky-400" : "text-zinc-500"}`} />
           <span>Dashboard</span>
@@ -1010,7 +1010,7 @@ export const Sidebar: FC<SidebarProps> = ({
           id="btn-sidebar-settings"
           onClick={onOpenSettings}
           className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-zinc-300 hover:text-white hover:bg-[#21262d] border border-transparent hover:border-[#30363d] transition-all cursor-pointer group"
-          title="Account & Settings (Change connected GitHub account)"
+          title="Account & settings"
         >
           <div className="flex items-center gap-2.5">
             <Settings className="w-4 h-4 text-zinc-400 group-hover:text-sky-400 transition-colors" />

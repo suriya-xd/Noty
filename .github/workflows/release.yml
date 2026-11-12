@@ -1,4 +1,4 @@
-name: "Release GitVault (Multi-Platform)"
+name: "Release Noetic (Multi-Platform)"
 
 on:
   push:
@@ -63,8 +63,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "GitVault ${{ github.ref_name }}"
-          releaseBody: "See the assets to download GitVault for Windows, macOS, Linux, and Android."
+          releaseName: "Noetic ${{ github.ref_name }}"
+          releaseBody: "See the assets to download Noetic for Windows, macOS, Linux, and Android."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
@@ -113,9 +113,20 @@ jobs:
           NDK_HOME: ${{ env.NDK_HOME }}
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
+      # Gradle names its output app-<abi>-<type>.apk; publish it under the app's own name.
+      - name: Name the APK
+        run: |
+          mkdir -p apk-out
+          for f in src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk; do
+            [ -e "$f" ] || continue
+            name="$(basename "$f" .apk)"
+            cp "$f" "apk-out/Noetic-${{ github.ref_name }}-${name#app-}.apk"
+          done
+          ls -l apk-out
+
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          files: apk-out/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

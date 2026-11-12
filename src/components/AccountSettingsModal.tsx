@@ -15,11 +15,10 @@ import {
   Sparkles,
   X,
   HardDrive,
-  Laptop,
 } from "lucide-react";
 import { GitHubService, pollDeviceFlow } from "../services/githubService";
-import { GitVaultBridge, openExternal } from "../services/gitVaultBridge";
-import { DeviceCodeResponse, GitHubUser } from "../types/gitVault";
+import { NoeticBridge, openExternal } from "../services/noeticBridge";
+import { DeviceCodeResponse, GitHubUser } from "../types/noetic";
 
 const GithubIcon: FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -132,14 +131,14 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   };
 
   /**
-   * The vault's git config holds its own copy of the token, and that copy is what pushes and
-   * fetches use. Keep it in step with the signed-in account (an empty token means signed out).
+   * The notes folder holds its own copy of the sign-in, and that copy is what saving and
+   * syncing use. Keep it in step with the signed-in account (an empty token means signed out).
    */
   const setVaultToken = async (token: string) => {
     try {
-      await GitVaultBridge.setVaultConfig(vaultPath, { github_token: token });
+      await NoeticBridge.setVaultConfig(vaultPath, { github_token: token });
     } catch (err) {
-      console.warn("Couldn't update the vault's saved GitHub token:", err);
+      console.warn("Couldn't update the saved sign-in:", err);
     }
   };
 
@@ -175,7 +174,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
                 Account & Settings
               </h2>
               <p className="text-xs text-zinc-400">
-                Manage your connected GitHub identity and synchronization
+                Your account and where your notes are kept
               </p>
             </div>
           </div>
@@ -192,7 +191,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
           {/* Section: Connected GitHub Account */}
           <div className="space-y-3">
             <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">
-              Connected GitHub Identity
+              Account
             </span>
 
             {currentUser ? (
@@ -239,7 +238,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               <div className="p-4 bg-[#161b22] border border-[#30363d] rounded-xl text-center space-y-3">
                 <User className="w-8 h-8 text-zinc-500 mx-auto" />
                 <p className="text-xs text-zinc-400">
-                  No GitHub account currently connected.
+                  Not signed in. Your notes are kept on this device only.
                 </p>
                 <button
                   onClick={handleStartSwitchAccount}
@@ -247,7 +246,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
                   className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold shadow-md shadow-sky-600/30 flex items-center gap-2 mx-auto cursor-pointer"
                 >
                   <GithubIcon className="w-3.5 h-3.5" />
-                  <span>Connect with GitHub</span>
+                  <span>Sign in with GitHub</span>
                 </button>
               </div>
             )}
@@ -259,7 +258,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-white flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-sky-400" />
-                  Authorize New GitHub Account
+                  Sign in with another account
                 </span>
                 <button
                   onClick={() => setIsSwitchingAccount(false)}
@@ -272,7 +271,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               <div className="bg-[#0d1117] border border-[#30363d] rounded-lg p-3 flex items-center justify-between">
                 <div>
                   <div className="text-[10px] text-zinc-500 uppercase font-mono">
-                    Device Code
+                    One-time code
                   </div>
                   <div className="text-lg font-black font-mono tracking-widest text-white">
                     {deviceFlowData.user_code}
@@ -312,7 +311,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               {isPolling && (
                 <div className="flex items-center gap-2 text-[11px] text-sky-300">
                   <Loader2 className="w-3 h-3 animate-spin text-sky-400" />
-                  <span>Waiting for authorization in browser...</span>
+                  <span>Waiting for your approval in the browser…</span>
                 </div>
               )}
             </div>
@@ -334,7 +333,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
                 className="flex-1 px-3.5 py-2 rounded-lg bg-[#21262d] hover:bg-[#30363d] text-zinc-200 hover:text-white border border-[#30363d] text-xs font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isStartingDeviceFlow ? "animate-spin" : ""}`} />
-                <span>Change / Switch Account</span>
+                <span>Use another account</span>
               </button>
 
               <button
@@ -350,17 +349,15 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
           {/* Section: Application Environment */}
           <div className="pt-4 border-t border-[#30363d] space-y-2">
             <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">
-              Vault Workspace
+              Notes folder on this device
             </span>
             <div className="p-3 bg-[#161b22] border border-[#30363d] rounded-xl flex items-center gap-2.5 text-xs text-zinc-300 font-mono break-all select-all">
               <HardDrive className="w-4 h-4 text-zinc-500 shrink-0" />
               <span>{vaultPath}</span>
             </div>
             <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-1">
-              <span className="flex items-center gap-1">
-                <Laptop className="w-3 h-3" /> Native Git2 Engine
-              </span>
-              <span>Noty v0.1.0</span>
+              <span>Each account has its own notes and workspaces.</span>
+              <span>Noetic v0.1.0</span>
             </div>
           </div>
         </div>

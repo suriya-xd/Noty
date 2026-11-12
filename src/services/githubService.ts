@@ -1,20 +1,25 @@
 import {
   DeviceCodeResponse,
   DeviceTokenResponse,
-  GitHubRepo,
   GitHubUser,
-} from "../types/gitVault";
-import { GitVaultBridge } from "./gitVaultBridge";
+  WorkspaceList,
+} from "../types/noetic";
+import { NoeticBridge } from "./noeticBridge";
 
 export const GITHUB_CLIENT_ID = "Ov23liegRfd4WTYsq3Cf";
-const GITHUB_AUTH_STORAGE_KEY = "gitvault_github_auth";
+/**
+ * Every account keeps its notes in one private repository with this name. The app never offers a
+ * choice of repository; separate sets of notes are workspaces (branches) inside it.
+ */
+export const NOTES_REPOSITORY_NAME = "noetic-notes";
+const GITHUB_AUTH_STORAGE_KEY = "noetic_github_auth";
 
 /** fetch() to GitHub that explains a network failure instead of surfacing "Failed to fetch". */
 async function githubFetch(url: string, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init);
   } catch {
-    throw new Error("Couldn't reach GitHub. Check your internet connection and try again.");
+    throw new Error("Couldn't connect. Check your internet connection and try again.");
   }
 }
 
@@ -106,7 +111,7 @@ export const GitHubService = {
    * Start GitHub OAuth Device Flow (returns 8-character user code and verification URI)
    */
   async startDeviceFlow(clientId: string = GITHUB_CLIENT_ID): Promise<DeviceCodeResponse> {
-    return GitVaultBridge.startDeviceFlow(clientId);
+    return NoeticBridge.startDeviceFlow(clientId);
   },
 
   /**
@@ -116,7 +121,7 @@ export const GitHubService = {
     deviceCode: string,
     clientId: string = GITHUB_CLIENT_ID
   ): Promise<DeviceTokenResponse> {
-    return GitVaultBridge.pollDeviceToken(deviceCode, clientId);
+    return NoeticBridge.pollDeviceToken(deviceCode, clientId);
   },
   /**
    * Check an access token with GitHub and fetch the signed-in user's profile
@@ -124,7 +129,7 @@ export const GitHubService = {
   async validateToken(token: string): Promise<GitHubUser> {
     const cleanToken = token.trim();
     if (!cleanToken) {
-      throw new Error("GitHub token cannot be empty.");
+      throw new Error("Sign-in did not complete. Try again.");
     }
 
     const res = await githubFetch("https://api.github.com/user", {
@@ -137,13 +142,13 @@ export const GitHubService = {
 
     if (res.status === 401) {
       throw new Error(
-        "Invalid GitHub token. Please verify your token and ensure it hasn't expired."
+        "Your sign-in has expired. Sign in again to continue."
       );
     }
 
     if (res.status === 403) {
       throw new Error(
-        "GitHub API rate limit exceeded or access forbidden. Check your token permissions."
+        "GitHub is not accepting requests right now. Wait a minute and try again."
       );
     }
 
@@ -165,99 +170,69 @@ export const GitHubService = {
   },
 
   /**
-   * Fetch all repositories owned or collaborated on by the authenticated user
+   * Finds the account's notes repository, creating it (private and empty) the first time.
+   * Returns the address the notes folder syncs with.
    */
-  async listUserRepositories(token: string): Promise<GitHubRepo[]> {
-    const cleanToken = token.trim();
-    const res = await githubFetch(
-      "https://api.github.com/user/repos?sort=updated&per_page=100&affiliation=owner,collaborator",
-      {
-        headers: {
-          Authorization: `Bearer ${cleanToken}`,
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      }
-    );
+  async ensureNotesRepository(token: string, login: string): Promise<string> {
+    const headers = {
+      Authorization: `Bearer ${token.trim()}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    };
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(
-        errData.message || `Failed to fetch repositories (HTTP ${res.status})`
-      );
+    const existing = await githubFetch(
+      `https://api.github.com/repos/${encodeURIComponent(login)}/${NOTES_REPOSITORY_NAME}`,
+      { headers }
+    );
+    if (existing.ok) return (await existing.json()).clone_url;
+    if (existing.status === 401) {
+      throw new Error("Your sign-in has expired. Sign in again to continue.");
+    }
+    if (existing.status !== 404) {
+      const errData = await existing.json().catch(() => ({}));
+      throw new Error(errData.message || `Couldn't reach your notes storage (HTTP ${existing.status}).`);
     }
 
-    const list = await res.json();
-    return list.map((item: any) => ({
-      id: item.id,
-      name: item.name,
-      full_name: item.full_name,
-      private: item.private,
-      html_url: item.html_url,
-      clone_url: item.clone_url,
-      default_branch: item.default_branch || "main",
-      description: item.description || null,
-      updated_at: item.updated_at,
-    }));
+    // Created with no files: the app adds the empty main branch, then one branch per workspace.
+    const created = await githubFetch("https://api.github.com/user/repos", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: NOTES_REPOSITORY_NAME,
+        description: "Notes synced with Noetic. Managed by the app: each branch is a workspace.",
+        private: true,
+        auto_init: false,
+        has_issues: false,
+        has_wiki: false,
+        has_projects: false,
+      }),
+    });
+    if (!created.ok) {
+      const errData = await created.json().catch(() => ({}));
+      throw new Error(
+        errData.errors?.[0]?.message || errData.message || `Couldn't set up your notes storage (HTTP ${created.status}).`
+      );
+    }
+    return (await created.json()).clone_url;
   },
 
   /**
-   * Create a new GitHub repository for the vault
+   * Makes the signed-in account's storage ready for this device: finds or creates the notes
+   * repository and links the notes folder to it. Returns the workspaces that already exist.
    */
-  async createRepository(
-    token: string,
-    options: {
-      name: string;
-      description?: string;
-      isPrivate: boolean;
-    }
-  ): Promise<GitHubRepo> {
-    const cleanToken = token.trim();
-    const cleanName = options.name.trim();
-
-    if (!cleanName) {
-      throw new Error("Repository name is required.");
-    }
-
-    const res = await githubFetch("https://api.github.com/user/repos", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cleanToken}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: JSON.stringify({
-        name: cleanName,
-        description:
-          options.description || "Markdown notes synchronized with GitVault",
-        private: options.isPrivate,
-        auto_init: true, // Creates initial commit with README.md so repo has main branch ready
-      }),
+  async setUpStorage(vaultPath: string): Promise<WorkspaceList> {
+    const auth = GitHubService.getStoredGitHubAuth();
+    if (!auth) throw new Error("Sign in first to sync your notes.");
+    const { token, user } = auth;
+    const remoteUrl = await GitHubService.ensureNotesRepository(token, user.login);
+    return NoeticBridge.connectVault({
+      vault_path: vaultPath,
+      remote_url: remoteUrl,
+      github_token: token,
+      user_name: user.name || user.login,
+      user_email: user.email || `${user.login}@users.noreply.github.com`,
     });
-
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(
-        errData.message ||
-          (errData.errors?.[0]?.message
-            ? `${errData.message}: ${errData.errors[0].message}`
-            : `Failed to create repository (HTTP ${res.status})`)
-      );
-    }
-
-    const item = await res.json();
-    return {
-      id: item.id,
-      name: item.name,
-      full_name: item.full_name,
-      private: item.private,
-      html_url: item.html_url,
-      clone_url: item.clone_url,
-      default_branch: item.default_branch || "main",
-      description: item.description || null,
-      updated_at: item.updated_at,
-    };
   },
 
   /**

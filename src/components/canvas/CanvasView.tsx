@@ -39,8 +39,8 @@ import { CanvasToolbar } from "./CanvasToolbar";
 import { CanvasContextMenu, ContextMenuState } from "./CanvasContextMenu";
 import { CanvasAddNoteModal } from "./CanvasAddNoteModal";
 import { InsertImageModal } from "../InsertImageModal";
-import { GitVaultBridge } from "../../services/gitVaultBridge";
-import { VaultEntry } from "../../types/gitVault";
+import { NoeticBridge } from "../../services/noeticBridge";
+import { VaultEntry } from "../../types/noetic";
 
 interface CanvasViewProps {
   filePath: string;
@@ -910,7 +910,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
           const reader = new FileReader();
           reader.onload = async (ev) => {
             const base64 = ev.target?.result as string;
-            await GitVaultBridge.saveImageFile(vaultPath, relPath, base64, new Uint8Array(buf));
+            await NoeticBridge.saveImageFile(vaultPath, relPath, base64, new Uint8Array(buf));
             if (onRefreshFiles) await onRefreshFiles();
             addNodeAtPosition("file", worldPt, { file: relPath, width: 360, height: 260 });
           };

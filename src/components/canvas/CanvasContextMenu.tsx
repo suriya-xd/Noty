@@ -74,7 +74,7 @@ export const CanvasContextMenu: FC<CanvasContextMenuProps> = ({
               className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-zinc-200 hover:text-white hover:bg-[#21262d] transition-colors cursor-pointer text-left"
             >
               <FilePlus className="w-4 h-4 text-amber-400" />
-              <span>Add Note from Vault</span>
+              <span>Add a note from this workspace</span>
             </button>
             <button
               onClick={() => { onAddImageNode(); onClose(); }}

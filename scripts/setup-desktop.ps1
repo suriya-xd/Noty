@@ -1,7 +1,7 @@
 # ============================================================================
-# GitVault - Desktop Toolchain Setup (Windows PowerShell)
+# Noetic - Desktop Toolchain Setup (Windows PowerShell)
 # ============================================================================
-Write-Host ">>> Checking GitVault Desktop Prerequisites..." -ForegroundColor Cyan
+Write-Host ">>> Checking Noetic Desktop Prerequisites..." -ForegroundColor Cyan
 
 # 1. Check Node.js
 if (Get-Command node -ErrorAction SilentlyContinue) {

@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FC } from "react";
 import { ArrowLeft, Check, Copy, ExternalLink, FileText, RefreshCw } from "lucide-react";
 import { GitHubService, pollDeviceFlow } from "../../services/githubService";
-import { openExternal } from "../../services/gitVaultBridge";
-import type { DeviceCodeResponse } from "../../types/gitVault";
+import { openExternal } from "../../services/noeticBridge";
+import type { DeviceCodeResponse } from "../../types/noetic";
 
 interface MobileOnboardingViewProps {
   isOpen: boolean;
-  /** Called once a GitHub account is signed in; the host continues to repository selection. */
+  /** Called once an account is signed in; the host continues to naming or choosing a workspace. */
   onAuthenticated: () => void;
   onCancel: () => void;
 }
@@ -137,10 +137,10 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
                   <FileText className="w-7 h-7 text-sky-400" />
                 </div>
                 <h1 className="font-headline text-[32px] leading-[1.15] font-semibold text-[#f0f6fc] mt-6">
-                  Notes that live in your own GitHub repo
+                  Notes that stay yours
                 </h1>
                 <p className="text-[16px] leading-relaxed text-[#8b949e] mt-3">
-                  Noty keeps plain Markdown files on this device and syncs them through a repository you control.
+                  Noetic keeps plain Markdown files on this device and backs them up privately to your own GitHub account, so they sync across your devices.
                 </p>
               </div>
               <div className="space-y-3">
@@ -169,7 +169,7 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
             <div className="flex-1 flex flex-col pt-2">
               <h1 className="font-headline text-[26px] font-semibold text-[#f0f6fc]">Enter this code on GitHub</h1>
               <p className="text-[15px] leading-relaxed text-[#8b949e] mt-2">
-                Copy the code, open GitHub, and paste it there to approve Noty. This screen continues by itself.
+                Copy the code, open GitHub, and paste it there to approve Noetic. This screen continues by itself.
               </p>
 
               <div className="mt-6 rounded-2xl bg-[#161b22] border border-[#21262d] p-5">

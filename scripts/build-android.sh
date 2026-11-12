@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# GitVault - Build Android APK (macOS / Linux)
+# Noetic - Build Android APK (macOS / Linux)
 # ============================================================================
 set -euo pipefail
 
@@ -28,4 +28,14 @@ npm run build
 echo ">>> Building Android APK (aarch64)..."
 npx tauri android build --apk --target aarch64-linux-android
 
-echo "[✓] Android APK generated successfully!"
+# Gradle names its output app-<abi>-<type>.apk; keep a copy under the app's own name.
+APK_DIR="src-tauri/gen/android/app/build/outputs/apk"
+OUT_DIR="src-tauri/gen/android/app/build/outputs/noetic"
+mkdir -p "$OUT_DIR"
+for f in "$APK_DIR"/*/*/*.apk; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .apk)"
+    cp "$f" "$OUT_DIR/Noetic-${name#app-}.apk"
+done
+
+echo "[✓] Android APK generated successfully: $OUT_DIR"

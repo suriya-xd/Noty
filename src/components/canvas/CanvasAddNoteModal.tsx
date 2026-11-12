@@ -1,7 +1,7 @@
 import { useEscapeKey } from "../dialogs";
 import { useState, useMemo } from "react";
 import type { FC } from "react";
-import { VaultEntry } from "../../types/gitVault";
+import { VaultEntry } from "../../types/noetic";
 import { Search, FileText, X } from "lucide-react";
 
 interface CanvasAddNoteModalProps {

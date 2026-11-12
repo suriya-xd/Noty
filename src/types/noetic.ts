@@ -17,6 +17,7 @@ export interface RepoStatusPayload {
   dirty_count: usize;
   behind_count: usize;
   ahead_count: usize;
+  /** The open workspace. Empty until one is created or chosen. */
   branch: string;
   remote_name: string | null;
   remote_url: string | null;
@@ -79,8 +80,6 @@ export interface VaultConfig {
 }
 
 export interface VaultConfigInput {
-  remote_url?: string;
-  branch?: string;
   user_name?: string;
   user_email?: string;
   github_token?: string;
@@ -94,22 +93,16 @@ export interface GitHubUser {
   html_url: string;
 }
 
-export interface GitHubRepo {
-  id: number;
-  name: string;
-  full_name: string;
-  private: boolean;
-  html_url: string;
-  clone_url: string;
-  default_branch: string;
-  description: string | null;
-  updated_at: string;
+/** The workspaces in the user's notes storage. Each one is a separate set of notes. */
+export interface WorkspaceList {
+  /** The open workspace; null until one is created or chosen. */
+  current: string | null;
+  workspaces: string[];
 }
 
 export interface ConnectVaultInput {
   vault_path: string;
   remote_url: string;
-  branch?: string;
   github_token?: string;
   user_name?: string;
   user_email?: string;
@@ -131,5 +124,3 @@ export interface DeviceTokenResponse {
   interval?: number;
   error_description?: string;
 }
-
-

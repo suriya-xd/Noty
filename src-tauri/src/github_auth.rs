@@ -27,7 +27,7 @@ fn github_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(30))
-        .user_agent("Noty")
+        .user_agent("Noetic")
         .build()
 }
 

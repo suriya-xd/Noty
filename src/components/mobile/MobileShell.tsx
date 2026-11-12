@@ -20,7 +20,7 @@ import {
   FolderInput,
   FolderOpen,
   FolderPlus,
-  GitBranch,
+  Layers,
   Home,
   Image as ImageIcon,
   LayoutDashboard,
@@ -39,7 +39,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { RepoStatusPayload, VaultEntry } from "../../types/gitVault";
+import { RepoStatusPayload, VaultEntry } from "../../types/noetic";
 import { Editor, FORMAT_BUTTONS } from "../Editor";
 import type { EditorHandle, RenameHandler } from "../Editor";
 import { CanvasView } from "../canvas/CanvasView";
@@ -75,7 +75,7 @@ interface MobileShellProps {
   onSave: () => void;
   onSync: () => void;
   onFetch: () => void;
-  onOpenRepoSwitch: () => void;
+  onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onOpenAccountSettings: () => void;
   onSimulateState?: (state: string) => void;
@@ -159,43 +159,43 @@ function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
     return {
       tone: "off",
       chip: dirty > 0 ? `${dirty} local` : "Local only",
-      headline: "Not connected to GitHub",
-      detail: "Your notes are saved on this device only. Connect a repository to back them up and sync across devices.",
+      headline: "Not signed in",
+      detail: "Your notes are saved on this device only. Sign in to back them up and sync across devices.",
       action: "connect",
-      actionLabel: "Connect GitHub",
+      actionLabel: "Sign in",
       icon: CloudOff,
     };
   }
   if (behind > 0 && dirty > 0) {
     return {
       tone: "warn",
-      chip: `${behind} to pull`,
-      headline: "Pull before you save",
-      detail: `GitHub has ${plural(behind, "new commit")} and you have ${plural(dirty, "unsaved change")}. Pull first; overlapping edits open the conflict resolver.`,
+      chip: `${behind} incoming`,
+      headline: "Sync before you save",
+      detail: `There ${behind === 1 ? "is" : "are"} ${plural(behind, "update")} from your other devices and you have ${plural(dirty, "unsaved change")}. Sync first; if the same note changed in both places you choose which version to keep.`,
       action: "pull",
-      actionLabel: "Pull updates",
+      actionLabel: "Sync now",
       icon: AlertTriangle,
     };
   }
   if (behind > 0) {
     return {
       tone: "info",
-      chip: `${behind} to pull`,
+      chip: `${behind} incoming`,
       headline: `${plural(behind, "update")} available`,
-      detail: "Newer commits are on GitHub. Pull to bring this device up to date.",
+      detail: "Changes from your other devices are waiting. Sync to bring this device up to date.",
       action: "pull",
-      actionLabel: "Pull updates",
+      actionLabel: "Sync now",
       icon: ArrowDownToLine,
     };
   }
   if (ahead > 0) {
     return {
       tone: "ahead",
-      chip: `${ahead} to push`,
-      headline: `${plural(ahead, "commit")} waiting to push`,
-      detail: "These were saved while offline. Push them to GitHub when you have a connection.",
+      chip: `${ahead} to upload`,
+      headline: `${plural(ahead, "save")} waiting to upload`,
+      detail: "These were saved while offline. Upload them when you have a connection.",
       action: "save",
-      actionLabel: "Push now",
+      actionLabel: "Upload now",
       icon: ArrowUpFromLine,
     };
   }
@@ -204,9 +204,9 @@ function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
       tone: "warn",
       chip: `${dirty} unsaved`,
       headline: `${plural(dirty, "unsaved change")}`,
-      detail: "Edits are on this device but not yet committed to GitHub.",
+      detail: "Edits are on this device but not backed up yet.",
       action: "save",
-      actionLabel: "Save & push",
+      actionLabel: "Save",
       icon: UploadCloud,
     };
   }
@@ -214,7 +214,7 @@ function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
     tone: "ok",
     chip: "Synced",
     headline: "Everything is up to date",
-    detail: "This device matches your GitHub repository.",
+    detail: "This device matches your backup.",
     action: "fetch",
     actionLabel: "Check for updates",
     icon: CheckCircle2,
@@ -322,7 +322,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   onSave,
   onSync,
   onFetch,
-  onOpenRepoSwitch,
+  onOpenWorkspaces,
   onOpenOnboarding,
   onOpenAccountSettings,
   onSimulateState,
@@ -357,7 +357,8 @@ export const MobileShell: FC<MobileShellProps> = ({
 
   const sync = summarizeSync(status);
   const tone = TONE[sync.tone];
-  const vaultName = vaultPath.split(/[\\/]/).filter(Boolean).pop() || "Vault";
+  const isSignedOut = !!status && !status.remote_url;
+  const workspaceName = status?.branch || (isSignedOut ? "My notes" : "Choose workspace");
   const account = useMemo(() => GitHubService.getStoredGitHubAuth(), [status?.remote_url, tab]);
 
   const fileStatus = useMemo(() => {
@@ -477,7 +478,7 @@ export const MobileShell: FC<MobileShellProps> = ({
     if (!s) return null;
     const cfg = {
       modified: { cls: "bg-amber-400", label: "Unsaved changes" },
-      new: { cls: "bg-emerald-400", label: "New, not yet saved to GitHub" },
+      new: { cls: "bg-emerald-400", label: "New, not backed up yet" },
       incoming: { cls: "bg-sky-400", label: "Update available" },
     }[s];
     return <span role="img" aria-label={cfg.label} className={`w-2 h-2 rounded-full shrink-0 ${cfg.cls}`} />;
@@ -591,11 +592,11 @@ export const MobileShell: FC<MobileShellProps> = ({
         <div className="h-14 pl-4 pr-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={account ? onOpenRepoSwitch : onOpenOnboarding}
+            onClick={account ? onOpenWorkspaces : onOpenOnboarding}
             className="min-w-0 h-11 -ml-2 px-2 rounded-xl flex items-center gap-1.5 active:bg-[#161b22]"
-            aria-label={`Vault ${vaultName}. Switch repository`}
+            aria-label={`Workspace ${workspaceName}. Switch workspace`}
           >
-            <span className="font-headline text-[22px] font-semibold text-[#f0f6fc] truncate">{vaultName}</span>
+            <span className="font-headline text-[22px] font-semibold text-[#f0f6fc] truncate">{workspaceName}</span>
             <ChevronDown className="w-4 h-4 text-[#8b949e] shrink-0 mt-1" />
           </button>
           {syncChip}
@@ -603,14 +604,14 @@ export const MobileShell: FC<MobileShellProps> = ({
       </header>
 
       <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-8 space-y-6">
-        {/* Vault at a glance */}
-        <section aria-label="Vault summary" className="grid grid-cols-3 gap-2.5">
+        {/* Workspace at a glance */}
+        <section aria-label="Workspace summary" className="grid grid-cols-3 gap-2.5">
           {[
             { value: String(markdownCount), label: markdownCount === 1 ? "Note" : "Notes" },
             { value: String(folders.length), label: folders.length === 1 ? "Folder" : "Folders" },
             canvasCount > 0
               ? { value: String(canvasCount), label: canvasCount === 1 ? "Canvas" : "Canvases" }
-              : { value: status?.branch || "main", label: "Branch", mono: true },
+              : { value: status?.branch || "None", label: "Workspace", mono: true },
           ].map((stat) => (
             <div key={stat.label} className="rounded-2xl bg-[#161b22] border border-[#21262d] px-3.5 py-3 min-w-0">
               <div
@@ -646,7 +647,7 @@ export const MobileShell: FC<MobileShellProps> = ({
 
         {rootNodes.length === 0 ? (
           <p className="rounded-2xl border border-dashed border-[#30363d] px-5 py-8 text-center text-[15px] text-[#8b949e]">
-            Your vault is empty. Create a note to get started.
+            This workspace is empty. Create a note to get started.
           </p>
         ) : (
           <>
@@ -800,7 +801,7 @@ export const MobileShell: FC<MobileShellProps> = ({
             </div>
             <p className="font-headline text-[19px] font-semibold text-[#f0f6fc] mt-5">No notes yet</p>
             <p className="text-[15px] text-[#8b949e] mt-1.5 max-w-[260px]">
-              Notes are plain Markdown files stored in your vault.
+              Notes are plain Markdown files stored on this device.
             </p>
             <button
               type="button"
@@ -841,10 +842,6 @@ export const MobileShell: FC<MobileShellProps> = ({
 
   // ---- sync tab ----------------------------------------------------------
   const changedFiles = (status?.files ?? []).filter((f) => f.is_modified || f.is_untracked || f.has_remote_update);
-  const remoteLabel = status?.remote_url
-    ? status.remote_url.replace(/^https?:\/\/(www\.)?github\.com\//, "").replace(/\.git$/, "")
-    : "None";
-
   const syncTab = (
     <>
       <header className="pt-safe bg-[#0d1117] shrink-0">
@@ -900,7 +897,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                         {displayName(f.path.split("/").pop() || f.path)}
                       </span>
                       <span className="block text-[13px] text-[#8b949e]">
-                        {f.has_remote_update ? "Update on GitHub" : f.is_untracked ? "New" : "Edited"}
+                        {f.has_remote_update ? "Update waiting" : f.is_untracked ? "New" : "Edited"}
                       </span>
                     </span>
                     <StatusDot path={f.path} />
@@ -912,10 +909,15 @@ export const MobileShell: FC<MobileShellProps> = ({
         )}
 
         <section>
-          <SectionLabel>Repository</SectionLabel>
+          <SectionLabel>Workspace</SectionLabel>
           <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
-            <SettingsRow icon={Link2} label="Remote" value={remoteLabel} mono={!!status?.remote_url} />
-            <SettingsRow icon={GitBranch} label="Branch" value={status?.branch || "main"} mono />
+            <SettingsRow
+              icon={Layers}
+              label="Workspace"
+              value={workspaceName}
+              onClick={account ? onOpenWorkspaces : onOpenOnboarding}
+            />
+            <SettingsRow icon={Link2} label="Backup" value={isSignedOut ? "Off (not signed in)" : "On"} />
             {status?.last_synced_at && (
               <SettingsRow icon={RefreshCw} label="Last checked" value={status.last_synced_at} />
             )}
@@ -939,10 +941,10 @@ export const MobileShell: FC<MobileShellProps> = ({
               </option>
               <option value="clean_synced">Clean, synced</option>
               <option value="dirty_synced">Unsaved changes</option>
-              <option value="clean_behind">Remote ahead</option>
-              <option value="dirty_behind">Remote ahead + unsaved changes</option>
-              <option value="ahead_offline">Offline commits</option>
-              <option value="conflict_trigger">Trigger a merge conflict</option>
+              <option value="clean_behind">Updates waiting</option>
+              <option value="dirty_behind">Updates waiting + unsaved changes</option>
+              <option value="ahead_offline">Offline saves</option>
+              <option value="conflict_trigger">Trigger a conflict</option>
             </select>
           </section>
         )}
@@ -978,7 +980,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                 {account ? account.user.name || account.user.login : "Not signed in"}
               </span>
               <span className="block text-[14px] text-[#8b949e] truncate">
-                {account ? `@${account.user.login} on GitHub` : "Sign in with GitHub to sync"}
+                {account ? `@${account.user.login} on GitHub` : "Sign in to back up and sync"}
               </span>
             </span>
             <ChevronRight className="w-4 h-4 text-[#6e7681] shrink-0" />
@@ -986,15 +988,14 @@ export const MobileShell: FC<MobileShellProps> = ({
         </section>
 
         <section>
-          <SectionLabel>Vault</SectionLabel>
+          <SectionLabel>Notes</SectionLabel>
           <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
             <SettingsRow icon={Folder} label="Location on this device" value={vaultPath} mono />
             <SettingsRow
-              icon={Link2}
-              label="Repository"
-              value={status?.remote_url ? remoteLabel : "Not connected"}
-              mono={!!status?.remote_url}
-              onClick={account ? onOpenRepoSwitch : onOpenOnboarding}
+              icon={Layers}
+              label="Workspace"
+              value={workspaceName}
+              onClick={account ? onOpenWorkspaces : onOpenOnboarding}
             />
             <SettingsRow icon={ArrowUpDown} label="Note order" value={sortLabel} onClick={() => setSortSheetOpen(true)} />
           </div>
@@ -1003,12 +1004,12 @@ export const MobileShell: FC<MobileShellProps> = ({
         <section>
           <SectionLabel>How saving works</SectionLabel>
           <p className="rounded-2xl bg-[#161b22] border border-[#21262d] p-4 text-[14px] leading-relaxed text-[#8b949e]">
-            Notes save to this device as you type. They reach GitHub when you tap{" "}
-            <span className="text-[#e6edf3]">Save &amp; push</span> on the Sync tab.
+            Notes save to this device as you type. They are backed up, and reach your other devices, when you
+            tap <span className="text-[#e6edf3]">Save</span> on the Sync tab.
           </p>
         </section>
 
-        <p className="text-center text-[13px] text-[#6e7681]">Noty 0.1.0</p>
+        <p className="text-center text-[13px] text-[#6e7681]">Noetic 0.1.0</p>
       </div>
     </>
   );
@@ -1397,8 +1398,8 @@ export const MobileShell: FC<MobileShellProps> = ({
         title={deleting?.isDirectory ? `Delete folder “${deleting.name}”?` : `Delete “${displayName(deleting?.name ?? "")}”?`}
         message={
           deleting?.isDirectory
-            ? "The folder and everything inside it will be removed from this device. The deletion reaches GitHub the next time you save & push."
-            : "This removes the file from this device. The deletion reaches GitHub the next time you save & push."
+            ? "The folder and everything inside it will be removed from this device. The deletion reaches your other devices the next time you save."
+            : "This removes the file from this device. The deletion reaches your other devices the next time you save."
         }
         confirmLabel="Delete"
         onConfirm={() => {

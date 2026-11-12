@@ -127,7 +127,7 @@ pub fn init_or_open_vault(vault_path_opt: Option<String>) -> Result<VaultInfo, S
             let home = std::env::var("USERPROFILE")
                 .or_else(|_| std::env::var("HOME"))
                 .unwrap_or_else(|_| ".".to_string());
-            let default_dir = Path::new(&home).join("GitVault");
+            let default_dir = Path::new(&home).join("Noetic");
             default_dir.to_string_lossy().to_string()
         }
     };
@@ -138,19 +138,12 @@ pub fn init_or_open_vault(vault_path_opt: Option<String>) -> Result<VaultInfo, S
     }
 
     let git_dir = p.join(".git");
-    let is_git = git_dir.exists();
-    if !is_git {
-        git2::Repository::init(p).map_err(|e| format!("Failed to initialize Git repository: {}", e))?;
-        
-        // Write initial README.md
-        let readme_path = p.join("Welcome.md");
-        if !readme_path.exists() {
-            let welcome = "# Welcome to GitVault\n\nGitVault is your local-first Markdown note-taking app with native GitHub repository integration.\n\n- **Manual Save & Sync**: Keystrokes are written directly to disk without auto-committing.\n- **Native Git State**: See real-time Git status badges for every file.\n- **Conflict Resolver**: In-memory 3-way merge prevents messy merge conflict markers.\n";
-            let _ = std::fs::write(readme_path, welcome);
-        }
+    if !git_dir.exists() {
+        // The folder starts empty: the welcome note is written when the first workspace is made.
+        git2::Repository::init(p).map_err(|e| format!("Failed to set up the notes folder: {}", e))?;
     }
 
-    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("GitVault").to_string();
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("Noetic").to_string();
     let remote_url = if let Ok(repo) = git2::Repository::open(p) {
         repo.find_remote("origin")
             .ok()

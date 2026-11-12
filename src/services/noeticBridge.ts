@@ -10,7 +10,8 @@ import {
   VaultConfigInput,
   VaultEntry,
   VaultInfo,
-} from "../types/gitVault";
+  WorkspaceList,
+} from "../types/noetic";
 
 // Check if Tauri runtime is present
 export const isTauriEnvironment = (): boolean => {
@@ -29,7 +30,7 @@ export async function openExternal(url: string): Promise<void> {
       await openUrl(url);
       return;
     } catch (err) {
-      console.warn("[GitVault] opener failed, falling back to window.open:", err);
+      console.warn("[Noetic] opener failed, falling back to window.open:", err);
     }
   }
   window.open(url, "_blank", "noopener,noreferrer");
@@ -57,9 +58,9 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
     }
   }
 
-  // In browser dev mode: call Vite dev server API to interact with real Git vault!
+  // In browser dev mode: call the Vite dev server API, which works on a real notes folder.
   try {
-    const res = await fetch(`/api/gitvault/${cmd}`, {
+    const res = await fetch(`/api/noetic/${cmd}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(args),
@@ -70,7 +71,7 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.error || `HTTP ${res.status}: Failed to execute ${cmd}`);
   } catch (apiErr) {
-    console.warn(`[GitVault Web API] failed for ${cmd}, falling back to mock:`, apiErr);
+    console.warn(`[Noetic Web API] failed for ${cmd}, falling back to mock:`, apiErr);
     return mockInvoke<T>(cmd, args);
   }
 }
@@ -79,11 +80,7 @@ async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): 
 // In-Memory Mock Store for Browser Preview & Visual Testing
 // ---------------------------------------------------------------------------
 const MOCK_FILES: Record<string, string> = {
-  "Welcome.md": `# Welcome to GitVault
-
-GitVault is your local-first Markdown note-taking app with native GitHub repository integration.
-- 500ms debounced disk auto-save
-- Real-time Git sync state
+  "Welcome.md": `Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.
 `,
 };
 
@@ -93,8 +90,11 @@ let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
 let mockDirtySet = new Set<string>();
 let mockRemoteUrl: string | null = null;
-let mockUserName = "GitVault User";
-let mockUserEmail = "vault@gitvault.local";
+let mockWorkspaces: string[] = [];
+let mockWorkspace: string | null = null;
+const mockWorkspaceList = (): WorkspaceList => ({ current: mockWorkspace, workspaces: [...mockWorkspaces] });
+let mockUserName = "Noetic User";
+let mockUserEmail = "vault@noetic.local";
 
 function computeMockStatus(): RepoStatusPayload {
   const fileStatuses = Object.keys(MOCK_FILES).map((path) => {
@@ -126,7 +126,7 @@ function computeMockStatus(): RepoStatusPayload {
     dirty_count: dirtyCount,
     behind_count: mockRemoteAhead,
     ahead_count: mockAheadOffline,
-    branch: "main",
+    branch: mockWorkspace ?? "",
     remote_name: mockRemoteUrl ? "origin" : null,
     remote_url: mockRemoteUrl,
     files: fileStatuses,
@@ -180,7 +180,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       const fullPath = args.full_path as string;
       const content = args.content as string;
       // New files: key by the path inside the vault, not the vault folder itself
-      // (otherwise "GitVault/Note.md" shows up as a stray "GitVault" folder).
+      // (otherwise "Noetic/Note.md" shows up as a stray "Noetic" folder).
       const key =
         Object.keys(MOCK_FILES).find((k) => fullPath.endsWith(k)) ||
         fullPath.replace(/\\/g, "/").replace(/^\/?[^/]+\//, "");
@@ -266,7 +266,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "save_and_push": {
       if (mockRemoteAhead > 0) {
-        throw new Error("Cannot save and push: remote is ahead! Click 'Sync' first.");
+        throw new Error("There are updates waiting from your other devices. Sync first, then save.");
       }
       mockDirtySet.clear();
       mockAheadOffline = 0;
@@ -292,7 +292,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
         };
         const res: SyncResult = {
           success: false,
-          message: "Conflict detected in ConflictTest.md. Please resolve in the conflict modal.",
+          message: "1 note(s) changed both here and on another device. Choose which version to keep.",
           state: "DirtyBehind",
           conflicts: [conflict],
         };
@@ -301,7 +301,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       mockRemoteAhead = 0;
       const res: SyncResult = {
         success: true,
-        message: "Repository synchronized successfully.",
+        message: "Synced. Your notes are up to date.",
         state: "CleanSynced",
         conflicts: [],
       };
@@ -321,15 +321,10 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     }
 
     case "init_or_open_vault": {
-      const p = (args.vault_path as string) || "GitVault";
-      let repoName = "GitVault";
-      if (mockRemoteUrl) {
-        const match = mockRemoteUrl.match(/[:/]([^/:]+\/[^/:]+?)(?:\.git)?$/);
-        if (match) repoName = match[1];
-      }
+      const p = (args.vault_path as string) || "Noetic";
       return {
         path: p,
-        name: repoName,
+        name: "Noetic",
         is_git_repo: true,
         remote_url: mockRemoteUrl,
       } as unknown as T;
@@ -337,9 +332,9 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "get_vault_config": {
       return {
-        vault_path: (args.repo_path as string) || "GitVault",
+        vault_path: (args.repo_path as string) || "Noetic",
         remote_url: mockRemoteUrl,
-        branch: "main",
+        branch: mockWorkspace ?? "",
         user_name: mockUserName,
         user_email: mockUserEmail,
         has_token: false,
@@ -348,13 +343,12 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 
     case "set_vault_config": {
       const cfg = (args.config || {}) as VaultConfigInput;
-      if (cfg.remote_url !== undefined) mockRemoteUrl = cfg.remote_url || null;
-      if (cfg.user_name !== undefined) mockUserName = cfg.user_name || "GitVault User";
-      if (cfg.user_email !== undefined) mockUserEmail = cfg.user_email || "vault@gitvault.local";
+      if (cfg.user_name !== undefined) mockUserName = cfg.user_name || "Noetic User";
+      if (cfg.user_email !== undefined) mockUserEmail = cfg.user_email || "vault@noetic.local";
       return {
-        vault_path: (args.repo_path as string) || "GitVault",
+        vault_path: (args.repo_path as string) || "Noetic",
         remote_url: mockRemoteUrl,
-        branch: cfg.branch || "main",
+        branch: mockWorkspace ?? "",
         user_name: mockUserName,
         user_email: mockUserEmail,
         has_token: Boolean(cfg.github_token),
@@ -362,17 +356,31 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     }
 
     case "connect_vault": {
-      const remoteUrl = args.remote_url as string;
-      mockRemoteUrl = remoteUrl;
+      mockRemoteUrl = args.remote_url as string;
       if (args.user_name) mockUserName = args.user_name as string;
       if (args.user_email) mockUserEmail = args.user_email as string;
+      return mockWorkspaceList() as unknown as T;
+    }
+
+    case "list_workspaces":
+      return mockWorkspaceList() as unknown as T;
+
+    case "create_workspace": {
+      const name = String(args.name ?? "").trim().split(/\s+/).filter(Boolean).join("-");
+      if (!name) throw new Error("Give the workspace a name.");
+      if (mockWorkspaces.some((w) => w.toLowerCase() === name.toLowerCase())) {
+        throw new Error(`A workspace named "${name}" already exists.`);
+      }
+      mockWorkspaces.push(name);
+      mockWorkspace = name;
       return computeMockStatus() as unknown as T;
     }
 
-    case "test_remote_connection": {
-      const targetUrl = args.remote_url as string;
-      if (!targetUrl) throw new Error("Remote URL is required");
-      return "Successfully connected to GitHub repository!" as unknown as T;
+    case "switch_workspace": {
+      const name = String(args.name ?? "");
+      if (!mockWorkspaces.includes(name)) throw new Error(`The workspace "${name}" no longer exists.`);
+      mockWorkspace = name;
+      return computeMockStatus() as unknown as T;
     }
 
     case "github_start_device_flow":
@@ -380,7 +388,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       // GitHub's sign-in endpoints don't allow calls from a web page, so a browser with no backend
       // can't do the code sign-in. The apps and the dev server can.
       throw new Error(
-        "Signing in with GitHub works in the Noty desktop and mobile apps, not in a plain web browser."
+        "Signing in with GitHub works in the Noetic desktop and mobile apps, not in a plain web browser."
       );
 
     default:
@@ -392,7 +400,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
 // Public API Bridge
 // ---------------------------------------------------------------------------
 
-export const GitVaultBridge = {
+export const NoeticBridge = {
   getRepoStatus: (repoPath: string): Promise<RepoStatusPayload> => {
     return invokeTauri<RepoStatusPayload>("get_repo_status", { repo_path: repoPath });
   },
@@ -433,27 +441,28 @@ export const GitVaultBridge = {
     });
   },
 
-  connectVault: (input: ConnectVaultInput): Promise<RepoStatusPayload> => {
-    return invokeTauri<RepoStatusPayload>("connect_vault", {
+  /** Links the notes folder to the account's storage and returns the workspaces found there. */
+  connectVault: (input: ConnectVaultInput): Promise<WorkspaceList> => {
+    return invokeTauri<WorkspaceList>("connect_vault", {
       vault_path: input.vault_path,
       remote_url: input.remote_url,
-      branch: input.branch,
       github_token: input.github_token,
       user_name: input.user_name,
       user_email: input.user_email,
     });
   },
 
-  testRemoteConnection: (
-    repoPath: string,
-    remoteUrl: string,
-    githubToken?: string
-  ): Promise<string> => {
-    return invokeTauri<string>("test_remote_connection", {
-      repo_path: repoPath,
-      remote_url: remoteUrl,
-      github_token: githubToken,
-    });
+  /** `refresh` checks the cloud for workspaces made on other devices first. */
+  listWorkspaces: (repoPath: string, refresh = false): Promise<WorkspaceList> => {
+    return invokeTauri<WorkspaceList>("list_workspaces", { repo_path: repoPath, refresh });
+  },
+
+  createWorkspace: (repoPath: string, name: string): Promise<RepoStatusPayload> => {
+    return invokeTauri<RepoStatusPayload>("create_workspace", { repo_path: repoPath, name });
+  },
+
+  switchWorkspace: (repoPath: string, name: string): Promise<RepoStatusPayload> => {
+    return invokeTauri<RepoStatusPayload>("switch_workspace", { repo_path: repoPath, name });
   },
 
   startDeviceFlow: (clientId?: string): Promise<DeviceCodeResponse> => {
@@ -566,6 +575,6 @@ export function resolveImageUrl(src: string, vaultPath: string): string {
 
   // Vite dev server raw file serving
   const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
-  return `/api/gitvault/raw?full_path=${encodeURIComponent(full)}`;
+  return `/api/noetic/raw?full_path=${encodeURIComponent(full)}`;
 }
 

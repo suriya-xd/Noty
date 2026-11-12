@@ -1,8 +1,8 @@
 import { useEscapeKey } from "./dialogs";
 import { useState, useMemo, useRef } from "react";
 import type { FC, ChangeEvent, DragEvent } from "react";
-import { VaultEntry } from "../types/gitVault";
-import { GitVaultBridge, resolveImageUrl } from "../services/gitVaultBridge";
+import { VaultEntry } from "../types/noetic";
+import { NoeticBridge, resolveImageUrl } from "../services/noeticBridge";
 import {
   X,
   Upload,
@@ -130,7 +130,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
       const rawBytes = new Uint8Array(arrayBuffer);
 
       // Save via bridge
-      await GitVaultBridge.saveImageFile(vaultPath, relPath, uploadPreview, rawBytes);
+      await NoeticBridge.saveImageFile(vaultPath, relPath, uploadPreview, rawBytes);
 
       // Refresh files list in App
       if (onRefreshFiles) {
@@ -206,7 +206,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
             }`}
           >
             <FolderOpen className="w-3.5 h-3.5" />
-            <span>Vault Images ({existingImages.length})</span>
+            <span>My images ({existingImages.length})</span>
           </button>
 
           <button
@@ -266,7 +266,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
                     Supports PNG, JPG, GIF, WebP, SVG, BMP
                   </span>
                   <span className="text-zinc-600 font-mono text-[10px] mt-2">
-                    Image will be saved locally to your vault's assets/ directory
+                    The image is saved with your notes, in the assets folder
                   </span>
                 </div>
               ) : (
@@ -328,7 +328,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
               {existingImages.length === 0 ? (
                 <div className="text-center py-12 text-zinc-500 flex flex-col items-center gap-2">
                   <ImageIcon className="w-8 h-8 text-zinc-600 stroke-[1.5]" />
-                  <span>No image files found in vault</span>
+                  <span>No images in this workspace yet</span>
                   <button
                     onClick={() => setActiveTab("upload")}
                     className="mt-1 text-purple-400 hover:underline text-xs"
@@ -476,7 +476,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
               {isUploading ? (
                 <>
                   <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  <span>Saving to Vault...</span>
+                  <span>Saving…</span>
                 </>
               ) : (
                 <>

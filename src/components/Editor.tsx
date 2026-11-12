@@ -43,8 +43,8 @@ import { blockDragHandle } from "./blockDrag";
 import type { FormatKind } from "./editorCommands";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { InsertImageModal } from "./InsertImageModal";
-import { GitVaultBridge } from "../services/gitVaultBridge";
-import { VaultEntry } from "../types/gitVault";
+import { NoeticBridge } from "../services/noeticBridge";
+import { VaultEntry } from "../types/noetic";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 
@@ -226,7 +226,7 @@ export const Editor: FC<EditorProps> = ({
           const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
           const relPath = `assets/${safeName}`;
           if (vaultPath) {
-            await GitVaultBridge.saveImageFile(
+            await NoeticBridge.saveImageFile(
               vaultPath,
               relPath,
               base64,
@@ -579,7 +579,7 @@ export const Editor: FC<EditorProps> = ({
       <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 bg-[#0d1117]">
         <FileText className="w-12 h-12 mb-3 stroke-[1.5] text-zinc-600" />
         <p className="text-sm font-medium">Select a note from the sidebar or create a new one</p>
-        <p className="text-xs text-zinc-600 mt-1">Changes are saved directly to your local Git worktree</p>
+        <p className="text-xs text-zinc-600 mt-1">Changes are saved on this device as you type</p>
       </div>
     );
   }
@@ -700,7 +700,7 @@ export const Editor: FC<EditorProps> = ({
           <div className="h-3 w-[1px] bg-[#30363d] hidden md:block" />
 
           <div
-            title={saveStatus === "saving" ? "Saving to this device…" : "Saved on this device. Use Save in the top bar to push to GitHub."}
+            title={saveStatus === "saving" ? "Saving to this device…" : "Saved on this device. Use Save in the top bar to back it up."}
             className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
               saveStatus === "saving"
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-400"

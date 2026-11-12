@@ -1,11 +1,11 @@
-// Custom sorting and ordering utilities for Noty files and folders
+// Custom sorting and ordering utilities for Noetic files and folders
 
 export type CustomOrderMap = Record<string, string[]>; // parentPath -> array of child names
 
 export type SortMode = "custom" | "alpha-asc" | "alpha-desc";
 
-const STORAGE_KEY_PREFIX = "noty_custom_order_";
-const SORT_MODE_KEY_PREFIX = "noty_sort_mode_";
+const STORAGE_KEY_PREFIX = "noetic_custom_order_";
+const SORT_MODE_KEY_PREFIX = "noetic_sort_mode_";
 
 /**
  * Load custom order map from localStorage for a specific vault

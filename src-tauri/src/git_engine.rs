@@ -1,20 +1,23 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use git2::{BranchType, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
 use similar::{ChangeTag, TextDiff};
 
 use crate::models::{
     ConflictFile, ConflictHunk, ConflictResolution, FileStatus, RepoStatusPayload, SyncResult, SyncState,
-    VaultConfig, VaultConfigInput,
+    VaultConfig, VaultConfigInput, WorkspaceList,
 };
 
+/// The branch that every notes repository keeps empty. Workspaces are the other branches.
+const STORAGE_BRANCH: &str = "main";
+
 /// Get the current Git status of the repository, including worktree status
-/// and ahead/behind counts against origin/main or origin/master.
+/// and ahead/behind counts against the workspace's own branch on origin.
 pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
     // 1. Identify active branch name
-    let branch_name = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
+    let branch_name = current_workspace(&repo).unwrap_or_default();
 
     // 2. Scan worktree and index statuses
     let mut status_opts = StatusOptions::new();
@@ -153,9 +156,11 @@ fn fetch_origin(repo: &Repository) -> Result<(), String> {
     };
     let mut fetch_opts = FetchOptions::new();
     fetch_opts.remote_callbacks(create_remote_callbacks(repo));
+    // Prune, so a workspace removed elsewhere (or a different account's storage) doesn't linger.
+    fetch_opts.prune(git2::FetchPrune::On);
     remote
         .fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
-        .map_err(|e| format!("Couldn't reach GitHub: {}", e))
+        .map_err(|e| format!("Couldn't reach your cloud storage: {}", e))
 }
 
 /// Fetch from origin remote without modifying worktree. This runs in the background, so a failed
@@ -166,24 +171,9 @@ pub fn fetch_remote(repo_path: &str) -> Result<RepoStatusPayload, String> {
     get_repo_status(repo_path)
 }
 
-/// Manual Save & Push:
-/// 1. Verifies origin/main hasn't moved ahead (prevents accidental overwrite).
-/// 2. Stages all files (`git add -A`).
-/// 3. Creates commit.
-/// 4. Pushes to origin (falls back gracefully to local commit if offline).
-pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<RepoStatusPayload, String> {
-    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-
-    // Step 1: Verify remote is not ahead
-    let current_status = get_repo_status(repo_path)?;
-    if current_status.behind_count > 0 {
-        return Err(format!(
-            "Cannot save and push directly: remote has {} incoming commit(s). Please click 'Sync' to pull first.",
-            current_status.behind_count
-        ));
-    }
-
-    // Step 2: Stage all files (`git add -A`)
+/// Stages everything (`git add -A`) and commits it to the current branch. Returns false when
+/// there was nothing new to commit.
+fn commit_all(repo: &Repository, message: &str) -> Result<bool, String> {
     let mut index = repo.index().map_err(|e| format!("Failed to get repo index: {}", e))?;
     index
         .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
@@ -200,53 +190,104 @@ pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<
         .find_tree(tree_oid)
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
-    // Step 3: Signature & Parent
-    let sig = repo.signature().unwrap_or_else(|_| {
-        git2::Signature::now("GitVault User", "vault@gitvault.local").unwrap()
-    });
-
     let parent_commit = repo
         .head()
         .ok()
         .and_then(|h| h.target())
         .and_then(|oid| repo.find_commit(oid).ok());
 
+    if let Some(parent) = &parent_commit {
+        if parent.tree_id() == tree_oid {
+            return Ok(false);
+        }
+    }
+
     let parents: Vec<&git2::Commit> = match &parent_commit {
         Some(c) => vec![c],
         None => vec![],
     };
 
-    let msg = commit_message.unwrap_or_else(|| {
-        format!("Vault update: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+    let sig = signature(repo);
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+        .map_err(|e| format!("Failed to save: {}", e))?;
+    Ok(true)
+}
+
+fn signature(repo: &Repository) -> git2::Signature<'static> {
+    repo.signature()
+        .unwrap_or_else(|_| git2::Signature::now("Noetic User", "notes@noetic.local").unwrap())
+}
+
+/// Pushes `src_ref` to `refs/heads/<branch>` on origin. libgit2 reports a push the server turned
+/// down (for example because newer changes are there) only through the per-reference callback,
+/// so that is turned into an error here.
+fn push_ref(repo: &Repository, src_ref: &str, branch: &str) -> Result<(), String> {
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|_| "Sign in to back up and sync your notes.".to_string())?;
+    let mut callbacks = create_remote_callbacks(repo);
+    callbacks.push_update_reference(|_, status| match status {
+        Some(msg) => Err(git2::Error::from_str(msg)),
+        None => Ok(()),
     });
+    let mut push_opts = PushOptions::new();
+    push_opts.remote_callbacks(callbacks);
 
-    // Commit to HEAD
-    repo.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)
-        .map_err(|e| format!("Failed to create commit: {}", e))?;
+    let refspec = format!("{}:refs/heads/{}", src_ref, branch);
+    remote
+        .push(&[&refspec], Some(&mut push_opts))
+        .map_err(|e| e.message().to_string())?;
 
-    // Step 4: Attempt push to remote
-    let branch_name = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
-    if let Ok(mut remote) = repo.find_remote("origin") {
-        let callbacks = create_remote_callbacks(&repo);
-        let mut push_opts = PushOptions::new();
-        push_opts.remote_callbacks(callbacks);
+    // Record what origin now has, so the status is right without waiting for the next fetch.
+    if let Ok(oid) = repo.refname_to_id(src_ref) {
+        let _ = repo.reference(&format!("refs/remotes/origin/{}", branch), oid, true, "Noetic: uploaded");
+    }
+    Ok(())
+}
 
-        let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-        if let Err(e) = remote.push(&[&refspec], Some(&mut push_opts)) {
-            return Err(format!(
-                "Committed locally, but failed to push to GitHub: {}. Please check your credentials or remote URL in Settings.",
-                e
-            ));
-        }
-    } else {
-        return Err("Committed locally, but no remote 'origin' is configured. Click the Settings icon to link your GitHub repository.".to_string());
+fn push_workspace(repo: &Repository, workspace: &str) -> Result<(), String> {
+    push_ref(repo, &format!("refs/heads/{}", workspace), workspace)
+}
+
+/// Manual Save:
+/// 1. Verifies the cloud copy hasn't moved ahead (prevents accidental overwrite).
+/// 2. Stages all files and commits them to the current workspace.
+/// 3. Uploads the workspace (the save stays on this device if that fails, e.g. offline).
+pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<RepoStatusPayload, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    if repo.find_remote("origin").is_err() {
+        return Err("Your notes are kept on this device. Sign in to back them up and sync them.".to_string());
+    }
+    let Some(workspace) = current_workspace(&repo) else {
+        return Err("Choose or create a workspace first.".to_string());
+    };
+
+    let current_status = get_repo_status(repo_path)?;
+    if current_status.behind_count > 0 {
+        return Err(format!(
+            "There {} waiting from your other devices. Sync first, then save.",
+            if current_status.behind_count == 1 { "is 1 update".to_string() } else { format!("are {} updates", current_status.behind_count) }
+        ));
+    }
+
+    let msg = commit_message.unwrap_or_else(|| {
+        format!("Notes update: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
+    });
+    commit_all(&repo, &msg)?;
+
+    if let Err(e) = push_workspace(&repo, &workspace) {
+        return Err(format!(
+            "Saved on this device, but it couldn't be uploaded: {}. It will be sent the next time you save while online.",
+            e
+        ));
     }
 
     get_repo_status(repo_path)
 }
 
 /// Manual Sync & Pull:
-/// Pulls changes from `origin/main`. If local worktree is dirty:
+/// Pulls changes from the workspace's branch on origin. If local worktree is dirty:
 /// - If non-overlapping files: stash local, fast-forward pull, pop stash.
 /// - If same file modified both locally and remotely: run in-memory 3-way merge.
 ///   If line-level conflicts: return conflict hunks for the Visual Conflict Resolver Modal.
@@ -270,7 +311,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
         None => {
             return Ok(SyncResult {
                 success: true,
-                message: "No remote tracking branch configured. Local repository is up to date.".to_string(),
+                message: "Everything is up to date.".to_string(),
                 state: pre_status.state,
                 conflicts: vec![],
             });
@@ -280,7 +321,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
     if pre_status.behind_count == 0 {
         return Ok(SyncResult {
             success: true,
-            message: "Repository is already up to date with remote.".to_string(),
+            message: "Everything is up to date.".to_string(),
             state: pre_status.state,
             conflicts: vec![],
         });
@@ -313,11 +354,11 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
         // If dirty non-overlapping: Stash local changes
         let stashed = if has_local_dirty {
             let sig = repo.signature().unwrap_or_else(|_| {
-                git2::Signature::now("GitVault Stash", "stash@gitvault.local").unwrap()
+                git2::Signature::now("Noetic", "notes@noetic.local").unwrap()
             });
             let stash_res = repo.stash_save2(
                 &sig,
-                Some("GitVault auto-stash during sync"),
+                Some("Noetic auto-stash during sync"),
                 Some(git2::StashFlags::INCLUDE_UNTRACKED),
             );
             stash_res.is_ok()
@@ -337,7 +378,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
         let post_status = get_repo_status(repo_path)?;
         return Ok(SyncResult {
             success: true,
-            message: "Successfully synchronized with remote repository.".to_string(),
+            message: "Synced. Your notes are up to date.".to_string(),
             state: post_status.state,
             conflicts: vec![],
         });
@@ -378,7 +419,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
         return Ok(SyncResult {
             success: false,
             message: format!(
-                "Conflict detected in {} file(s). Please review and resolve using the Visual Conflict Resolver.",
+                "{} note(s) changed both here and on another device. Choose which version to keep.",
                 detected_conflicts.len()
             ),
             state: SyncState::DirtyBehind,
@@ -401,7 +442,7 @@ pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
     let post_status = get_repo_status(repo_path)?;
     Ok(SyncResult {
         success: true,
-        message: "Cleanly merged non-colliding changes from remote.".to_string(),
+        message: "Synced. Your edits were combined with the updates.".to_string(),
         state: post_status.state,
         conflicts: vec![],
     })
@@ -413,8 +454,14 @@ pub fn resolve_conflicts(
     resolutions: Vec<ConflictResolution>,
 ) -> Result<RepoStatusPayload, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
-    let branch_name = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
+    let branch_name = current_workspace(&repo).ok_or_else(|| "Choose or create a workspace first.".to_string())?;
     let (_, remote_oid) = find_remote_tracking_branch(&repo, &branch_name);
+
+    // Take the incoming version of everything first, then put the chosen text on top of it as
+    // an unsaved edit. (The other way round, the checkout replaces what the user just chose.)
+    if let Some(r_oid) = remote_oid {
+        fast_forward_to_commit(&repo, &branch_name, r_oid)?;
+    }
 
     for res in resolutions {
         let full_path = Path::new(repo_path).join(&res.path);
@@ -424,11 +471,6 @@ pub fn resolve_conflicts(
             }
             std::fs::write(&full_path, content).map_err(|e| format!("Failed to write resolved file: {}", e))?;
         }
-    }
-
-    // If remote oid is known, fast-forward branch reference now that conflicts are resolved
-    if let Some(r_oid) = remote_oid {
-        fast_forward_to_commit(&repo, &branch_name, r_oid)?;
     }
 
     get_repo_status(repo_path)
@@ -510,7 +552,7 @@ fn fast_forward_to_commit(repo: &Repository, branch_name: &str, target_oid: git2
 
     // Update branch ref
     let ref_name = format!("refs/heads/{}", branch_name);
-    repo.reference(&ref_name, target_oid, true, "GitVault fast-forward pull")
+    repo.reference(&ref_name, target_oid, true, "Noetic: synced")
         .map_err(|e| format!("Failed to update branch reference: {}", e))?;
 
     // Point HEAD to the updated branch
@@ -541,21 +583,23 @@ fn get_current_branch_name(repo: &Repository) -> Option<String> {
     }
 }
 
-fn find_remote_tracking_branch(repo: &Repository, branch_name: &str) -> (Option<String>, Option<git2::Oid>) {
-    let candidate_names = [
-        format!("origin/{}", branch_name),
-        "origin/main".to_string(),
-        "origin/master".to_string(),
-    ];
+/// The workspace that is open: the checked-out branch, unless there are no saves on it yet or it
+/// is the storage branch that is kept empty.
+fn current_workspace(repo: &Repository) -> Option<String> {
+    get_current_branch_name(repo).filter(|b| b != STORAGE_BRANCH)
+}
 
-    for name in &candidate_names {
-        if let Ok(branch) = repo.find_branch(name, BranchType::Remote) {
-            if let Ok(target) = branch.get().peel_to_commit() {
-                return (Some("origin".to_string()), Some(target.id()));
-            }
+/// A workspace syncs only with the branch of the same name on origin. (Falling back to another
+/// branch would compare a new workspace with the empty storage branch.)
+fn find_remote_tracking_branch(repo: &Repository, branch_name: &str) -> (Option<String>, Option<git2::Oid>) {
+    if branch_name.is_empty() {
+        return (None, None);
+    }
+    if let Ok(branch) = repo.find_branch(&format!("origin/{}", branch_name), BranchType::Remote) {
+        if let Ok(target) = branch.get().peel_to_commit() {
+            return (Some("origin".to_string()), Some(target.id()));
         }
     }
-
     (None, None)
 }
 
@@ -572,7 +616,7 @@ fn credentials_callback(
     move |url, username_from_url, allowed| {
         if offered {
             return Err(git2::Error::from_str(
-                "GitHub rejected the saved sign-in. It may have expired or been revoked: sign in again from Settings.",
+                "Your sign-in was not accepted. It may have expired or been revoked: sign in again from Settings.",
             ));
         }
         offered = true;
@@ -593,20 +637,21 @@ fn create_remote_callbacks(repo: &Repository) -> RemoteCallbacks<'static> {
     let token_opt = repo
         .config()
         .ok()
-        .and_then(|c| c.get_string("gitvault.token").ok());
+        .and_then(|c| c.get_string("noetic.token").ok());
     callbacks.credentials(credentials_callback(token_opt));
     callbacks
 }
 
+
 pub fn get_vault_config(repo_path: &str) -> Result<VaultConfig, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let branch = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
+    let branch = current_workspace(&repo).unwrap_or_default();
     let remote_url = repo.find_remote("origin").ok().and_then(|r| r.url().map(|s| s.to_string()));
 
     let (user_name, user_email, has_token) = if let Ok(config) = repo.config() {
         let name = config.get_string("user.name").ok();
         let email = config.get_string("user.email").ok();
-        let token = config.get_string("gitvault.token").ok().map(|t| !t.trim().is_empty()).unwrap_or(false);
+        let token = config.get_string("noetic.token").ok().map(|t| !t.trim().is_empty()).unwrap_or(false);
         (name, email, token)
     } else {
         (None, None, false)
@@ -622,40 +667,11 @@ pub fn get_vault_config(repo_path: &str) -> Result<VaultConfig, String> {
     })
 }
 
+/// Updates the author details and saved sign-in. Where the notes are stored and which workspace
+/// is open are not settings: see `connect_vault` and `switch_workspace`.
 pub fn set_vault_config(repo_path: &str, input: VaultConfigInput) -> Result<VaultConfig, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
-    // 1. Remote origin URL
-    if let Some(ref url) = input.remote_url {
-        let clean_url = url.trim();
-        if !clean_url.is_empty() {
-            if repo.find_remote("origin").is_ok() {
-                repo.remote_set_url("origin", clean_url)
-                    .map_err(|e| format!("Failed to update remote origin: {}", e))?;
-            } else {
-                repo.remote("origin", clean_url)
-                    .map_err(|e| format!("Failed to add remote origin: {}", e))?;
-            }
-        }
-    }
-
-    // 2. Branch
-    if let Some(ref target_branch) = input.branch {
-        let target = target_branch.trim();
-        if !target.is_empty() {
-            let current = get_current_branch_name(&repo).unwrap_or_else(|| "main".to_string());
-            if current != target {
-                if let Ok(mut branch) = repo.find_branch(&current, BranchType::Local) {
-                    let _ = branch.rename(target, true);
-                } else {
-                    let ref_name = format!("refs/heads/{}", target);
-                    let _ = repo.set_head(&ref_name);
-                }
-            }
-        }
-    }
-
-    // 3. User & Token configs
     if let Ok(mut config) = repo.config() {
         if let Some(ref name) = input.user_name {
             let _ = config.set_str("user.name", name.trim());
@@ -664,60 +680,41 @@ pub fn set_vault_config(repo_path: &str, input: VaultConfigInput) -> Result<Vaul
             let _ = config.set_str("user.email", email.trim());
         }
         if let Some(ref token) = input.github_token {
-            let _ = config.set_str("gitvault.token", token.trim());
+            let _ = config.set_str("noetic.token", token.trim());
         }
     }
 
     get_vault_config(repo_path)
 }
 
-pub fn test_remote_connection(repo_path: &str, remote_url: &str, token: Option<String>) -> Result<String, String> {
-    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let mut remote = repo.remote_anonymous(remote_url).map_err(|e| format!("Invalid remote URL: {}", e))?;
-
-    let saved_token = token.or_else(|| {
-        repo.config().ok().and_then(|c| c.get_string("gitvault.token").ok())
-    });
-
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(credentials_callback(saved_token));
-
-    let mut fetch_opts = FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    remote.fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
-        .map_err(|e| format!("Failed to reach remote repository: {}", e))?;
-
-    Ok("Successfully connected to GitHub remote repository!".to_string())
-}
-
+/// Links the notes folder to the account's notes repository and makes sure that repository has
+/// its empty `main` branch. No workspace is opened here: the caller lists them and the user
+/// creates or picks one.
 pub fn connect_vault(
     repo_path: &str,
     remote_url: &str,
-    branch: Option<String>,
     token: Option<String>,
     user_name: Option<String>,
     user_email: Option<String>,
-) -> Result<RepoStatusPayload, String> {
+) -> Result<WorkspaceList, String> {
     let p = Path::new(repo_path);
     if !p.exists() {
-        std::fs::create_dir_all(p).map_err(|e| format!("Failed to create vault directory: {}", e))?;
+        std::fs::create_dir_all(p).map_err(|e| format!("Failed to create notes folder: {}", e))?;
     }
 
     let repo = if !p.join(".git").exists() {
-        Repository::init(p).map_err(|e| format!("Failed to init git: {}", e))?
+        Repository::init(p).map_err(|e| format!("Failed to set up the notes folder: {}", e))?
     } else {
-        Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?
+        Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?
     };
 
-    // Configure origin
     let clean_url = remote_url.trim();
     if repo.find_remote("origin").is_ok() {
         repo.remote_set_url("origin", clean_url)
-            .map_err(|e| format!("Failed to set remote url: {}", e))?;
+            .map_err(|e| format!("Failed to link your cloud storage: {}", e))?;
     } else {
         repo.remote("origin", clean_url)
-            .map_err(|e| format!("Failed to add remote: {}", e))?;
+            .map_err(|e| format!("Failed to link your cloud storage: {}", e))?;
     }
 
     if let Ok(mut config) = repo.config() {
@@ -728,46 +725,281 @@ pub fn connect_vault(
             let _ = config.set_str("user.email", email.trim());
         }
         if let Some(ref t) = token {
-            let _ = config.set_str("gitvault.token", t.trim());
+            let _ = config.set_str("noetic.token", t.trim());
         }
     }
 
-    let target_branch = branch.unwrap_or_else(|| "main".to_string());
+    // Setting up needs the network: the list of workspaces comes from this fetch.
+    fetch_origin(&repo)?;
+    ensure_storage_branch(&repo)?;
 
-    // A new vault has no commits yet, so the notes come from this fetch. If it fails, stop here:
-    // carrying on would start a local history unrelated to the repository, which could never be
-    // pushed to it. A vault that already has commits can connect while offline.
-    let fresh = repo.head().is_err();
-    if fresh {
-        // New commits go on the repository's own branch, not libgit2's default of "master".
-        let _ = repo.set_head(&format!("refs/heads/{}", target_branch));
-        fetch_origin(&repo)?;
-    } else {
+    Ok(collect_workspaces(&repo))
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces (one branch each; `main` stays empty)
+// ---------------------------------------------------------------------------
+
+/// A commit with no files and no parent.
+fn empty_root_commit(repo: &Repository) -> Result<git2::Oid, String> {
+    let tree_oid = repo
+        .treebuilder(None)
+        .and_then(|b| b.write())
+        .map_err(|e| format!("Failed to prepare storage: {}", e))?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let sig = signature(repo);
+    repo.commit(None, &sig, &sig, "Noetic storage", &tree, &[])
+        .map_err(|e| format!("Failed to prepare storage: {}", e))
+}
+
+fn storage_branch_commit(repo: &Repository) -> Option<git2::Commit<'_>> {
+    repo.find_reference(&format!("refs/remotes/origin/{}", STORAGE_BRANCH))
+        .ok()
+        .and_then(|r| r.peel_to_commit().ok())
+}
+
+/// Creates the empty `main` branch on origin if the repository doesn't have one yet.
+fn ensure_storage_branch(repo: &Repository) -> Result<(), String> {
+    if storage_branch_commit(repo).is_some() {
+        return Ok(());
+    }
+    // Pushed from a scratch reference so no local `main` branch is left behind.
+    let scratch = "refs/noetic/storage";
+    let oid = empty_root_commit(repo)?;
+    repo.reference(scratch, oid, true, "Noetic storage")
+        .map_err(|e| format!("Failed to prepare storage: {}", e))?;
+    let pushed = push_ref(repo, scratch, STORAGE_BRANCH);
+    if let Ok(mut r) = repo.find_reference(scratch) {
+        let _ = r.delete();
+    }
+    pushed.map_err(|e| format!("Couldn't set up your cloud storage: {}", e))
+}
+
+/// Where a new workspace starts: the empty commit on `main`, so every workspace begins blank.
+fn workspace_base(repo: &Repository) -> Result<git2::Oid, String> {
+    if let Some(commit) = storage_branch_commit(repo) {
+        if commit.tree().map(|t| t.is_empty()).unwrap_or(false) {
+            return Ok(commit.id());
+        }
+    }
+    empty_root_commit(repo)
+}
+
+fn collect_workspaces(repo: &Repository) -> WorkspaceList {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    if let Ok(branches) = repo.branches(None) {
+        for (branch, kind) in branches.flatten() {
+            let Ok(Some(name)) = branch.name() else { continue };
+            let name = match kind {
+                BranchType::Local => name,
+                BranchType::Remote => match name.strip_prefix("origin/") {
+                    Some(n) => n,
+                    None => continue,
+                },
+            };
+            if name != STORAGE_BRANCH && name != "HEAD" {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    let mut workspaces: Vec<String> = names.into_iter().collect();
+    workspaces.sort_by_key(|n| n.to_lowercase());
+    WorkspaceList {
+        current: current_workspace(repo),
+        workspaces,
+    }
+}
+
+/// Lists the workspaces known on this device and in the cloud. `refresh` checks the cloud first;
+/// being offline is not an error, the list is then what this device last saw.
+pub fn list_workspaces(repo_path: &str, refresh: bool) -> Result<WorkspaceList, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
+    if refresh {
         let _ = fetch_origin(&repo);
     }
+    Ok(collect_workspaces(&repo))
+}
 
-    // Fast forward if remote branch exists and local HEAD is empty
-    let (_, remote_oid) = find_remote_tracking_branch(&repo, &target_branch);
-    if let Some(r_oid) = remote_oid {
-        if repo.head().is_err() {
-            let _ = fast_forward_to_commit(&repo, &target_branch, r_oid);
+/// Turns what the user typed into a branch name: spaces become dashes, the rest must be valid.
+fn workspace_branch_name(name: &str) -> Result<String, String> {
+    let cleaned = name.split_whitespace().collect::<Vec<_>>().join("-");
+    if cleaned.is_empty() {
+        return Err("Give the workspace a name.".to_string());
+    }
+    if cleaned.eq_ignore_ascii_case(STORAGE_BRANCH) || cleaned.eq_ignore_ascii_case("HEAD") {
+        return Err(format!("\"{}\" is reserved. Pick a different name.", cleaned));
+    }
+    let valid = !cleaned.starts_with('-')
+        && !cleaned.contains('/')
+        && git2::Branch::name_is_valid(&cleaned).unwrap_or(false);
+    if !valid {
+        return Err("Workspace names can use letters, numbers, spaces, dashes and underscores.".to_string());
+    }
+    Ok(cleaned)
+}
+
+/// Before leaving a workspace its unsaved changes are saved (and uploaded when possible), so
+/// they are not carried into, or overwritten by, the workspace being opened.
+fn save_before_leaving(repo: &Repository, repo_path: &str, workspace: &str) -> Result<(), String> {
+    let status = get_repo_status(repo_path)?;
+    if status.dirty_count == 0 {
+        return Ok(());
+    }
+    if status.behind_count > 0 {
+        return Err(
+            "This workspace has unsaved changes and updates waiting from your other devices. Sync it first, then switch."
+                .to_string(),
+        );
+    }
+    commit_all(repo, &format!("Saved before leaving workspace: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
+    let _ = push_workspace(repo, workspace);
+    Ok(())
+}
+
+/// Puts a workspace's notes in the folder and makes it the open one. `force` replaces whatever
+/// is in the folder; without it, a file that would be overwritten stops the switch.
+fn checkout_workspace(repo: &Repository, workspace: &str, force: bool) -> Result<(), git2::Error> {
+    let ref_name = format!("refs/heads/{}", workspace);
+    let commit = repo.find_reference(&ref_name)?.peel_to_commit()?;
+    let mut opts = git2::build::CheckoutBuilder::new();
+    if force {
+        opts.force();
+    } else {
+        opts.safe();
+    }
+    repo.checkout_tree(commit.as_object(), Some(&mut opts))?;
+    repo.set_head(&ref_name)
+}
+
+/// Folders aren't part of a save, so empty ones would otherwise follow the user from one
+/// workspace into the next.
+fn remove_empty_folders(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    let mut empty = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && entry.file_name() != ".git" && remove_empty_folders(&path) {
+            let _ = std::fs::remove_dir(&path);
+        } else {
+            empty = false;
+        }
+    }
+    empty
+}
+
+fn has_notes(dir: &Path) -> bool {
+    walkdir_files(dir).iter().any(|p| {
+        matches!(p.extension().and_then(|e| e.to_str()), Some("md") | Some("canvas"))
+    })
+}
+
+fn walkdir_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            out.extend(walkdir_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+const WELCOME_NOTE: &str = "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Save** uploads your changes so your other devices can get them.\n- **Sync** brings in changes made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
+
+/// Creates a workspace and opens it. A new workspace starts blank, except the first one on a
+/// device: notes already in the folder (written before signing in) move into it.
+pub fn create_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
+    let workspace = workspace_branch_name(name)?;
+
+    let existing = collect_workspaces(&repo);
+    if existing.workspaces.iter().any(|w| w.eq_ignore_ascii_case(&workspace)) {
+        return Err(format!("A workspace named \"{}\" already exists.", workspace));
+    }
+
+    let ref_name = format!("refs/heads/{}", workspace);
+    let failed = |e: git2::Error| format!("Couldn't create the workspace: {}", e.message());
+
+    match existing.current {
+        Some(current) => {
+            save_before_leaving(&repo, repo_path, &current)?;
+            let base = workspace_base(&repo)?;
+            repo.reference(&ref_name, base, false, "Noetic: new workspace").map_err(failed)?;
+            checkout_workspace(&repo, &workspace, true).map_err(failed)?;
+            if let Some(root) = repo.workdir() {
+                remove_empty_folders(root);
+            }
+        }
+        None => {
+            let base = workspace_base(&repo)?;
+            repo.reference(&ref_name, base, false, "Noetic: new workspace").map_err(failed)?;
+            repo.set_head(&ref_name).map_err(failed)?;
+            // Files stay where they are; only the record of what has been saved starts blank.
+            let base_object = repo.find_object(base, None).map_err(failed)?;
+            repo.reset(&base_object, git2::ResetType::Mixed, None).map_err(failed)?;
+
+            let root = Path::new(repo_path);
+            if !has_notes(root) {
+                let _ = std::fs::write(root.join("Welcome.md"), WELCOME_NOTE);
+            }
+            commit_all(&repo, "First notes in this workspace")?;
         }
     }
 
-    // If still no markdown notes exist, create initial Welcome note
-    let welcome = p.join("Welcome.md");
-    if !welcome.exists() {
-        let entries = std::fs::read_dir(p).ok();
-        let has_md = entries
-            .map(|e| e.filter_map(|r| r.ok()).any(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("md")))
-            .unwrap_or(false);
-        if !has_md {
-            let welcome_content = format!(
-                "# Welcome to GitVault\n\nYour vault is now connected to GitHub repository: `{}`.\n\n- Every note is written locally to disk\n- Hit **Save** to stage, commit, and push directly to GitHub\n",
-                clean_url
-            );
-            let _ = std::fs::write(welcome, welcome_content);
+    // Offline is fine: the workspace is uploaded with the next save.
+    let _ = push_workspace(&repo, &workspace);
+    get_repo_status(repo_path)
+}
+
+/// Opens another workspace: the notes in the folder are replaced with that workspace's notes.
+pub fn switch_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
+    let workspace = name.trim();
+    let current = current_workspace(&repo);
+    if current.as_deref() == Some(workspace) {
+        return get_repo_status(repo_path);
+    }
+
+    let gone = || format!("The workspace \"{}\" no longer exists.", workspace);
+    if workspace.is_empty() || workspace == STORAGE_BRANCH {
+        return Err(gone());
+    }
+    let ref_name = format!("refs/heads/{}", workspace);
+    let failed = |e: git2::Error| format!("Couldn't open the workspace: {}", e.message());
+
+    if let Some(current) = &current {
+        save_before_leaving(&repo, repo_path, current)?;
+    }
+
+    // A workspace made on another device exists only in the cloud copy until it is opened here.
+    if repo.find_reference(&ref_name).is_err() {
+        let remote_oid = repo
+            .find_branch(&format!("origin/{}", workspace), BranchType::Remote)
+            .ok()
+            .and_then(|b| b.get().target())
+            .ok_or_else(gone)?;
+        repo.reference(&ref_name, remote_oid, false, "Noetic: open workspace").map_err(failed)?;
+    }
+
+    if current.is_some() {
+        checkout_workspace(&repo, workspace, true).map_err(failed)?;
+        if let Some(root) = repo.workdir() {
+            remove_empty_folders(root);
         }
+    } else {
+        // No workspace was open, so notes in the folder belong to none yet. They are kept and
+        // join this workspace; one with the same name as a note already in it stops the switch.
+        checkout_workspace(&repo, workspace, false).map_err(|_| {
+            "Some notes on this device have the same names as notes in this workspace. Rename or move them, then try again."
+                .to_string()
+        })?;
     }
 
     get_repo_status(repo_path)

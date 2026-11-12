@@ -8,7 +8,7 @@ import {
   Edit3,
   X,
 } from "lucide-react";
-import { ConflictFile, ConflictResolution } from "../types/gitVault";
+import { ConflictFile, ConflictResolution } from "../types/noetic";
 
 interface ConflictResolverModalProps {
   conflicts: ConflictFile[];
@@ -44,7 +44,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
     for (const f of conflicts) {
       initial[f.path] = {
         type: "custom",
-        content: `# Merged Content: ${f.path}\n\n${f.local_content}\n\n// --- Remote Changes Below ---\n${f.remote_content}`,
+        content: `# Merged Content: ${f.path}\n\n${f.local_content}\n\n// --- Changes from your other device below ---\n${f.remote_content}`,
       };
     }
     return initial;
@@ -123,30 +123,30 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                 <h2 className="font-headline font-semibold text-base text-white flex items-center gap-2">
                   Resolve Conflicting Changes
                   <span className="text-xs font-mono font-medium text-orange-400 px-2 py-0.5 rounded-full bg-orange-950/60 border border-orange-500/30">
-                    {conflicts.length} Conflicted File(s)
+                    {conflicts.length} note(s)
                   </span>
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Changes from GitHub remote conflict with your local edits. Select which version to keep or combine directly.
+                  These notes changed both here and on another device. Choose which version to keep, or combine them.
                 </p>
               </div>
             </div>
 
-            {/* Branch Context Trio */}
+            {/* Legend */}
             <div className="hidden md:flex items-center gap-2 bg-[#0d1117] px-3 py-1.5 rounded-lg border border-[#30363d] text-xs font-mono">
               <div className="flex items-center gap-1.5 text-amber-400">
                 <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span>Ours (HEAD)</span>
+                <span>This device</span>
               </div>
               <span className="text-zinc-500">↔</span>
               <div className="flex items-center gap-1.5 text-zinc-400">
                 <span className="w-2 h-2 rounded-full bg-zinc-500"></span>
-                <span>Base</span>
+                <span>Before</span>
               </div>
               <span className="text-zinc-500">↔</span>
               <div className="flex items-center gap-1.5 text-sky-400">
                 <span className="w-2 h-2 rounded-full bg-sky-400"></span>
-                <span>Theirs (Remote)</span>
+                <span>Other device</span>
               </div>
             </div>
 
@@ -176,7 +176,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                 onClick={handleAcceptAllRemote}
                 className="px-2.5 py-1 rounded-md bg-[#21262d] hover:bg-sky-950/40 text-sky-300 border border-sky-500/30 font-medium transition-colors cursor-pointer"
               >
-                Keep All Cloud Edits
+                Keep All From Other Device
               </button>
             </div>
 
@@ -248,7 +248,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                       : "bg-[#21262d] border-[#30363d] text-zinc-300 hover:border-amber-500/50"
                   }`}
                 >
-                  Accept Local (Mine)
+                  Keep this device's version
                 </button>
                 <button
                   onClick={() => handleChooseRemote(activeFile.path)}
@@ -258,7 +258,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                       : "bg-[#21262d] border-[#30363d] text-zinc-300 hover:border-sky-500/50"
                   }`}
                 >
-                  Accept Remote (Incoming)
+                  Keep the other device's version
                 </button>
               </div>
             </div>
@@ -268,7 +268,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
               {/* Column 1: Local / Disk Worktree */}
               <div className="flex flex-col h-full bg-[#0d1117] overflow-hidden">
                 <div className="p-2 border-b border-[#21262d] bg-amber-950/20 text-amber-300 text-xs font-semibold flex items-center justify-between">
-                  <span>Local Worktree (Unsaved on Disk)</span>
+                  <span>This device (unsaved)</span>
                   <span className="text-[10px] text-amber-400/80 font-mono">YOUR EDITS</span>
                 </div>
                 <pre className="flex-1 p-3 text-xs font-mono text-zinc-300 overflow-auto whitespace-pre-wrap selection:bg-amber-500/30">
@@ -279,18 +279,18 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
               {/* Column 2: Ancestor / Base */}
               <div className="flex flex-col h-full bg-[#0d1117] overflow-hidden">
                 <div className="p-2 border-b border-[#21262d] bg-[#161b22] text-zinc-400 text-xs font-semibold flex items-center justify-between">
-                  <span>Base (Ancestor / HEAD commit)</span>
-                  <span className="text-[10px] text-zinc-500 font-mono">COMMON BASE</span>
+                  <span>Before either change</span>
+                  <span className="text-[10px] text-zinc-500 font-mono">ORIGINAL</span>
                 </div>
                 <pre className="flex-1 p-3 text-xs font-mono text-zinc-400 overflow-auto whitespace-pre-wrap selection:bg-zinc-700">
-                  {activeFile.base_content || "(empty file in ancestor commit)"}
+                  {activeFile.base_content || "(the note did not exist yet)"}
                 </pre>
               </div>
 
               {/* Column 3: Remote / origin/main */}
               <div className="flex flex-col h-full bg-[#0d1117] overflow-hidden">
                 <div className="p-2 border-b border-[#21262d] bg-sky-950/20 text-sky-300 text-xs font-semibold flex items-center justify-between">
-                  <span>Remote (origin/main)</span>
+                  <span>Other device</span>
                   <span className="text-[10px] text-sky-400/80 font-mono">INCOMING</span>
                 </div>
                 <pre className="flex-1 p-3 text-xs font-mono text-zinc-300 overflow-auto whitespace-pre-wrap selection:bg-sky-500/30">
@@ -304,10 +304,10 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
               <div className="px-4 py-2 border-b border-[#21262d] flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2 font-medium text-emerald-400">
                   <Edit3 className="w-3.5 h-3.5" />
-                  <span>Final Resolved File Preview (Editable)</span>
+                  <span>Final version (editable)</span>
                 </div>
                 <span className="text-zinc-500 text-[11px]">
-                  This content will be written directly to disk and committed.
+                  This is what the note will contain.
                 </span>
               </div>
               <textarea
@@ -323,8 +323,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-3 border-t border-[#30363d] bg-[#0d1117] flex items-center justify-between">
           <p className="text-xs text-zinc-400">
-            Resolving will cleanly advance the Git reference without writing raw{" "}
-            <code className="text-orange-400 font-mono">&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> markers to your markdown files.
+            Nothing is changed until you apply. Your notes are never left with conflict markers in them.
           </p>
 
           <div className="flex items-center gap-3">
@@ -340,7 +339,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
               className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer active:scale-95 transition-all"
             >
               <CheckCheck className="w-4 h-4" />
-              <span>Apply Resolutions & Finalize Merge</span>
+              <span>Apply and finish</span>
             </button>
           </div>
         </div>

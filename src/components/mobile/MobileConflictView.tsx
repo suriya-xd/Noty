@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FC } from "react";
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Cloud, Smartphone } from "lucide-react";
-import { ConflictFile, ConflictResolution } from "../../types/gitVault";
+import { ConflictFile, ConflictResolution } from "../../types/noetic";
 
 interface MobileConflictViewProps {
   conflicts: ConflictFile[];
@@ -63,8 +63,8 @@ export const MobileConflictView: FC<MobileConflictViewProps> = ({ conflicts, isO
     },
     {
       id: "remote",
-      label: "On GitHub",
-      keep: "Keep GitHub's",
+      label: "From another device",
+      keep: "Keep the other",
       icon: Cloud,
       content: current.remote_content,
       accent: "text-sky-400",
@@ -95,7 +95,7 @@ export const MobileConflictView: FC<MobileConflictViewProps> = ({ conflicts, isO
 
       <div className="flex-1 overflow-y-auto overscroll-contain px-4 py-4 space-y-4">
         <p className="text-[15px] leading-relaxed text-[#8b949e]">
-          This note changed both here and on GitHub. Choose the version to keep.
+          This note changed both here and on another device. Choose the version to keep.
         </p>
 
         <div className="flex items-center gap-1">
@@ -157,7 +157,7 @@ export const MobileConflictView: FC<MobileConflictViewProps> = ({ conflicts, isO
                   }`}
                 >
                   {selected && <Check className="w-4 h-4" />}
-                  <span>{selected ? `Keeping ${v.id === "local" ? "mine" : "GitHub's"}` : v.keep}</span>
+                  <span>{selected ? `Keeping ${v.id === "local" ? "mine" : "the other"}` : v.keep}</span>
                 </button>
               </div>
             </section>
@@ -178,7 +178,7 @@ export const MobileConflictView: FC<MobileConflictViewProps> = ({ conflicts, isO
               onClick={() => chooseAll("remote")}
               className="flex-1 h-11 rounded-xl border border-[#30363d] text-[14px] font-medium text-[#c9d1d9] active:bg-[#161b22]"
             >
-              Keep GitHub's for all
+              Keep the other for all
             </button>
           </div>
         )}

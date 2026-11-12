@@ -1,4 +1,4 @@
-// Command arguments: the frontend (src/services/gitVaultBridge.ts) sends snake_case keys, while
+// Command arguments: the frontend (src/services/noeticBridge.ts) sends snake_case keys, while
 // Tauri 2 expects camelCase by default, so every command pins `rename_all = "snake_case"`.
 // Commands marked `async` do network I/O and run off the main thread, so a slow or stuck
 // connection can't freeze the UI (on Android that would be an "app not responding" dialog).
@@ -9,7 +9,7 @@ pub mod models;
 
 use github_auth::{DeviceCodeResponse, DeviceTokenResponse};
 use models::{
-    ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo,
+    ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo, WorkspaceList,
 };
 
 #[tauri::command(rename_all = "snake_case")]
@@ -51,31 +51,29 @@ fn set_vault_config(repo_path: String, config: VaultConfigInput) -> Result<Vault
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn test_remote_connection(
-    repo_path: String,
-    remote_url: String,
-    github_token: Option<String>,
-) -> Result<String, String> {
-    git_engine::test_remote_connection(&repo_path, &remote_url, github_token)
-}
-
-#[tauri::command(async, rename_all = "snake_case")]
 fn connect_vault(
     vault_path: String,
     remote_url: String,
-    branch: Option<String>,
     github_token: Option<String>,
     user_name: Option<String>,
     user_email: Option<String>,
-) -> Result<RepoStatusPayload, String> {
-    git_engine::connect_vault(
-        &vault_path,
-        &remote_url,
-        branch,
-        github_token,
-        user_name,
-        user_email,
-    )
+) -> Result<WorkspaceList, String> {
+    git_engine::connect_vault(&vault_path, &remote_url, github_token, user_name, user_email)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn list_workspaces(repo_path: String, refresh: Option<bool>) -> Result<WorkspaceList, String> {
+    git_engine::list_workspaces(&repo_path, refresh.unwrap_or(false))
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn create_workspace(repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
+    git_engine::create_workspace(&repo_path, &name)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn switch_workspace(repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
+    git_engine::switch_workspace(&repo_path, &name)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -113,17 +111,17 @@ fn rename_file(vault_path: String, old_path: String, new_path: String) -> Result
     fs_engine::rename_file(&vault_path, &old_path, &new_path)
 }
 
-/// Where the vault lives when the user hasn't chosen a place. On phones that is the app's own
+/// Where the notes folder lives when the user hasn't chosen a place. On phones that is the app's own
 /// storage folder: there is no home directory there (HOME is unset), and the fallback of a
-/// relative `./GitVault` lands on the read-only filesystem root. `None` means "use the desktop
-/// default" (a GitVault folder in the user's home), which fs_engine works out itself.
+/// relative `./Noetic` lands on the read-only filesystem root. `None` means "use the desktop
+/// default" (a Noetic folder in the user's home), which fs_engine works out itself.
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn default_vault_dir(app: &tauri::AppHandle) -> Option<String> {
     use tauri::Manager;
     app.path()
         .app_data_dir()
         .ok()
-        .map(|dir| dir.join("GitVault").to_string_lossy().to_string())
+        .map(|dir| dir.join("Noetic").to_string_lossy().to_string())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -184,8 +182,10 @@ pub fn run() {
             resolve_conflicts,
             get_vault_config,
             set_vault_config,
-            test_remote_connection,
             connect_vault,
+            list_workspaces,
+            create_workspace,
+            switch_workspace,
             list_vault_files,
             read_file_content,
             write_file_content,
@@ -199,5 +199,5 @@ pub fn run() {
             save_image_file
         ])
         .run(tauri::generate_context!())
-        .expect("error while running GitVault application");
+        .expect("error while running Noetic application");
 }

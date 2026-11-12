@@ -8,13 +8,13 @@ if (-not $token) {
     }
 }
 $repoOwner = "suriya-xd"
-$repoName = "gitvault-sample-vault"
-$vaultPath = "c:\Users\asuri\OneDrive\Desktop\Projects\Noty\sample-vault"
+$repoName = "noetic-sample-vault"
+$vaultPath = "c:\Users\asuri\OneDrive\Desktop\Projects\Noetic\sample-vault"
 
 $headers = @{
     "Authorization" = "Bearer $token"
     "Accept" = "application/vnd.github+json"
-    "User-Agent" = "GitVault-Test"
+    "User-Agent" = "Noetic-Test"
     "X-GitHub-Api-Version" = "2022-11-28"
 }
 
@@ -25,20 +25,20 @@ Write-Host "Commits difference between HEAD and origin/main: $remoteCommits"
 
 Write-Host "`n=== TEST 2: Local Unsaved Edit (Dirty Worktree) ===" -ForegroundColor Cyan
 $newNotePath = Join-Path $vaultPath "FirstNote.md"
-Set-Content -Path $newNotePath -Value "# My First Vault Note`n`nWritten locally in GitVault." -Encoding UTF8
+Set-Content -Path $newNotePath -Value "# My First Vault Note`n`nWritten locally in Noetic." -Encoding UTF8
 git -C $vaultPath status -s
 Write-Host "File created directly on disk without committing (Core Rule 2 verified)."
 
 Write-Host "`n=== TEST 3: Save and Push to GitHub (Core Rule 4) ===" -ForegroundColor Cyan
 git -C $vaultPath add -A
-git -C $vaultPath commit -m "Add FirstNote.md via GitVault Save"
+git -C $vaultPath commit -m "Add FirstNote.md via Noetic Save"
 git -C $vaultPath push origin main
 Write-Host "Pushed to GitHub successfully!"
 
 Write-Host "`n=== TEST 4: Simulate Remote Change on GitHub (Core Rule 3) ===" -ForegroundColor Cyan
 $readmeApi = Invoke-RestMethod -Uri "https://api.github.com/repos/$repoOwner/$repoName/contents/README.md" -Headers $headers
 $currentSha = $readmeApi.sha
-$newContent = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("# gitvault-sample-vault`n`nUpdated remotely on GitHub."))
+$newContent = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("# noetic-sample-vault`n`nUpdated remotely on GitHub."))
 
 $updateBody = @{
     message = "Simulate remote edit from another device"

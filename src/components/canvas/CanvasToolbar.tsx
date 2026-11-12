@@ -172,7 +172,7 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
 
         <button
           onClick={onAddFileNode}
-          title="Add Note from Vault (Drag note or click)"
+          title="Add a note from this workspace (drag or click)"
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-amber-300 hover:bg-[#21262d] transition-colors cursor-pointer font-medium"
         >
           <FilePlus className="w-3.5 h-3.5 text-amber-400" />

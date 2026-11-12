@@ -77,7 +77,7 @@ async function runCanvasIntegrationTests() {
   ];
 
   const originalCanvas: CanvasData = {
-    generator: "Noty Obsidian Canvas 1.0",
+    generator: "Noetic Obsidian Canvas 1.0",
     nodes,
     edges,
   };
@@ -107,7 +107,7 @@ async function runCanvasIntegrationTests() {
   // Step 4: Serialize to .canvas file format (pure JSON Canvas 1.0)
   console.log("\n[4/5] Serializing to .canvas File JSON...");
   const serializedJson = serializeCanvas(originalCanvas);
-  if (!serializedJson.includes('"generator": "Noty Obsidian Canvas 1.0"')) {
+  if (!serializedJson.includes('"generator": "Noetic Obsidian Canvas 1.0"')) {
     throw new Error("Unknown generator metadata lost");
   }
   if (!serializedJson.includes('"subpath": "# Git Worktree"')) {

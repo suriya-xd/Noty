@@ -8,13 +8,13 @@ if (-not $token) {
     }
 }
 $repoOwner = "suriya-xd"
-$repoName = "gitvault-sample-vault"
-$vaultPath = "c:\Users\asuri\OneDrive\Desktop\Projects\Noty\sample-vault"
+$repoName = "noetic-sample-vault"
+$vaultPath = "c:\Users\asuri\OneDrive\Desktop\Projects\Noetic\sample-vault"
 
 $headers = @{
     "Authorization" = "Bearer $token"
     "Accept" = "application/vnd.github+json"
-    "User-Agent" = "GitVault-Test"
+    "User-Agent" = "Noetic-Test"
     "X-GitHub-Api-Version" = "2022-11-28"
 }
 

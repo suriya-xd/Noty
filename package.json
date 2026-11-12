@@ -1,5 +1,5 @@
 {
-  "name": "gitvault",
+  "name": "noetic",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -19,7 +19,8 @@
     "test:canvas": "npx tsx ./scripts/test-canvas.ts",
     "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts",
     "test:blocks": "npx tsx ./scripts/test-block-move.ts",
-    "test:auth": "npx tsx ./scripts/test-device-flow.ts"
+    "test:auth": "npx tsx ./scripts/test-device-flow.ts",
+    "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

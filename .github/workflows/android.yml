@@ -70,9 +70,20 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
           NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
 
+      # Gradle names its output app-<abi>-<type>.apk; publish it under the app's own name.
+      - name: Name the APK
+        run: |
+          mkdir -p apk-out
+          for f in src-tauri/gen/android/app/build/outputs/apk/*/*/*.apk; do
+            [ -e "$f" ] || continue
+            name="$(basename "$f" .apk)"
+            cp "$f" "apk-out/Noetic-${name#app-}.apk"
+          done
+          ls -l apk-out
+
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
-          name: gitvault-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: Noetic-android-apk
+          path: apk-out/*.apk
           if-no-files-found: warn

@@ -1,7 +1,7 @@
 # ============================================================================
-# GitVault - Android Toolchain Setup (Windows PowerShell)
+# Noetic - Android Toolchain Setup (Windows PowerShell)
 # ============================================================================
-Write-Host ">>> Checking GitVault Android Prerequisites..." -ForegroundColor Cyan
+Write-Host ">>> Checking Noetic Android Prerequisites..." -ForegroundColor Cyan
 
 # 1. Check Java JDK (17+)
 if (Get-Command java -ErrorAction SilentlyContinue) {

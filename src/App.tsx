@@ -9,18 +9,19 @@ import { Dashboard } from "./components/Dashboard";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
 import { OnboardingModal } from "./components/OnboardingModal";
 import { AccountSettingsModal } from "./components/AccountSettingsModal";
-import { RepoSwitchModal } from "./components/RepoSwitchModal";
+import { WorkspaceModal } from "./components/WorkspaceModal";
 import { ImagePreviewModal } from "./components/ImagePreviewModal";
 import { MobileShell } from "./components/mobile/MobileShell";
 import { MobileConflictView } from "./components/mobile/MobileConflictView";
 import { MobileOnboardingView } from "./components/mobile/MobileOnboardingView";
-import { GitVaultBridge } from "./services/gitVaultBridge";
+import { NoeticBridge } from "./services/noeticBridge";
+import { GitHubService } from "./services/githubService";
 import {
   ConflictFile,
   ConflictResolution,
   RepoStatusPayload,
   VaultEntry,
-} from "./types/gitVault";
+} from "./types/noetic";
 import { vaultIndex } from "./utils/wikilinks/vaultIndex";
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
@@ -52,7 +53,7 @@ export default function App() {
   // Onboarding wizard state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState<boolean>(false);
-  const [isRepoSwitchOpen, setIsRepoSwitchOpen] = useState<boolean>(false);
+  const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
 
   // Toast helper
   const showToast = (text: string, type: "success" | "error" | "info" = "info") => {
@@ -76,7 +77,7 @@ export default function App() {
   // 1. Refresh repository and file status
   const refreshStatus = useCallback(async (path = vaultPath) => {
     try {
-      const currentStatus = await GitVaultBridge.getRepoStatus(path);
+      const currentStatus = await NoeticBridge.getRepoStatus(path);
       setStatus(currentStatus);
     } catch (err) {
       console.error("Failed to get repo status:", err);
@@ -86,7 +87,7 @@ export default function App() {
   // 2. Refresh file list from disk
   const refreshFiles = useCallback(async (path = vaultPath) => {
     try {
-      const list = await GitVaultBridge.listVaultFiles(path);
+      const list = await NoeticBridge.listVaultFiles(path);
       setFiles(list);
 
       // Re-index vault files in memory
@@ -95,7 +96,7 @@ export default function App() {
       // Asynchronously populate backlinks graph for all markdown & canvas files
       list.forEach((entry) => {
         if (!entry.is_directory && (entry.path.endsWith(".md") || entry.path.endsWith(".canvas"))) {
-          GitVaultBridge.readFileContent(`${path}/${entry.path}`)
+          NoeticBridge.readFileContent(`${path}/${entry.path}`)
             .then((content) => backlinksGraph.updateFileLinks(entry.path, content))
             .catch(() => {});
         }
@@ -122,19 +123,19 @@ export default function App() {
     const initVault = async () => {
       setIsLoading(true);
       try {
-        const info = await GitVaultBridge.initOrOpenVault();
+        const info = await NoeticBridge.initOrOpenVault();
         setVaultPath(info.path);
         await Promise.all([refreshFiles(info.path), refreshStatus(info.path)]);
         if (!info.remote_url) {
           setIsOnboardingOpen(true);
-          // The mobile onboarding screen is full-screen and says this itself.
-          if (window.innerWidth >= 768) {
-            showToast("Welcome to Noty! Connect a GitHub repository to start syncing.", "info");
-          }
+        } else {
+          // Signed in before, but setup stopped before a workspace was created or chosen.
+          const current = await NoeticBridge.getRepoStatus(info.path).catch(() => null);
+          if (current && !current.branch) setIsWorkspaceOpen(true);
         }
       } catch (err) {
-        console.error("Vault initialization failed:", err);
-        showToast(`Initialization failed: ${err}`, "error");
+        console.error("Startup failed:", err);
+        showToast(`Noetic couldn't open your notes folder: ${err}`, "error");
       } finally {
         setIsLoading(false);
       }
@@ -165,7 +166,7 @@ export default function App() {
     }
     try {
       const fullPath = `${vaultPath}/${relPath}`;
-      const content = await GitVaultBridge.readFileContent(fullPath);
+      const content = await NoeticBridge.readFileContent(fullPath);
       const previous = activeFilePathRef.current;
       setActiveFileContent(content);
       setActiveFilePath(relPath);
@@ -218,10 +219,10 @@ export default function App() {
       const isActive = activeFilePathRef.current === relPath;
       if (!isActive && !filesRef.current.some((f) => f.path === relPath)) return;
       const fullPath = `${vaultPath}/${relPath}`;
-      await GitVaultBridge.writeFileContent(fullPath, newContent);
+      await NoeticBridge.writeFileContent(fullPath, newContent);
       if (activeFilePathRef.current === relPath) setActiveFileContent(newContent);
       backlinksGraph.updateFileLinks(relPath, newContent);
-      // Immediately refresh Git status to show the dirty worktree indicator (`•`)
+      // Refresh the status so the unsaved indicator (`•`) shows right away
       await refreshStatus();
     } catch (err) {
       console.error("Failed to write to disk:", err);
@@ -229,13 +230,13 @@ export default function App() {
     }
   };
 
-  // 6. Manual Save & Push (Rule 4: Stages `git add -A`, commits, and pushes)
+  // 6. Manual Save (uploads the workspace)
   const handleSaveAndPush = async () => {
     setIsLoading(true);
     try {
-      const updatedStatus = await GitVaultBridge.saveAndPush(vaultPath);
+      const updatedStatus = await NoeticBridge.saveAndPush(vaultPath);
       setStatus(updatedStatus);
-      showToast("All changes staged, committed, and saved successfully!", "success");
+      showToast("Saved. Your changes are backed up.", "success");
       await refreshFiles();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -245,11 +246,11 @@ export default function App() {
     }
   };
 
-  // 7. Manual Sync & Pull (Rule 5: Pulls origin/main, 3-way in-memory merge)
+  // 7. Manual Sync (brings in changes from other devices)
   const handleSyncAndPull = async () => {
     setIsLoading(true);
     try {
-      const result = await GitVaultBridge.syncAndPull(vaultPath);
+      const result = await NoeticBridge.syncAndPull(vaultPath);
       if (result.conflicts && result.conflicts.length > 0) {
         // Line-level collisions detected! Open Visual Conflict Resolver Modal
         setConflictedFiles(result.conflicts);
@@ -267,15 +268,18 @@ export default function App() {
     }
   };
 
-  // 8. Manual Fetch Remote
+  // 8. Check for updates
   const handleFetchRemote = async () => {
     setIsLoading(true);
     try {
-      const updatedStatus = await GitVaultBridge.fetchRemote(vaultPath);
+      const updatedStatus = await NoeticBridge.fetchRemote(vaultPath);
       setStatus(updatedStatus);
-      showToast("Fetched latest remote references.", "info");
+      showToast(
+        updatedStatus.behind_count > 0 ? "Updates are available. Sync to get them." : "Everything is up to date.",
+        "info"
+      );
     } catch (err) {
-      showToast(`Fetch failed: ${err}`, "error");
+      showToast(`Couldn't check for updates: ${err}`, "error");
     } finally {
       setIsLoading(false);
     }
@@ -285,16 +289,16 @@ export default function App() {
   const handleApplyResolutions = async (resolutions: ConflictResolution[]) => {
     setIsLoading(true);
     try {
-      const postStatus = await GitVaultBridge.resolveConflicts(vaultPath, resolutions);
+      const postStatus = await NoeticBridge.resolveConflicts(vaultPath, resolutions);
       setStatus(postStatus);
       setIsConflictModalOpen(false);
       setConflictedFiles([]);
-      showToast("Conflicts resolved cleanly! Merged changes applied.", "success");
+      showToast("Conflicts resolved. Your notes are up to date.", "success");
 
       // Reload active note if it was resolved
       if (activeFilePath) {
         const fullPath = `${vaultPath}/${activeFilePath}`;
-        const updated = await GitVaultBridge.readFileContent(fullPath);
+        const updated = await NoeticBridge.readFileContent(fullPath);
         setActiveFileContent(updated);
       }
       await refreshFiles();
@@ -308,7 +312,7 @@ export default function App() {
   // 10. File & Folder Management (Create, Delete, Rename)
   const handleCreateFile = async (name: string, options?: OpenFileOptions) => {
     try {
-      await GitVaultBridge.createFile(vaultPath, name);
+      await NoeticBridge.createFile(vaultPath, name);
       await Promise.all([refreshFiles(), refreshStatus()]);
       handleSelectFile(name, options);
       showToast(`Created ${name}`, "success");
@@ -319,7 +323,7 @@ export default function App() {
 
   const handleCreateFolder = async (folderPath: string) => {
     try {
-      await GitVaultBridge.createFolder(vaultPath, folderPath);
+      await NoeticBridge.createFolder(vaultPath, folderPath);
       await Promise.all([refreshFiles(), refreshStatus()]);
       showToast(`Created folder "${folderPath}"`, "success");
     } catch (err) {
@@ -329,7 +333,7 @@ export default function App() {
 
   const handleDeleteFile = async (relPath: string) => {
     try {
-      await GitVaultBridge.deleteFile(vaultPath, relPath);
+      await NoeticBridge.deleteFile(vaultPath, relPath);
       vaultIndex.remove(relPath);
       backlinksGraph.removeFileLinks(relPath);
 
@@ -367,9 +371,9 @@ export default function App() {
     }
     try {
       const result = await renameFileWithWikilinks(oldPath, newPath, {
-        readFile: (filePath) => GitVaultBridge.readFileContent(`${vaultPath}/${filePath}`),
-        writeFile: (filePath, content) => GitVaultBridge.writeFileContent(`${vaultPath}/${filePath}`, content),
-        renameFile: (oldP, newP) => GitVaultBridge.renameFile(vaultPath, oldP, newP),
+        readFile: (filePath) => NoeticBridge.readFileContent(`${vaultPath}/${filePath}`),
+        writeFile: (filePath, content) => NoeticBridge.writeFileContent(`${vaultPath}/${filePath}`, content),
+        renameFile: (oldP, newP) => NoeticBridge.renameFile(vaultPath, oldP, newP),
       });
 
       const renamed = (p: string) =>
@@ -398,36 +402,64 @@ export default function App() {
     }
   };
 
-  // 11. State simulation handler for instant testing
+  // 11. Workspaces: a switch replaces every note in the folder, so open notes are closed.
+  const handleWorkspaceSwitched = async (workspace: string, newStatus: RepoStatusPayload, created: boolean) => {
+    setStatus(newStatus);
+    setOpenTabs([]);
+    setActiveFilePath(null);
+    setActiveFileContent("");
+    await refreshFiles();
+    showToast(created ? `Workspace "${workspace}" created.` : `Switched to "${workspace}".`, "success");
+  };
+
+  /** After signing in (or changing account) this device is pointed at that account's storage. */
+  const handleAccountChanged = async () => {
+    if (GitHubService.getStoredGitHubAuth()) {
+      try {
+        const list = await GitHubService.setUpStorage(vaultPath);
+        if (!list.current) setIsWorkspaceOpen(true);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : String(err), "error");
+      }
+    }
+    await Promise.all([refreshFiles(), refreshStatus()]);
+  };
+
+  const handleSignedIn = () => {
+    setIsOnboardingOpen(false);
+    setIsWorkspaceOpen(true);
+  };
+
+  // 12. State simulation handler for instant testing
   const handleSimulateState = async (stateType: string) => {
     switch (stateType) {
       case "clean_synced":
-        GitVaultBridge.resetMockState();
+        NoeticBridge.resetMockState();
         break;
       case "dirty_synced":
-        GitVaultBridge.resetMockState();
+        NoeticBridge.resetMockState();
         if (activeFilePath) {
-          await GitVaultBridge.writeFileContent(`${vaultPath}/${activeFilePath}`, activeFileContent + "\n\n// Local edit");
+          await NoeticBridge.writeFileContent(`${vaultPath}/${activeFilePath}`, activeFileContent + "\n\n// Local edit");
         }
         break;
       case "clean_behind":
-        GitVaultBridge.resetMockState();
-        GitVaultBridge.simulateRemoteAhead(3);
+        NoeticBridge.resetMockState();
+        NoeticBridge.simulateRemoteAhead(3);
         break;
       case "dirty_behind":
-        GitVaultBridge.resetMockState();
-        GitVaultBridge.simulateRemoteAhead(2);
+        NoeticBridge.resetMockState();
+        NoeticBridge.simulateRemoteAhead(2);
         if (activeFilePath) {
-          await GitVaultBridge.writeFileContent(`${vaultPath}/${activeFilePath}`, activeFileContent + "\n\n// Local edit");
+          await NoeticBridge.writeFileContent(`${vaultPath}/${activeFilePath}`, activeFileContent + "\n\n// Local edit");
         }
         break;
       case "ahead_offline":
-        GitVaultBridge.simulateOfflineCommit();
+        NoeticBridge.simulateOfflineCommit();
         break;
       case "conflict_trigger":
         // Set ConflictTest.md dirty and remote ahead
-        GitVaultBridge.simulateRemoteAhead(1);
-        await GitVaultBridge.writeFileContent(
+        NoeticBridge.simulateRemoteAhead(1);
+        await NoeticBridge.writeFileContent(
           `${vaultPath}/ConflictTest.md`,
           "# Project Roadmap\n- Milestone 1: Core Engine\n- Milestone 2: LOCAL UPDATE (Added Offline Local-First Worktree)\n- Milestone 3: Platform Release"
         );
@@ -458,7 +490,7 @@ export default function App() {
             onSave={handleSaveAndPush}
             onSync={handleSyncAndPull}
             onFetch={handleFetchRemote}
-            onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
+            onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
             onOpenOnboarding={() => setIsOnboardingOpen(true)}
             onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
             onSimulateState={handleSimulateState}
@@ -477,29 +509,24 @@ export default function App() {
             onApplyResolutions={handleApplyResolutions}
           />
 
-          {/* Android GitHub Onboarding Wizard */}
+          {/* Android sign-in */}
           <MobileOnboardingView
             isOpen={isOnboardingOpen}
-            onAuthenticated={() => {
-              // Signed in: continue to choosing (or creating) the repository to sync with.
-              setIsOnboardingOpen(false);
-              setIsRepoSwitchOpen(true);
-            }}
+            onAuthenticated={handleSignedIn}
             onCancel={() => setIsOnboardingOpen(false)}
           />
         </>
       ) : (
         // ================= DESKTOP WORKSPACE LAYOUT =================
         <>
-          {/* Top Bar with Live Git Status Pill & Save/Sync Actions */}
+          {/* Top Bar with live sync status and Save/Sync actions */}
           <TopBar
             status={status}
             isLoading={isLoading}
-            vaultPath={vaultPath}
             onSave={handleSaveAndPush}
             onSync={handleSyncAndPull}
             onFetch={handleFetchRemote}
-            onOpenRepoSwitch={() => setIsRepoSwitchOpen(true)}
+            onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
             onOpenOnboarding={() => setIsOnboardingOpen(true)}
             onSimulateState={handleSimulateState}
             onGoToDashboard={() => {
@@ -510,7 +537,7 @@ export default function App() {
 
           {/* Main Workspace (Sidebar + CodeMirror Editor / Dashboard) */}
           <div className="flex-1 flex overflow-hidden">
-            {/* Sidebar File Tree with Live Git Status Badges */}
+            {/* Sidebar file tree with sync status badges */}
             <Sidebar
               vaultPath={vaultPath}
               files={files}
@@ -595,16 +622,10 @@ export default function App() {
             onApplyResolutions={handleApplyResolutions}
           />
 
-          {/* GitHub Authentication & Vault Setup Wizard (Desktop) */}
+          {/* Sign-in (desktop) */}
           <OnboardingModal
             isOpen={isOnboardingOpen}
-            defaultVaultPath={vaultPath}
-            onComplete={async (data) => {
-              setVaultPath(data.vaultPath);
-              setIsOnboardingOpen(false);
-              showToast("Vault successfully connected to GitHub!", "success");
-              await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
-            }}
+            onAuthenticated={handleSignedIn}
             onCancel={() => setIsOnboardingOpen(false)}
           />
         </>
@@ -615,20 +636,15 @@ export default function App() {
         isOpen={isAccountSettingsOpen}
         onClose={() => setIsAccountSettingsOpen(false)}
         vaultPath={vaultPath}
-        onAccountChanged={async () => {
-          await Promise.all([refreshFiles(), refreshStatus()]);
-        }}
+        onAccountChanged={handleAccountChanged}
       />
 
-      <RepoSwitchModal
-        isOpen={isRepoSwitchOpen}
-        onClose={() => setIsRepoSwitchOpen(false)}
-        defaultVaultPath={vaultPath}
-        onComplete={async (data) => {
-          setVaultPath(data.vaultPath);
-          showToast("Switched repository successfully!", "success");
-          await Promise.all([refreshFiles(data.vaultPath), refreshStatus(data.vaultPath)]);
-        }}
+      <WorkspaceModal
+        isOpen={isWorkspaceOpen}
+        onClose={() => setIsWorkspaceOpen(false)}
+        vaultPath={vaultPath}
+        isConnected={!!status?.remote_url}
+        onSwitched={handleWorkspaceSwitched}
       />
 
       {/* Lightbox Image Preview Modal */}

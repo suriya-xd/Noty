@@ -3,7 +3,7 @@ import type { FC } from "react";
 import { CanvasFileNode as ICanvasFileNode } from "../../types/canvas";
 import { MarkdownViewer } from "../MarkdownViewer";
 import { FileText, ExternalLink, AlertTriangle, Image as ImageIcon, Maximize2 } from "lucide-react";
-import { GitVaultBridge, resolveImageUrl } from "../../services/gitVaultBridge";
+import { NoeticBridge, resolveImageUrl } from "../../services/noeticBridge";
 import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
 
 interface CanvasFileNodeProps {
@@ -53,7 +53,7 @@ export const CanvasFileNode: FC<CanvasFileNodeProps> = ({
     setError(null);
 
     const fullPath = `${vaultPath}/${node.file}`;
-    GitVaultBridge.readFileContent(fullPath)
+    NoeticBridge.readFileContent(fullPath)
       .then((text) => {
         if (!isMounted) return;
         setContent(text);

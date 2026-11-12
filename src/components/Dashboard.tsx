@@ -8,13 +8,12 @@ import {
   Search,
   Sparkles,
   ArrowRight,
-  GitBranch,
   ArrowLeftRight,
   Plus,
   X,
   LayoutGrid,
 } from "lucide-react";
-import { FileStatus, RepoStatusPayload, VaultEntry } from "../types/gitVault";
+import { FileStatus, RepoStatusPayload, VaultEntry } from "../types/noetic";
 import { buildFileTree, countNotes } from "./Sidebar";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 
@@ -29,7 +28,6 @@ interface DashboardProps {
 }
 
 export const Dashboard: FC<DashboardProps> = ({
-  vaultPath = "",
   files,
   fileStatuses = [],
   onSelectFile,
@@ -42,10 +40,7 @@ export const Dashboard: FC<DashboardProps> = ({
   const [creatingParent, setCreatingParent] = useState<string>("");
   const [createInputValue, setCreateInputValue] = useState("");
 
-  // Derive human-readable vault name
-  const vaultName = vaultPath
-    ? vaultPath.split(/[/\\]/).filter(Boolean).pop() || "personal-vault"
-    : "personal-vault";
+  const workspaceName = status?.branch || "My notes";
 
   // Build root hierarchy
   const rootNodes = useMemo(() => buildFileTree(files), [files]);
@@ -118,7 +113,7 @@ export const Dashboard: FC<DashboardProps> = ({
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto bg-[#0d1117] text-zinc-100 select-none">
-      {/* Hero / Vault Header Banner */}
+      {/* Header banner */}
       <div className="border-b border-[#30363d]/70 bg-gradient-to-b from-[#161b22] to-[#0d1117]/60 px-8 py-7">
         <div className="max-w-6xl mx-auto">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -129,9 +124,9 @@ export const Dashboard: FC<DashboardProps> = ({
                   <Sparkles className="w-4 h-4 text-white" />
                 </div>
                 <h1 className="font-headline font-bold text-2xl tracking-tight text-white flex items-center gap-2">
-                  <span>{vaultName}</span>
+                  <span>{workspaceName}</span>
                   <span className="text-xs font-mono font-medium px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20">
-                    Vault Dashboard
+                    {status?.branch ? "Workspace" : "Dashboard"}
                   </span>
                 </h1>
               </div>
@@ -179,10 +174,6 @@ export const Dashboard: FC<DashboardProps> = ({
                 <span className="text-zinc-400">{totalFoldersCount === 1 ? "folder" : "folders"}</span>
               </div>
 
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#161b22] border border-[#30363d] text-zinc-300">
-                <GitBranch className="w-3.5 h-3.5 text-purple-400" />
-                <span className="font-medium">{status?.branch || "main"}</span>
-              </div>
             </div>
 
             {/* Search Filter */}
@@ -427,7 +418,7 @@ export const Dashboard: FC<DashboardProps> = ({
                           </div>
                         </div>
 
-                        {/* Git Status Indicator */}
+                        {/* Sync status indicator */}
                         {fileStat?.is_modified ? (
                           <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                             Modified

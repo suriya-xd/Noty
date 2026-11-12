@@ -14,7 +14,7 @@ pub struct FileStatus {
     pub path: String,
     pub is_modified: bool,      // Local worktree modified (• badge)
     pub is_untracked: bool,     // New local file (+ badge)
-    pub has_remote_update: bool, // Changed between HEAD and origin/main (↓ badge)
+    pub has_remote_update: bool, // Changed between HEAD and the cloud copy (↓ badge)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -23,6 +23,7 @@ pub struct RepoStatusPayload {
     pub dirty_count: usize,
     pub behind_count: usize,
     pub ahead_count: usize,
+    /// The open workspace (a branch). Empty until one is created or chosen.
     pub branch: String,
     pub remote_name: Option<String>,
     pub remote_url: Option<String>,
@@ -43,7 +44,7 @@ pub struct ConflictFile {
     pub path: String,
     pub base_content: String,   // Content at HEAD
     pub local_content: String,  // Unsaved content on disk
-    pub remote_content: String, // Content at origin/main
+    pub remote_content: String, // Content in the cloud copy
     pub hunks: Vec<ConflictHunk>,
 }
 
@@ -90,9 +91,14 @@ pub struct VaultConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkspaceList {
+    /// The open workspace; `None` until one is created or chosen.
+    pub current: Option<String>,
+    pub workspaces: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VaultConfigInput {
-    pub remote_url: Option<String>,
-    pub branch: Option<String>,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
     pub github_token: Option<String>,

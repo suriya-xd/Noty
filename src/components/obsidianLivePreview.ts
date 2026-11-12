@@ -8,7 +8,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
-import { resolveImageUrl } from "../services/gitVaultBridge";
+import { resolveImageUrl } from "../services/noeticBridge";
 
 export interface LivePreviewConfig {
   vaultPath: string;
