@@ -113,9 +113,27 @@ fn rename_file(vault_path: String, old_path: String, new_path: String) -> Result
     fs_engine::rename_file(&vault_path, &old_path, &new_path)
 }
 
+/// Where the vault lives when the user hasn't chosen a place. On phones that is the app's own
+/// storage folder: there is no home directory there (HOME is unset), and the fallback of a
+/// relative `./GitVault` lands on the read-only filesystem root. `None` means "use the desktop
+/// default" (a GitVault folder in the user's home), which fs_engine works out itself.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn default_vault_dir(app: &tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("GitVault").to_string_lossy().to_string())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn default_vault_dir(_app: &tauri::AppHandle) -> Option<String> {
+    None
+}
+
 #[tauri::command(rename_all = "snake_case")]
-fn init_or_open_vault(vault_path: Option<String>) -> Result<VaultInfo, String> {
-    fs_engine::init_or_open_vault(vault_path)
+fn init_or_open_vault(app: tauri::AppHandle, vault_path: Option<String>) -> Result<VaultInfo, String> {
+    fs_engine::init_or_open_vault(vault_path.or_else(|| default_vault_dir(&app)))
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
