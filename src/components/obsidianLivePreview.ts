@@ -68,34 +68,90 @@ class HrWidget extends WidgetType {
   }
 }
 
+// Image sizes are stored in the Markdown itself, Obsidian-style: `![alt|320](path)` or
+// `![[image.png|320]]`, so a resized image looks the same on every device.
+const MIN_IMAGE_WIDTH = 80;
+
+/** Splits a trailing `|<width>` (or `|<width>x<height>`) off an image label. */
+function splitImageSize(label: string): { label: string; width: number | null } {
+  const m = /^(.*?)(?:^|\|)\s*(\d{2,4})(?:x\d{1,4})?\s*$/.exec(label);
+  if (!m) return { label: label.trim(), width: null };
+  return { label: m[1].trim(), width: Number(m[2]) };
+}
+
+/** Rewrites the image Markdown that starts at or around `pos` so it carries `width`. */
+function writeImageWidth(view: EditorView, pos: number, width: number): void {
+  const line = view.state.doc.lineAt(pos);
+  const offset = pos - line.from;
+  const patterns: { re: RegExp; build: (m: RegExpExecArray) => string }[] = [
+    {
+      re: /!\[\[([^[\]#|\r\n]+?)(?:\|([^[\]\r\n]+?))?\]\]/g,
+      build: (m) => {
+        const label = m[2] ? splitImageSize(m[2]).label : "";
+        return `![[${m[1]}${label ? `|${label}` : ""}|${width}]]`;
+      },
+    },
+    {
+      re: /!\[([^\]]*?)\]\(([^)\r\n]+?)\)/g,
+      build: (m) => {
+        const label = splitImageSize(m[1]).label;
+        return `![${label}|${width}](${m[2]})`;
+      },
+    },
+  ];
+  for (const { re, build } of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line.text)) !== null) {
+      if (offset >= m.index && offset <= m.index + m[0].length) {
+        view.dispatch({
+          changes: { from: line.from + m.index, to: line.from + m.index + m[0].length, insert: build(m) },
+          userEvent: "input.resize-image",
+        });
+        return;
+      }
+    }
+  }
+}
+
 // Interactive Live Preview Image Card Widget
 class ImageWidget extends WidgetType {
   constructor(
     readonly src: string,
     readonly alt: string,
+    readonly width: number | null,
     readonly onPreview?: (src: string, alt?: string) => void
   ) {
     super();
   }
 
   eq(other: ImageWidget) {
-    return other.src === this.src && other.alt === this.alt;
+    return other.src === this.src && other.alt === this.alt && other.width === this.width;
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "cm-md-image-card my-3 block select-none max-w-full";
 
     const inner = document.createElement("div");
     inner.className =
-      "relative inline-block max-w-full rounded-xl overflow-hidden border border-[#30363d] bg-[#161b22] hover:border-purple-500/60 shadow-lg hover:shadow-purple-500/10 transition-all cursor-pointer group";
+      "relative inline-block max-w-full rounded-xl overflow-hidden border border-[#30363d] bg-[#161b22] hover:border-purple-500/60 shadow-lg hover:shadow-purple-500/10 transition-colors cursor-pointer group";
 
     const img = document.createElement("img");
     img.src = this.src;
     img.alt = this.alt;
-    img.className =
-      "max-h-[460px] max-w-full object-contain rounded-xl block bg-[#0d1117]/60 group-hover:scale-[1.01] transition-transform duration-200";
+    img.draggable = false;
+    img.className = "max-w-full object-contain rounded-xl block bg-[#0d1117]/60";
     img.loading = "lazy";
+    const applyWidth = (w: number | null) => {
+      if (w) {
+        img.style.width = `${w}px`;
+        img.style.maxHeight = "none";
+      } else {
+        img.style.width = "";
+        img.style.maxHeight = "460px";
+      }
+    };
+    applyWidth(this.width);
 
     // Overlay on hover
     const overlay = document.createElement("div");
@@ -108,8 +164,80 @@ class ImageWidget extends WidgetType {
       </span>
     `;
 
+    // Resize handle (bottom-right corner). Dragging previews the new width live; releasing
+    // writes it into the Markdown. Pointer events cover mouse, pen and touch.
+    const handle = document.createElement("div");
+    handle.className = "cm-md-image-resize";
+    handle.title = "Drag to resize. Double-click to reset.";
+    handle.setAttribute("role", "slider");
+    handle.setAttribute("aria-label", "Resize image");
+
+    const sizeBadge = document.createElement("div");
+    sizeBadge.className = "cm-md-image-size";
+
+    let dragging = false;
+    let startX = 0;
+    let startWidth = 0;
+    let nextWidth = 0;
+
+    const clampWidth = (w: number) => {
+      const max = wrap.clientWidth || view.contentDOM.clientWidth || 2000;
+      return Math.round(Math.max(MIN_IMAGE_WIDTH, Math.min(max, w)));
+    };
+
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = true;
+      startX = e.clientX;
+      startWidth = img.getBoundingClientRect().width;
+      nextWidth = Math.round(startWidth);
+      handle.setPointerCapture(e.pointerId);
+      inner.classList.add("cm-md-image-resizing");
+    });
+    handle.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      nextWidth = clampWidth(startWidth + (e.clientX - startX));
+      applyWidth(nextWidth);
+      sizeBadge.textContent = `${nextWidth}px`;
+    });
+    const finish = (e: PointerEvent, commit: boolean) => {
+      if (!dragging) return;
+      dragging = false;
+      inner.classList.remove("cm-md-image-resizing");
+      if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+      if (commit && Math.abs(nextWidth - startWidth) >= 2) {
+        writeImageWidth(view, view.posAtDOM(wrap), nextWidth);
+      } else {
+        applyWidth(this.width);
+      }
+    };
+    handle.addEventListener("pointerup", (e) => finish(e, true));
+    handle.addEventListener("pointercancel", (e) => finish(e, false));
+    // The handle sits on top of the image; its clicks must not open the preview.
+    handle.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    handle.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Back to natural size: drop the stored width.
+      const pos = view.posAtDOM(wrap);
+      const line = view.state.doc.lineAt(pos);
+      const cleaned = line.text
+        .replace(/(!\[\[[^[\]\r\n]*?)\|\s*\d{2,4}(?:x\d{1,4})?\s*(\]\])/g, "$1$2")
+        .replace(/(!\[[^\]]*?)\|\s*\d{2,4}(?:x\d{1,4})?\s*(\]\()/g, "$1$2");
+      if (cleaned !== line.text) {
+        view.dispatch({ changes: { from: line.from, to: line.to, insert: cleaned } });
+      }
+    });
+
     inner.appendChild(img);
     inner.appendChild(overlay);
+    inner.appendChild(sizeBadge);
+    inner.appendChild(handle);
 
     inner.onclick = (e) => {
       e.preventDefault();
@@ -189,7 +317,8 @@ function collectInlineSpans(
     for (let i = start; i < end; i++) occupied[i] = true;
 
     const rawTarget = oim[1].trim();
-    const alt = oim[2]?.trim() || rawTarget.split("/").pop() || "";
+    const sized = splitImageSize(oim[2] ?? "");
+    const alt = sized.label || rawTarget.split("/").pop() || "";
     const resolved = resolveImageUrl(rawTarget, vaultPath);
 
     const isCursorInside = selection.ranges.some(
@@ -201,7 +330,7 @@ function collectInlineSpans(
         from: lineFrom + start,
         to: lineFrom + end,
         deco: Decoration.replace({
-          widget: new ImageWidget(resolved, alt, onPreviewImage),
+          widget: new ImageWidget(resolved, alt, sized.width, onPreviewImage),
         }),
       });
     }
@@ -223,7 +352,8 @@ function collectInlineSpans(
     if (hasClash) continue;
     for (let i = start; i < end; i++) occupied[i] = true;
 
-    const alt = mim[1].trim();
+    const sized = splitImageSize(mim[1]);
+    const alt = sized.label;
     const rawSrc = mim[2].trim();
     const resolved = resolveImageUrl(rawSrc, vaultPath);
 
@@ -236,7 +366,7 @@ function collectInlineSpans(
         from: lineFrom + start,
         to: lineFrom + end,
         deco: Decoration.replace({
-          widget: new ImageWidget(resolved, alt, onPreviewImage),
+          widget: new ImageWidget(resolved, alt, sized.width, onPreviewImage),
         }),
       });
     }
@@ -565,17 +695,23 @@ export const obsidianTheme = EditorView.theme({
     backgroundColor: "rgba(56, 189, 248, 0.25) !important",
   },
 
-  // Headings
+  // Headings.
+  // Spacing around heading lines is PADDING, never margin: CodeMirror measures line boxes to place
+  // the cursor, and vertical margins on a line are invisible to it. With margins, arrow keys and
+  // clicks landed on the wrong line (Arrow Up from the last line could jump to the first heading).
+  // The underline is drawn as a background so it can sit above the bottom padding.
   ".cm-md-h1": {
     fontSize: "2.1rem !important",
     fontWeight: "800 !important",
     color: "#ffffff !important",
     letterSpacing: "-0.025em !important",
     lineHeight: "1.3 !important",
-    paddingBottom: "8px !important",
-    borderBottom: "1px solid #30363d !important",
-    marginTop: "28px !important",
-    marginBottom: "14px !important",
+    paddingTop: "28px !important",
+    paddingBottom: "22px !important",
+    backgroundImage: "linear-gradient(#30363d, #30363d) !important",
+    backgroundSize: "100% 1px !important",
+    backgroundPosition: "0 calc(100% - 14px) !important",
+    backgroundRepeat: "no-repeat !important",
   },
   ".cm-md-h2": {
     fontSize: "1.6rem !important",
@@ -583,10 +719,12 @@ export const obsidianTheme = EditorView.theme({
     color: "#7dd3fc !important",
     letterSpacing: "-0.02em !important",
     lineHeight: "1.35 !important",
-    paddingBottom: "6px !important",
-    borderBottom: "1px solid rgba(48, 54, 61, 0.5) !important",
-    marginTop: "24px !important",
-    marginBottom: "12px !important",
+    paddingTop: "24px !important",
+    paddingBottom: "18px !important",
+    backgroundImage: "linear-gradient(rgba(48, 54, 61, 0.5), rgba(48, 54, 61, 0.5)) !important",
+    backgroundSize: "100% 1px !important",
+    backgroundPosition: "0 calc(100% - 12px) !important",
+    backgroundRepeat: "no-repeat !important",
   },
   ".cm-md-h3": {
     fontSize: "1.3rem !important",
@@ -594,22 +732,22 @@ export const obsidianTheme = EditorView.theme({
     color: "#a5b4fc !important",
     letterSpacing: "-0.015em !important",
     lineHeight: "1.4 !important",
-    marginTop: "20px !important",
-    marginBottom: "8px !important",
+    paddingTop: "20px !important",
+    paddingBottom: "8px !important",
   },
   ".cm-md-h4": {
     fontSize: "1.12rem !important",
     fontWeight: "600 !important",
     color: "#c4b5fd !important",
-    marginTop: "16px !important",
-    marginBottom: "6px !important",
+    paddingTop: "16px !important",
+    paddingBottom: "6px !important",
   },
   ".cm-md-h5": {
     fontSize: "1.0rem !important",
     fontWeight: "600 !important",
     color: "#e2e8f0 !important",
-    marginTop: "14px !important",
-    marginBottom: "4px !important",
+    paddingTop: "14px !important",
+    paddingBottom: "4px !important",
   },
   ".cm-md-h6": {
     fontSize: "0.85rem !important",
@@ -617,8 +755,8 @@ export const obsidianTheme = EditorView.theme({
     color: "#94a3b8 !important",
     textTransform: "uppercase !important",
     letterSpacing: "0.06em !important",
-    marginTop: "12px !important",
-    marginBottom: "4px !important",
+    paddingTop: "12px !important",
+    paddingBottom: "4px !important",
   },
 
   // Syntax Marker Active Pill (shown only while editing on that line)

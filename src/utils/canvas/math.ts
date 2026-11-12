@@ -388,9 +388,9 @@ export function calculateCanvasTextNodeFontSize(
   const safeW = Math.max(80, width || 260);
   const safeH = Math.max(50, height || 160);
 
-  // Available area inside text card (subtracting ~36px header bar and ~24px padding)
+  // Available area inside text card (subtracting ~24px padding; the card has no header bar)
   const availW = Math.max(60, safeW - 24);
-  const availH = Math.max(30, safeH - 38);
+  const availH = Math.max(30, safeH - 24);
   const visualMetric = Math.sqrt(availW * availH);
 
   const cleanText = (text || "").trim();

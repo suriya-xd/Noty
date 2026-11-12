@@ -20,6 +20,16 @@ export function getStoredCustomOrder(vaultPath: string): CustomOrderMap {
   return {};
 }
 
+const orderListeners = new Set<() => void>();
+
+/** Calls `listener` whenever a custom order is saved, so views can reload it. Returns an unsubscribe. */
+export function subscribeCustomOrder(listener: () => void): () => void {
+  orderListeners.add(listener);
+  return () => {
+    orderListeners.delete(listener);
+  };
+}
+
 /**
  * Save custom order map to localStorage
  */
@@ -29,6 +39,7 @@ export function saveCustomOrder(vaultPath: string, order: CustomOrderMap): void 
   } catch (e) {
     console.warn("Failed to save custom order:", e);
   }
+  orderListeners.forEach((listener) => listener());
 }
 
 /**

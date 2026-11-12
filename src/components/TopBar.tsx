@@ -227,8 +227,9 @@ export const TopBar: React.FC<TopBarProps> = ({
           </select>
         )}
 
-        {/* Link GitHub Prompt (if remote not set) */}
-        {!status?.remote_url ? (
+        {/* Connect prompt, only while no remote is linked. Switching repositories is done from the
+            vault dropdown on the left. */}
+        {!status?.remote_url && (
           <button
             onClick={onOpenOnboarding}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/40 text-amber-300 hover:text-white hover:border-amber-400 transition-all cursor-pointer shadow-sm shadow-amber-500/10 shrink-0 whitespace-nowrap"
@@ -236,16 +237,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           >
             <GithubIcon className="w-3.5 h-3.5" />
             <span>Connect GitHub</span>
-          </button>
-        ) : (
-          <button
-            id="btn-switch-repo"
-            onClick={onOpenRepoSwitch}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] border border-[#30363d] transition-colors cursor-pointer shrink-0 whitespace-nowrap"
-            title="Switch repository or create new repository"
-          >
-            <GithubIcon className="w-3.5 h-3.5 text-sky-400" />
-            <span>Switch Repo</span>
           </button>
         )}
       </div>

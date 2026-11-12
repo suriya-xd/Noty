@@ -67,12 +67,11 @@ export const CanvasLinkNode: FC<CanvasLinkNodeProps> = ({ node }) => {
 
       <div
         style={{ fontSize: `${Math.min(13, Math.max(10, Math.round(dynamicFontSize * 0.72)))}px` }}
-        className="mt-3 pt-2 border-t border-[#30363d]/50 flex items-center justify-between text-zinc-400"
+        className="mt-3 pt-2 border-t border-[#30363d]/50 flex items-center text-zinc-400"
       >
-        <span className="truncate">Web Link Bookmark</span>
         <button
           onClick={handleOpen}
-          className="text-sky-400 hover:underline flex items-center gap-1 cursor-pointer shrink-0"
+          className="ml-auto text-sky-400 hover:underline flex items-center gap-1 cursor-pointer shrink-0"
         >
           Visit site &rarr;
         </button>

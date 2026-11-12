@@ -1,7 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
+import type { OpenFileOptions } from "./components/Editor";
+import { NoteTabs } from "./components/NoteTabs";
 import { CanvasView } from "./components/canvas/CanvasView";
 import { Dashboard } from "./components/Dashboard";
 import { ConflictResolverModal } from "./components/ConflictResolverModal";
@@ -29,6 +31,14 @@ export default function App() {
   const [status, setStatus] = useState<RepoStatusPayload | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [activeFileContent, setActiveFileContent] = useState<string>("");
+  // Notes open as tabs (desktop). A normal open reuses the current tab; "new tab" adds one.
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+
+  // Latest values for callbacks that outlive a render (late autosaves, tab bookkeeping).
+  const activeFilePathRef = useRef<string | null>(null);
+  activeFilePathRef.current = activeFilePath;
+  const filesRef = useRef<VaultEntry[]>([]);
+  filesRef.current = files;
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
 
@@ -92,8 +102,11 @@ export default function App() {
       });
 
       // If currently active file no longer exists or is a directory, reset to dashboard
-      if (activeFilePath) {
-        const stillExists = list.some((f) => f.path === activeFilePath && !f.is_directory);
+      // Read through the ref: a rename updates it right away, while this callback's own
+      // `activeFilePath` would still be the old name and wrongly close the renamed note.
+      const current = activeFilePathRef.current;
+      if (current) {
+        const stillExists = list.some((f) => f.path === current && !f.is_directory);
         if (!stillExists) {
           setActiveFilePath(null);
           setActiveFileContent("");
@@ -139,7 +152,7 @@ export default function App() {
   }, [refreshStatus]);
 
   // 4. File selection and reading
-  const handleSelectFile = async (relPath: string) => {
+  const handleSelectFile = async (relPath: string, options?: OpenFileOptions) => {
     if (!relPath) {
       setActiveFilePath(null);
       setActiveFileContent("");
@@ -153,8 +166,20 @@ export default function App() {
     try {
       const fullPath = `${vaultPath}/${relPath}`;
       const content = await GitVaultBridge.readFileContent(fullPath);
+      const previous = activeFilePathRef.current;
       setActiveFileContent(content);
       setActiveFilePath(relPath);
+      setOpenTabs((tabs) => {
+        if (tabs.includes(relPath)) return tabs;
+        const slot = previous ? tabs.indexOf(previous) : -1;
+        // New tab requested, or nothing to reuse: add a tab next to the current one.
+        if (options?.newTab || slot === -1) {
+          const next = [...tabs];
+          next.splice(slot === -1 ? tabs.length : slot + 1, 0, relPath);
+          return next;
+        }
+        return tabs.map((t, i) => (i === slot ? relPath : t));
+      });
       backlinksGraph.updateFileLinks(relPath, content);
     } catch (err) {
       console.error("Failed to read file:", err);
@@ -162,12 +187,39 @@ export default function App() {
     }
   };
 
+  const handleCloseTab = (relPath: string) => {
+    const index = openTabs.indexOf(relPath);
+    if (index === -1) return;
+    const remaining = openTabs.filter((t) => t !== relPath);
+    setOpenTabs(remaining);
+    if (activeFilePath === relPath) {
+      // Closing the visible tab: show its neighbour, or the dashboard when it was the last one.
+      const neighbour = remaining[Math.min(index, remaining.length - 1)];
+      handleSelectFile(neighbour ?? "");
+    }
+  };
+
+  // Tabs whose file is gone (deleted here, or removed by a pull) are dropped.
+  useEffect(() => {
+    if (files.length === 0) return;
+    const existing = new Set(files.filter((f) => !f.is_directory).map((f) => f.path));
+    setOpenTabs((tabs) => {
+      const next = tabs.filter((t) => existing.has(t));
+      return next.length === tabs.length ? tabs : next;
+    });
+  }, [files]);
+
   // 5. Debounced Disk Write (Rule 2: 500ms write directly to disk, dirtying worktree)
   const handleDebouncedSave = async (relPath: string, newContent: string) => {
     try {
+      // A save can arrive just after its note was closed, switched away from, or deleted (the
+      // editor flushes pending edits when it is torn down). Never recreate a deleted file, and
+      // never let a background note's text replace what the visible note shows.
+      const isActive = activeFilePathRef.current === relPath;
+      if (!isActive && !filesRef.current.some((f) => f.path === relPath)) return;
       const fullPath = `${vaultPath}/${relPath}`;
       await GitVaultBridge.writeFileContent(fullPath, newContent);
-      setActiveFileContent(newContent);
+      if (activeFilePathRef.current === relPath) setActiveFileContent(newContent);
       backlinksGraph.updateFileLinks(relPath, newContent);
       // Immediately refresh Git status to show the dirty worktree indicator (`•`)
       await refreshStatus();
@@ -254,11 +306,11 @@ export default function App() {
   };
 
   // 10. File & Folder Management (Create, Delete, Rename)
-  const handleCreateFile = async (name: string) => {
+  const handleCreateFile = async (name: string, options?: OpenFileOptions) => {
     try {
       await GitVaultBridge.createFile(vaultPath, name);
       await Promise.all([refreshFiles(), refreshStatus()]);
-      handleSelectFile(name);
+      handleSelectFile(name, options);
       showToast(`Created ${name}`, "success");
     } catch (err) {
       showToast(`Failed to create file: ${err}`, "error");
@@ -281,7 +333,9 @@ export default function App() {
       vaultIndex.remove(relPath);
       backlinksGraph.removeFileLinks(relPath);
 
-      if (activeFilePath === relPath || (activeFilePath && activeFilePath.startsWith(relPath + "/"))) {
+      const isGone = (p: string) => p === relPath || p.startsWith(relPath + "/");
+      setOpenTabs((tabs) => tabs.filter((t) => !isGone(t)));
+      if (activeFilePath && isGone(activeFilePath)) {
         setActiveFilePath(null);
         setActiveFileContent("");
       }
@@ -292,7 +346,25 @@ export default function App() {
     }
   };
 
-  const handleRenameFile = async (oldPath: string, newPath: string) => {
+  /**
+   * Renames a file or folder. Returns false when refused or failed. `fromTitle` means the user
+   * edited the note's inline title, so no "Renamed" toast is needed.
+   */
+  const handleRenameFile = async (
+    oldPath: string,
+    newPath: string,
+    options?: { fromTitle?: boolean }
+  ): Promise<boolean> => {
+    if (oldPath === newPath) return true;
+    // The filesystem rename overwrites silently, so a taken name must be refused here. Compared
+    // case-insensitively (macOS, Windows), except for the entry being renamed itself.
+    const taken = filesRef.current.some(
+      (f) => f.path !== oldPath && f.path.toLowerCase() === newPath.toLowerCase()
+    );
+    if (taken) {
+      showToast(`"${newPath}" already exists. Pick a different name.`, "error");
+      return false;
+    }
     try {
       const result = await renameFileWithWikilinks(oldPath, newPath, {
         readFile: (filePath) => GitVaultBridge.readFileContent(`${vaultPath}/${filePath}`),
@@ -300,6 +372,10 @@ export default function App() {
         renameFile: (oldP, newP) => GitVaultBridge.renameFile(vaultPath, oldP, newP),
       });
 
+      const renamed = (p: string) =>
+        p === oldPath ? newPath : p.startsWith(oldPath + "/") ? newPath + p.slice(oldPath.length) : p;
+      setOpenTabs((tabs) => tabs.map(renamed));
+      if (activeFilePath) activeFilePathRef.current = renamed(activeFilePath);
       if (activeFilePath === oldPath) {
         setActiveFilePath(newPath);
       } else if (activeFilePath && activeFilePath.startsWith(oldPath + "/")) {
@@ -312,11 +388,13 @@ export default function App() {
           `Renamed to ${newPath} & updated ${result.totalLinksUpdated} wikilink${result.totalLinksUpdated === 1 ? "" : "s"} across ${result.affectedFiles.length} note${result.affectedFiles.length === 1 ? "" : "s"}!`,
           "success"
         );
-      } else {
+      } else if (!options?.fromTitle) {
         showToast(`Renamed to ${newPath}`, "success");
       }
+      return true;
     } catch (err) {
       showToast(`Failed to rename: ${err}`, "error");
+      return false;
     }
   };
 
@@ -448,7 +526,13 @@ export default function App() {
             />
 
             {/* CodeMirror 6 Markdown Editor OR Dashboard when no note is opened */}
-            <main className="flex-1 flex flex-col h-full overflow-hidden">
+            <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
+              <NoteTabs
+                tabs={openTabs}
+                activePath={activeFilePath}
+                onSelect={(path) => handleSelectFile(path)}
+                onClose={handleCloseTab}
+              />
               {activeFilePath ? (
                 activeFilePath.endsWith(".canvas") ? (
                   <CanvasView

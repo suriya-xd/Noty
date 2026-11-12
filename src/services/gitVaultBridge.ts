@@ -173,8 +173,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       if (relPath.endsWith(".canvas")) {
         MOCK_FILES[relPath] = JSON.stringify({ nodes: [], edges: [] }, null, 2);
       } else {
-        const title = relPath.split("/").pop()?.replace(".md", "") || "Untitled";
-        MOCK_FILES[relPath] = `# ${title}\n\nStart writing your note...\n`;
+        MOCK_FILES[relPath] = ""; // the title is the file name (inline title)
       }
       mockDirtySet.add(relPath);
       return undefined as unknown as T;

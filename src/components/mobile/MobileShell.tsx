@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FC, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -9,13 +9,11 @@ import {
   ArrowUp,
   ArrowUpDown,
   ArrowUpFromLine,
-  Bold,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   CloudOff,
-  Code,
   FilePlus,
   FileText,
   Folder,
@@ -23,20 +21,15 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
-  Heading,
   Home,
   Image as ImageIcon,
-  Italic,
+  LayoutDashboard,
   LayoutGrid,
-  Link as LinkIcon,
   Link2,
-  List,
-  ListChecks,
   MoreHorizontal,
   MoreVertical,
   Pencil,
   Plus,
-  Quote,
   RefreshCw,
   Search,
   Settings,
@@ -47,10 +40,11 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { RepoStatusPayload, VaultEntry } from "../../types/gitVault";
-import { Editor } from "../Editor";
-import type { EditorHandle } from "../Editor";
+import { Editor, FORMAT_BUTTONS } from "../Editor";
+import type { EditorHandle, RenameHandler } from "../Editor";
 import { CanvasView } from "../canvas/CanvasView";
 import { GitHubService } from "../../services/githubService";
+import { backlinksGraph } from "../../utils/wikilinks/backlinksGraph";
 import {
   CustomOrderMap,
   SortMode,
@@ -73,11 +67,11 @@ interface MobileShellProps {
   activeFileContent: string;
   isLoading: boolean;
   onSelectFile: (path: string) => void;
-  onDebouncedSave: (path: string, content: string) => void;
+  onDebouncedSave: (path: string, content: string) => void | Promise<void>;
   onCreateFile: (name: string) => void;
   onCreateFolder: (path: string) => void;
   onDeleteFile: (path: string) => void;
-  onRenameFile: (oldPath: string, newPath: string) => void;
+  onRenameFile: RenameHandler;
   onSave: () => void;
   onSync: () => void;
   onFetch: () => void;
@@ -96,7 +90,7 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-type Tab = "notes" | "sync" | "settings";
+type Tab = "dashboard" | "notes" | "sync" | "settings";
 
 function buildFileTree(entries: VaultEntry[]): TreeNode[] {
   const rootNodes: TreeNode[] = [];
@@ -335,7 +329,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   onRefreshFiles,
   onPreviewImage,
 }) => {
-  const [tab, setTab] = useState<Tab>("notes");
+  const [tab, setTab] = useState<Tab>("dashboard");
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -356,6 +350,10 @@ export const MobileShell: FC<MobileShellProps> = ({
   const editorApi = useRef<EditorHandle | null>(null);
   const [saveState, setSaveState] = useState<"synced" | "saving">("synced");
   const handleSaveStatus = useCallback((s: "synced" | "saving") => setSaveState(s), []);
+
+  // Link counts on the dashboard come from the backlinks index, which fills in asynchronously.
+  const [, setLinksVersion] = useState(0);
+  useEffect(() => backlinksGraph.subscribe(() => setLinksVersion((v) => v + 1)), []);
 
   const sync = summarizeSync(status);
   const tone = TONE[sync.tone];
@@ -558,7 +556,36 @@ export const MobileShell: FC<MobileShellProps> = ({
   const rootNodes = sorted(tree, "");
   const sortLabel = sortMode === "custom" ? "Custom order" : sortMode === "alpha-asc" ? "Name A–Z" : "Name Z–A";
 
-  const notesTab = (
+  const syncChip = (
+    <button
+      type="button"
+      onClick={() => setTab("sync")}
+      aria-label={`Sync status: ${sync.headline}`}
+      className={`h-9 px-3 rounded-full border flex items-center gap-2 text-[13px] font-medium shrink-0 ${tone.chip}`}
+    >
+      {isLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <span className={`w-2 h-2 rounded-full ${tone.dot}`} />}
+      <span>{sync.chip}</span>
+    </button>
+  );
+
+  // ---- dashboard tab -----------------------------------------------------
+  const topFolders = rootNodes.filter((n) => n.isDirectory);
+  const topFiles = rootNodes.filter((n) => !n.isDirectory);
+  const markdownCount = files.filter((f) => !f.is_directory && f.path.endsWith(".md")).length;
+  const canvasCount = files.filter((f) => !f.is_directory && isCanvasPath(f.path)).length;
+  const hasTopCanvas = topFiles.some((n) => isCanvasPath(n.name));
+
+  const openFolder = (path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
+    setQuery("");
+    setTab("notes");
+  };
+
+  const dashboardTab = (
     <>
       <header className="pt-safe bg-[#0d1117] shrink-0">
         <div className="h-14 pl-4 pr-3 flex items-center justify-between gap-3">
@@ -571,19 +598,139 @@ export const MobileShell: FC<MobileShellProps> = ({
             <span className="font-headline text-[22px] font-semibold text-[#f0f6fc] truncate">{vaultName}</span>
             <ChevronDown className="w-4 h-4 text-[#8b949e] shrink-0 mt-1" />
           </button>
+          {syncChip}
+        </div>
+      </header>
+
+      <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-8 space-y-6">
+        {/* Vault at a glance */}
+        <section aria-label="Vault summary" className="grid grid-cols-3 gap-2.5">
+          {[
+            { value: String(markdownCount), label: markdownCount === 1 ? "Note" : "Notes" },
+            { value: String(folders.length), label: folders.length === 1 ? "Folder" : "Folders" },
+            canvasCount > 0
+              ? { value: String(canvasCount), label: canvasCount === 1 ? "Canvas" : "Canvases" }
+              : { value: status?.branch || "main", label: "Branch", mono: true },
+          ].map((stat) => (
+            <div key={stat.label} className="rounded-2xl bg-[#161b22] border border-[#21262d] px-3.5 py-3 min-w-0">
+              <div
+                className={`text-[#f0f6fc] font-semibold truncate ${
+                  "mono" in stat ? "font-mono text-[17px] leading-7" : "font-headline text-[22px] leading-7"
+                }`}
+              >
+                {stat.value}
+              </div>
+              <div className="text-[13px] text-[#8b949e]">{stat.label}</div>
+            </div>
+          ))}
+        </section>
+
+        <section className="flex gap-2.5">
           <button
             type="button"
-            onClick={() => setTab("sync")}
-            aria-label={`Sync status: ${sync.headline}`}
-            className={`h-9 px-3 rounded-full border flex items-center gap-2 text-[13px] font-medium shrink-0 ${tone.chip}`}
+            onClick={() => setCreating({ type: "note", parent: "" })}
+            className="flex-1 h-12 rounded-xl bg-sky-500 text-[#04121d] text-[15px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400"
           >
-            {isLoading ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <span className={`w-2 h-2 rounded-full ${tone.dot}`} />
-            )}
-            <span>{sync.chip}</span>
+            <FilePlus className="w-[18px] h-[18px]" />
+            <span>New note</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setCreating({ type: "folder", parent: "" })}
+            className="flex-1 h-12 rounded-xl bg-[#161b22] border border-[#30363d] text-[#f0f6fc] text-[15px] font-medium flex items-center justify-center gap-2 active:bg-[#21262d]"
+          >
+            <FolderPlus className="w-[18px] h-[18px] text-amber-400" />
+            <span>New folder</span>
+          </button>
+        </section>
+
+        {rootNodes.length === 0 ? (
+          <p className="rounded-2xl border border-dashed border-[#30363d] px-5 py-8 text-center text-[15px] text-[#8b949e]">
+            Your vault is empty. Create a note to get started.
+          </p>
+        ) : (
+          <>
+            {topFolders.length > 0 && (
+              <section>
+                <SectionLabel>Folders</SectionLabel>
+                <ul className="grid grid-cols-2 gap-2.5">
+                  {topFolders.map((folder) => {
+                    const count = countNotes(folder);
+                    return (
+                      <li key={folder.path} className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => openFolder(folder.path)}
+                          className="w-full min-h-[76px] rounded-2xl bg-[#161b22] border border-[#21262d] p-3.5 text-left active:bg-[#1c2128]"
+                        >
+                          <Folder className="w-5 h-5 text-amber-400" />
+                          <span className="block mt-2 text-[15px] font-medium text-[#f0f6fc] truncate">{folder.name}</span>
+                          <span className="block text-[13px] text-[#8b949e]">
+                            {count === 0 ? "Empty" : plural(count, "item")}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+
+            {topFiles.length > 0 && (
+              <section>
+                <SectionLabel>{hasTopCanvas ? "Notes & canvases" : "Notes"}</SectionLabel>
+                <ul className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
+                  {topFiles.map((note) => {
+                    const canvas = isCanvasPath(note.name);
+                    const incoming = backlinksGraph.getBacklinks(note.path).length;
+                    const outgoing = backlinksGraph.getForwardLinks(note.path).length;
+                    return (
+                      <li key={note.path}>
+                        <button
+                          type="button"
+                          onClick={() => onSelectFile(note.path)}
+                          className="w-full min-h-[64px] px-4 py-2.5 flex items-center gap-3 text-left active:bg-[#1c2128]"
+                        >
+                          {canvas ? (
+                            <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
+                          ) : (
+                            <FileText className="w-5 h-5 text-sky-400 shrink-0" />
+                          )}
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate text-[16px] text-[#f0f6fc]">{displayName(note.name)}</span>
+                            <span className="block text-[13px] text-[#8b949e]">
+                              {canvas ? "Canvas" : `${incoming} linking here · ${plural(outgoing, "link")} out`}
+                            </span>
+                          </span>
+                          <StatusDot path={note.path} />
+                          <ChevronRight className="w-4 h-4 text-[#6e7681] shrink-0" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setTab("notes")}
+              className="w-full h-12 rounded-xl text-[15px] font-medium text-sky-400 active:bg-[#161b22]"
+            >
+              Browse all notes
+            </button>
+          </>
+        )}
+      </div>
+    </>
+  );
+
+  const notesTab = (
+    <>
+      <header className="pt-safe bg-[#0d1117] shrink-0">
+        <div className="h-14 pl-4 pr-3 flex items-center justify-between gap-3">
+          <h1 className="font-headline text-[22px] font-semibold text-[#f0f6fc]">Notes</h1>
+          {syncChip}
         </div>
         <div className="px-4 pb-3">
           <div className="h-11 rounded-xl bg-[#161b22] border border-[#21262d] focus-within:border-sky-500 flex items-center gap-2.5 px-3.5">
@@ -666,7 +813,7 @@ export const MobileShell: FC<MobileShellProps> = ({
         ) : (
           <>
             <div className="flex items-center justify-between pl-3 pr-1">
-              <span className="text-[13px] text-[#8b949e]">{plural(noteCount, "note")}</span>
+              <span className="text-[13px] text-[#8b949e]">{plural(noteCount, canvasCount > 0 ? "item" : "note")}</span>
               <button
                 type="button"
                 onClick={() => setSortSheetOpen(true)}
@@ -871,27 +1018,13 @@ export const MobileShell: FC<MobileShellProps> = ({
   const activeParent = activeFilePath ? getParentPath(activeFilePath) : "";
   const activeIsCanvas = !!activeFilePath && isCanvasPath(activeFilePath);
 
-  const fmt = (run: (api: EditorHandle) => void) => () => {
-    if (editorApi.current) run(editorApi.current);
-  };
-  const formatButtons: { icon: LucideIcon; label: string; run: () => void }[] = [
-    { icon: Bold, label: "Bold", run: fmt((a) => a.wrapSelection("**", "**", "bold")) },
-    { icon: Italic, label: "Italic", run: fmt((a) => a.wrapSelection("*", "*", "italic")) },
-    { icon: Heading, label: "Heading", run: fmt((a) => a.toggleLinePrefix("## ")) },
-    { icon: List, label: "Bulleted list", run: fmt((a) => a.toggleLinePrefix("- ")) },
-    { icon: ListChecks, label: "Task", run: fmt((a) => a.toggleLinePrefix("- [ ] ")) },
-    { icon: Quote, label: "Quote", run: fmt((a) => a.toggleLinePrefix("> ")) },
-    { icon: Code, label: "Code", run: fmt((a) => a.wrapSelection("`", "`", "code")) },
-    { icon: LinkIcon, label: "Link to a note", run: fmt((a) => a.wrapSelection("[[", "]]", "Note name")) },
-    { icon: Link2, label: "Web link", run: fmt((a) => a.wrapSelection("[", "](https://)", "link text")) },
-    { icon: ImageIcon, label: "Insert image", run: fmt((a) => a.openInsertImage()) },
-  ];
+  const formatButtons = FORMAT_BUTTONS.filter((b) => b !== "divider");
 
   const editorScreen = activeFilePath && (
     <div className="absolute inset-0 z-30 flex flex-col bg-[#0d1117] m-screen-in">
       <header className="pt-safe bg-[#0d1117] border-b border-[#21262d] shrink-0">
         <div className="h-14 px-1.5 flex items-center gap-0.5">
-          <IconButton icon={ArrowLeft} label="Back to notes" onClick={() => onSelectFile("")} />
+          <IconButton icon={ArrowLeft} label="Back" onClick={() => onSelectFile("")} />
           <button
             type="button"
             onClick={() => setRenaming({ path: activeFilePath, name: activeName, isDirectory: false })}
@@ -951,18 +1084,28 @@ export const MobileShell: FC<MobileShellProps> = ({
           <div role="toolbar" aria-label="Formatting" className="h-12 px-1 flex items-center overflow-x-auto no-scrollbar">
             {formatButtons.map((b) => (
               <button
-                key={b.label}
+                key={b.kind}
                 type="button"
                 aria-label={b.label}
                 // Keep the editor focused (and the keyboard open) while tapping toolbar buttons.
                 onPointerDown={(e) => e.preventDefault()}
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={b.run}
-                className="w-11 h-11 shrink-0 rounded-lg flex items-center justify-center text-[#c9d1d9] active:bg-[#30363d] active:text-white"
+                onClick={() => editorApi.current?.format(b.kind)}
+                className="min-w-11 h-11 px-1 shrink-0 rounded-lg flex items-center justify-center text-[#c9d1d9] active:bg-[#30363d] active:text-white"
               >
-                <b.icon className="w-5 h-5" />
+                {b.icon ? <b.icon className="w-5 h-5" /> : <span className="font-mono text-[13px] font-semibold">{b.text}</span>}
               </button>
             ))}
+            <button
+              type="button"
+              aria-label="Insert image"
+              onPointerDown={(e) => e.preventDefault()}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => editorApi.current?.openInsertImage()}
+              className="w-11 h-11 shrink-0 rounded-lg flex items-center justify-center text-[#c9d1d9] active:bg-[#30363d] active:text-white"
+            >
+              <ImageIcon className="w-5 h-5" />
+            </button>
           </div>
         </div>
       )}
@@ -971,7 +1114,8 @@ export const MobileShell: FC<MobileShellProps> = ({
 
   // ---- shell -------------------------------------------------------------
   const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
-    { id: "notes", label: "Notes", icon: Home },
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "notes", label: "Notes", icon: FileText },
     { id: "sync", label: "Sync", icon: RefreshCw },
     { id: "settings", label: "Settings", icon: Settings },
   ];
@@ -987,6 +1131,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   return (
     <div className="m-shell relative flex flex-col h-app w-screen overflow-hidden bg-[#0d1117] text-[#e6edf3] select-none">
       <main className="flex-1 min-h-0 relative flex flex-col">
+        {tab === "dashboard" && dashboardTab}
         {tab === "notes" && notesTab}
         {tab === "sync" && syncTab}
         {tab === "settings" && settingsTab}
@@ -1009,7 +1154,7 @@ export const MobileShell: FC<MobileShellProps> = ({
               >
                 <span className={`relative w-14 h-7 rounded-full flex items-center justify-center ${active ? "bg-sky-500/15" : ""}`}>
                   <t.icon className="w-5 h-5" />
-                  {showBadge && <span className={`absolute top-0.5 right-3.5 w-2 h-2 rounded-full ${tone.dot}`} />}
+                  {showBadge && <span className={`absolute top-0.5 right-3 w-2 h-2 rounded-full ${tone.dot}`} />}
                 </span>
                 <span className={`text-[12px] ${active ? "font-semibold" : "font-medium"}`}>{t.label}</span>
               </button>

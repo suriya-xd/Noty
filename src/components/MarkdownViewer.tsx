@@ -79,13 +79,13 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
   const markdownComponents: Components = useMemo(
     () => ({
       h1: ({ children }) => (
-        <h1 className="text-[1.65em] font-bold text-white mt-[0.6em] first:mt-0 mb-[0.35em] pb-[0.2em] border-b border-[#30363d] flex items-center gap-[0.3em] leading-tight">
+        <h1 className="text-[1.65em] font-bold text-white mt-[0.6em] first:mt-0 mb-[0.35em] flex items-center gap-[0.3em] leading-tight">
           <span className="text-sky-400 select-none font-mono text-[0.75em] font-normal">#</span>
           <span>{children}</span>
         </h1>
       ),
           h2: ({ children }) => (
-            <h2 className="text-[1.35em] font-bold text-sky-200 mt-[0.6em] first:mt-0 mb-[0.3em] pb-[0.15em] border-b border-[#30363d]/60 flex items-center gap-[0.3em] leading-snug">
+            <h2 className="text-[1.35em] font-bold text-sky-200 mt-[0.6em] first:mt-0 mb-[0.3em] flex items-center gap-[0.3em] leading-snug">
               <span className="text-sky-400/70 select-none font-mono text-[0.75em] font-normal">##</span>
               <span>{children}</span>
             </h2>

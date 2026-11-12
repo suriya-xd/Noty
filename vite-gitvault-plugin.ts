@@ -211,7 +211,7 @@ export function gitVaultPlugin(): Plugin {
               if (!fs.existsSync(fullPath)) {
                 const initialContent = body.rel_path.endsWith(".canvas")
                   ? JSON.stringify({ nodes: [], edges: [] }, null, 2)
-                  : `# ${body.rel_path.split("/").pop()?.replace(".md", "") || "Untitled"}\n\n`;
+                  : ""; // the title is the file name (inline title), not text in the note
                 fs.writeFileSync(fullPath, initialContent, "utf-8");
               }
               sendJson({ success: true });

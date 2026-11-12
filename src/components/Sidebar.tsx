@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import type { FC, FormEvent, DragEvent } from "react";
 import {
   FileText,
@@ -27,6 +27,7 @@ import {
   CustomOrderMap,
   SortMode,
   getStoredCustomOrder,
+  subscribeCustomOrder,
   saveCustomOrder,
   getStoredSortMode,
   saveSortMode,
@@ -141,6 +142,11 @@ export const Sidebar: FC<SidebarProps> = ({
   );
   const [sortMode, setSortMode] = useState<SortMode>(() =>
     getStoredSortMode(vaultPath)
+  );
+  // The order is also updated outside the sidebar (a note renamed from its heading in the editor).
+  useEffect(
+    () => subscribeCustomOrder(() => setCustomOrder(getStoredCustomOrder(vaultPath))),
+    [vaultPath]
   );
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
 

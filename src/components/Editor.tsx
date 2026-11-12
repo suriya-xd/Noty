@@ -19,12 +19,28 @@ import {
   ArrowLeftRight,
   LayoutDashboard,
   Image as ImageIcon,
+  Bold,
+  Italic,
+  Strikethrough,
+  Code,
+  Heading,
+  List,
+  ListOrdered,
+  ListChecks,
+  Quote,
+  Link2,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   obsidianLivePreviewPlugin,
   obsidianTheme,
   livePreviewConfigFacet,
 } from "./obsidianLivePreview";
+import { applyFormat } from "./editorCommands";
+import { inlineTitle } from "./inlineTitle";
+import { baseNameOf, fileNameFromTitle, pathForName } from "../utils/noteTitle";
+import { blockDragHandle } from "./blockDrag";
+import type { FormatKind } from "./editorCommands";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { InsertImageModal } from "./InsertImageModal";
 import { GitVaultBridge } from "../services/gitVaultBridge";
@@ -32,14 +48,25 @@ import { VaultEntry } from "../types/gitVault";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 
-/** Imperative formatting/commands API, used by the mobile shell's own toolbar. */
+/** Options for opening a note from inside the editor (e.g. Shift+click on a link). */
+export interface OpenFileOptions {
+  newTab?: boolean;
+}
+
+/**
+ * Renames a note. Resolves to false when the rename was refused (e.g. the name is taken). Called
+ * with `fromTitle` when the note's inline title was edited, so the host can skip its own feedback.
+ */
+export type RenameHandler = (
+  oldPath: string,
+  newPath: string,
+  options?: { fromTitle?: boolean }
+) => Promise<boolean | void> | void;
+
+/** Imperative commands API, used by the mobile shell's own toolbar. */
 export interface EditorHandle {
-  /** Wraps the selection (or inserts a selected placeholder) in `before`/`after`. */
-  wrapSelection: (before: string, after: string, placeholder: string) => void;
-  /** Adds `prefix` to the start of the current line, or removes it if already there. */
-  toggleLinePrefix: (prefix: string) => void;
-  /** Inserts a block on its own lines at the cursor. */
-  insertBlock: (text: string) => void;
+  /** Applies or removes a piece of Markdown formatting at the cursor / selection. */
+  format: (kind: FormatKind) => void;
   openInsertImage: () => void;
   toggleLinks: () => void;
   focus: () => void;
@@ -54,15 +81,34 @@ interface EditorProps {
   initialContent: string;
   vaultPath?: string;
   vaultFiles?: VaultEntry[];
-  onDebouncedSave: (filePath: string, content: string) => void;
-  onRenameFile?: (oldPath: string, newPath: string) => void;
-  onOpenFile?: (path: string) => void;
-  onCreateFile?: (newFilePath: string) => void;
+  onDebouncedSave: (filePath: string, content: string) => void | Promise<void>;
+  onRenameFile?: RenameHandler;
+  onOpenFile?: (path: string, options?: OpenFileOptions) => void;
+  onCreateFile?: (newFilePath: string, options?: OpenFileOptions) => void;
   onClose?: () => void;
   onRefreshFiles?: () => Promise<void>;
   onPreviewImage?: (src: string, alt?: string, title?: string) => void;
   debounceMs?: number;
 }
+
+type FormatButton = { kind: FormatKind; label: string; shortcut?: string; icon?: LucideIcon; text?: string } | "divider";
+
+/** Toolbar order, shared by the desktop toolbar here and the mobile shell's bottom bar. */
+export const FORMAT_BUTTONS: FormatButton[] = [
+  { kind: "bold", label: "Bold", shortcut: "Ctrl/Cmd+B", icon: Bold },
+  { kind: "italic", label: "Italic", shortcut: "Ctrl/Cmd+I", icon: Italic },
+  { kind: "strike", label: "Strikethrough", icon: Strikethrough },
+  { kind: "code", label: "Inline code", icon: Code },
+  "divider",
+  { kind: "heading", label: "Heading", icon: Heading },
+  { kind: "bullet", label: "Bulleted list", icon: List },
+  { kind: "numbered", label: "Numbered list", icon: ListOrdered },
+  { kind: "task", label: "Task list", icon: ListChecks },
+  { kind: "quote", label: "Quote", icon: Quote },
+  "divider",
+  { kind: "wikilink", label: "Link to a note", text: "[[ ]]" },
+  { kind: "link", label: "Web link", shortcut: "Ctrl/Cmd+K", icon: Link2 },
+];
 
 const markdownHighlightStyle = HighlightStyle.define([
   { tag: tags.strong, fontWeight: "bold", color: "#ffffff" },
@@ -114,6 +160,20 @@ export const Editor: FC<EditorProps> = ({
   const latestContentRef = useRef(initialContent);
   const latestPathRef = useRef(filePath);
 
+  const renamingRef = useRef(false);
+  const selfRenameTargetRef = useRef<string | null>(null);
+
+  // The editor is rebuilt when a different note is opened, but not when this note is renamed
+  // because its inline title was edited: a rebuild would reset the document and throw the cursor back to
+  // the top while the user is typing. `key` only advances for a path change that wasn't ours.
+  const sessionRef = useRef({ path: filePath, key: 0 });
+  if (sessionRef.current.path !== filePath) {
+    const adopted = filePath !== null && filePath === selfRenameTargetRef.current;
+    sessionRef.current = { path: filePath, key: sessionRef.current.key + (adopted ? 0 : 1) };
+    if (adopted) selfRenameTargetRef.current = null;
+  }
+  const sessionKey = sessionRef.current.key;
+
   useEffect(() => {
     onSaveStatusChange?.(saveStatus);
   }, [saveStatus, onSaveStatusChange]);
@@ -121,39 +181,8 @@ export const Editor: FC<EditorProps> = ({
   useEffect(() => {
     if (!apiRef) return;
     apiRef.current = {
-      wrapSelection(before, after, placeholder) {
-        const view = editorViewRef.current;
-        if (!view) return;
-        const { from, to } = view.state.selection.main;
-        const inner = view.state.sliceDoc(from, to) || placeholder;
-        view.dispatch({
-          changes: { from, to, insert: `${before}${inner}${after}` },
-          selection: { anchor: from + before.length, head: from + before.length + inner.length },
-          scrollIntoView: true,
-        });
-        view.focus();
-      },
-      toggleLinePrefix(prefix) {
-        const view = editorViewRef.current;
-        if (!view) return;
-        const line = view.state.doc.lineAt(view.state.selection.main.head);
-        const change = line.text.startsWith(prefix)
-          ? { from: line.from, to: line.from + prefix.length, insert: "" }
-          : { from: line.from, insert: prefix };
-        view.dispatch({ changes: change, scrollIntoView: true });
-        view.focus();
-      },
-      insertBlock(text) {
-        const view = editorViewRef.current;
-        if (!view) return;
-        const line = view.state.doc.lineAt(view.state.selection.main.head);
-        const insert = `${line.text.trim() ? "\n" : ""}${text}\n`;
-        view.dispatch({
-          changes: { from: line.to, insert },
-          selection: { anchor: line.to + insert.length },
-          scrollIntoView: true,
-        });
-        view.focus();
+      format(kind) {
+        if (editorViewRef.current) applyFormat(editorViewRef.current, kind);
       },
       openInsertImage: () => setIsInsertImageOpen(true),
       toggleLinks: () => setShowBacklinks((v) => !v),
@@ -230,18 +259,18 @@ export const Editor: FC<EditorProps> = ({
   const outgoingCount = filePath ? backlinksGraph.getForwardLinks(filePath).length : 0;
 
   const handleWikilinkClick = useCallback(
-    (target: string, _header?: string) => {
+    (target: string, _header?: string, options?: OpenFileOptions) => {
       const resolved = vaultIndex.resolve(target, latestPathRef.current || undefined);
       if (resolved) {
         if (onOpenFile) {
-          onOpenFile(resolved.path);
+          onOpenFile(resolved.path, options);
         }
       } else {
         const sanitized = target.endsWith(".md") ? target : `${target}.md`;
         if (onCreateFile) {
-          onCreateFile(sanitized);
+          onCreateFile(sanitized, options);
         } else if (onOpenFile) {
-          onOpenFile(sanitized);
+          onOpenFile(sanitized, options);
         }
       }
     },
@@ -251,10 +280,14 @@ export const Editor: FC<EditorProps> = ({
   // Latest callbacks for the long-lived editor instance (see the editor effect's dependency note).
   const onPreviewImageRef = useRef(onPreviewImage);
   const saveAndInsertFileRef = useRef(saveAndInsertFile);
+  const onDebouncedSaveRef = useRef(onDebouncedSave);
+  const onRenameFileRef = useRef(onRenameFile);
   useEffect(() => {
     onPreviewImageRef.current = onPreviewImage;
     saveAndInsertFileRef.current = saveAndInsertFile;
-  }, [onPreviewImage, saveAndInsertFile]);
+    onDebouncedSaveRef.current = onDebouncedSave;
+    onRenameFileRef.current = onRenameFile;
+  }, [onPreviewImage, saveAndInsertFile, onDebouncedSave, onRenameFile]);
 
   const handleWikilinkClickRef = useRef(handleWikilinkClick);
   useEffect(() => {
@@ -303,7 +336,11 @@ export const Editor: FC<EditorProps> = ({
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
-      onDebouncedSave(filePath, latestContentRef.current);
+      void (async () => {
+        await onDebouncedSave(filePath, latestContentRef.current);
+        await onRenameFile?.(filePath, finalName);
+      })();
+      return;
     }
 
     if (onRenameFile) {
@@ -338,15 +375,57 @@ export const Editor: FC<EditorProps> = ({
         clearTimeout(debounceTimerRef.current);
       }
 
-      debounceTimerRef.current = setTimeout(() => {
+      const save = () => {
+        // A rename in flight moves the file under us; saving now could recreate the old name.
+        if (renamingRef.current) {
+          debounceTimerRef.current = setTimeout(save, 150);
+          return;
+        }
         if (latestPathRef.current) {
           onDebouncedSave(latestPathRef.current, latestContentRef.current);
           setSaveStatus("synced");
         }
-      }, debounceMs);
+      };
+      debounceTimerRef.current = setTimeout(save, debounceMs);
     },
     [onDebouncedSave, debounceMs]
   );
+
+  /**
+   * Renames the note's file to `wanted` (the inline title was edited). Resolves to the name used,
+   * or false when refused. Pending text is saved first so nothing is written to the old name after.
+   */
+  const renameFromTitle = async (wanted: string): Promise<string | false> => {
+    const rename = onRenameFileRef.current;
+    const path = latestPathRef.current;
+    const name = fileNameFromTitle(wanted);
+    if (!rename || !path || !name) return false;
+    if (name === baseNameOf(path)) return name;
+    if (renamingRef.current) return false;
+
+    const newPath = pathForName(path, name);
+    renamingRef.current = true;
+    try {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+        await onDebouncedSaveRef.current(path, latestContentRef.current);
+        setSaveStatus("synced");
+      }
+      selfRenameTargetRef.current = newPath;
+      const result = await rename(path, newPath, { fromTitle: true });
+      if (result === false) {
+        selfRenameTargetRef.current = null;
+        return false;
+      }
+      latestPathRef.current = newPath;
+      return name;
+    } finally {
+      renamingRef.current = false;
+    }
+  };
+  const renameFromTitleRef = useRef(renameFromTitle);
+  renameFromTitleRef.current = renameFromTitle;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -358,6 +437,9 @@ export const Editor: FC<EditorProps> = ({
 
     latestContentRef.current = initialContent;
     updateStats(initialContent);
+    const openedName = filePath && filePath.endsWith(".md") ? baseNameOf(filePath) : null;
+
+    let lastLinkOpenAt = 0;
 
     const startState = EditorState.create({
       doc: initialContent,
@@ -372,6 +454,11 @@ export const Editor: FC<EditorProps> = ({
         }),
         obsidianLivePreviewPlugin,
         obsidianTheme,
+        blockDragHandle(),
+        inlineTitle({
+          getTitle: () => (openedName === null ? null : baseNameOf(latestPathRef.current ?? "")),
+          onCommit: (name) => renameFromTitleRef.current(name),
+        }),
         keymap.of([
           {
             key: "Mod-Shift-i",
@@ -380,19 +467,42 @@ export const Editor: FC<EditorProps> = ({
               return true;
             },
           },
+          { key: "Mod-b", run: (v) => applyFormat(v, "bold") },
+          { key: "Mod-i", run: (v) => applyFormat(v, "italic") },
+          { key: "Mod-k", run: (v) => applyFormat(v, "link") },
           ...defaultKeymap,
           ...historyKeymap,
         ]),
         EditorView.lineWrapping,
         EditorView.domEventHandlers({
+          // Links are followed on mousedown, before the editor moves the cursor. Letting the press
+          // through put the cursor on the link's line, which reveals that line's raw Markdown and
+          // shifts the text under the pointer, so the click never landed on the link (and a slight
+          // drag turned into a multi-line selection that revealed every line it touched).
+          // Shift+click opens the note in a new tab.
+          mousedown(event) {
+            if (event.button !== 0) return false;
+            const targetEl = (event.target as HTMLElement)?.closest("[data-wikilink-target]") as HTMLElement | null;
+            if (!targetEl?.dataset.wikilinkTarget) return false;
+            event.preventDefault();
+            lastLinkOpenAt = Date.now();
+            handleWikilinkClickRef.current(targetEl.dataset.wikilinkTarget, targetEl.dataset.wikilinkHeader, {
+              newTab: event.shiftKey,
+            });
+            return true;
+          },
           click(event) {
             const targetEl = (event.target as HTMLElement)?.closest("[data-wikilink-target]") as HTMLElement | null;
             if (targetEl && targetEl.dataset.wikilinkTarget) {
               event.preventDefault();
               event.stopPropagation();
-              const target = targetEl.dataset.wikilinkTarget;
-              const header = targetEl.dataset.wikilinkHeader;
-              handleWikilinkClickRef.current(target, header);
+              // Fallback for input that produces a click without a mousedown; skip the click that
+              // belongs to a press already handled above.
+              if (Date.now() - lastLinkOpenAt > 700) {
+                handleWikilinkClickRef.current(targetEl.dataset.wikilinkTarget, targetEl.dataset.wikilinkHeader, {
+                  newTab: event.shiftKey,
+                });
+              }
               return true;
             }
             return false;
@@ -447,16 +557,22 @@ export const Editor: FC<EditorProps> = ({
     editorViewRef.current = view;
 
     return () => {
+      const leavingPath = latestPathRef.current;
+      // Leaving this note with a save still pending: write it now instead of dropping the last
+      // half-second of typing.
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+        if (leavingPath) onDebouncedSaveRef.current(leavingPath, latestContentRef.current);
+        setSaveStatus("synced");
       }
       view.destroy();
     };
-    // Rebuild only when a different note (or vault) is opened. The callbacks are read through refs:
+    // Rebuild only when a different note (or vault) is opened (`sessionKey`, not the path itself). The callbacks are read through refs:
     // the parent passes new function identities on every render (after each autosave and each status
     // poll), and rebuilding on those reset the document and threw the cursor back to the first line.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath, vaultPath]);
+  }, [sessionKey, vaultPath]);
 
   if (!filePath) {
     return (
@@ -606,6 +722,34 @@ export const Editor: FC<EditorProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Formatting toolbar (desktop chrome; the mobile shell renders its own) */}
+      {chrome === "full" && (
+        <div
+          role="toolbar"
+          aria-label="Formatting"
+          className="h-9 px-4 border-b border-[#21262d] bg-[#0d1117] flex items-center gap-0.5 shrink-0 select-none overflow-x-auto"
+        >
+          {FORMAT_BUTTONS.map((b, i) =>
+            b === "divider" ? (
+              <span key={`d${i}`} className="w-px h-4 bg-[#30363d] mx-1.5 shrink-0" />
+            ) : (
+              <button
+                key={b.kind}
+                type="button"
+                title={b.shortcut ? `${b.label} (${b.shortcut})` : b.label}
+                aria-label={b.label}
+                // Keep the selection in the editor while the button is pressed.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => editorViewRef.current && applyFormat(editorViewRef.current, b.kind)}
+                className="h-7 min-w-7 px-1.5 shrink-0 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-[#21262d] transition-colors cursor-pointer"
+              >
+                {b.icon ? <b.icon className="w-4 h-4" /> : <span className="font-mono text-[11px] font-semibold">{b.text}</span>}
+              </button>
+            )
+          )}
+        </div>
+      )}
 
       {/* Obsidian-Style Single Live Preview Document Canvas */}
       <div

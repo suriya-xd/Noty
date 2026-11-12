@@ -64,58 +64,44 @@ export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
 
   return (
     <div
-      className="w-full h-full flex flex-col overflow-hidden select-text"
+      className="group/text relative w-full h-full flex flex-col overflow-hidden select-text"
       style={{ fontSize: `${dynamicFontSize}px` }}
       onDoubleClick={(e) => {
         e.stopPropagation();
         setIsEditing(true);
       }}
     >
-      {/* Node Header / Action Bar on hover or editing */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#30363d]/50 bg-[#0d1117]/60 text-zinc-400 select-none shrink-0">
-        <span
-          style={{ fontSize: `${Math.min(13, Math.max(11, Math.round(dynamicFontSize * 0.72)))}px` }}
-          className="font-mono text-zinc-400 flex items-center gap-1.5"
-        >
-          <Edit3 className="w-3.5 h-3.5 text-sky-400" />
-          Text Card
-          {isEditing && (
-            <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-500/20 text-sky-400 border border-sky-500/30">
-              Editing
-            </span>
-          )}
-        </span>
-        <div className="flex items-center gap-1">
-          {isEditing ? (
-            <button
-              // Keep focus in the textarea until the click lands. Otherwise blur finishes editing first,
-              // this button is swapped for "Edit", and the same click immediately re-enters edit mode.
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleFinishEditing();
-              }}
-              title="Done editing (Ctrl+Enter)"
-              className="p-1 hover:text-emerald-400 text-zinc-400 rounded transition-colors cursor-pointer"
-            >
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
-            </button>
-          ) : (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsEditing(true);
-              }}
-              title="Edit Markdown (Double-click)"
-              className="p-1 hover:text-white text-zinc-400 rounded transition-colors cursor-pointer opacity-60 hover:opacity-100"
-            >
-              <Edit3 className="w-3 h-3" />
-            </button>
-          )}
-        </div>
+      {/* Edit / done control floats over the card: no title bar, so the card is all content. */}
+      <div className="absolute top-1.5 right-1.5 z-10 flex items-center">
+        {isEditing ? (
+          <button
+            // Keep focus in the textarea until the click lands. Otherwise blur finishes editing first,
+            // this button is swapped for "Edit", and the same click immediately re-enters edit mode.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleFinishEditing();
+            }}
+            title="Done editing (Ctrl+Enter)"
+            className="p-1.5 rounded-md bg-[#0d1117]/80 hover:bg-[#21262d] text-emerald-400 transition-colors cursor-pointer"
+          >
+            <Check className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsEditing(true);
+            }}
+            title="Edit Markdown (Double-click)"
+            className="p-1.5 rounded-md bg-[#0d1117]/80 hover:bg-[#21262d] text-zinc-400 hover:text-white transition-all cursor-pointer opacity-0 group-hover/text:opacity-100 [@media(pointer:coarse)]:opacity-60"
+          >
+            <Edit3 className="w-3 h-3" />
+          </button>
+        )}
       </div>
 
       {/* Content Area */}

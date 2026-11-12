@@ -17,7 +17,8 @@
     "setup:android": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-android.ps1",
     "test:wikilinks": "npx tsx ./scripts/test-wikilinks.ts",
     "test:canvas": "npx tsx ./scripts/test-canvas.ts",
-    "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts"
+    "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts",
+    "test:blocks": "npx tsx ./scripts/test-block-move.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
