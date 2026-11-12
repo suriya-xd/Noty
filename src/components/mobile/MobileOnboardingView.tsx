@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FC } from "react";
 import { ArrowLeft, Check, Copy, ExternalLink, FileText, KeyRound, RefreshCw } from "lucide-react";
-import { GitHubService } from "../../services/githubService";
+import { GitHubService, pollDeviceFlow } from "../../services/githubService";
+import { openExternal } from "../../services/gitVaultBridge";
 import type { DeviceCodeResponse } from "../../types/gitVault";
 
 interface MobileOnboardingViewProps {
@@ -25,10 +26,10 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
   const [pat, setPat] = useState("");
   const [isCheckingPat, setIsCheckingPat] = useState(false);
 
-  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPoll = useRef<(() => void) | null>(null);
   const stopPolling = useCallback(() => {
-    if (pollTimer.current) clearTimeout(pollTimer.current);
-    pollTimer.current = null;
+    cancelPoll.current?.();
+    cancelPoll.current = null;
   }, []);
 
   // Reset whenever the view is closed.
@@ -62,26 +63,15 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
       setSecondsLeft(res.expires_in);
       setStep("code");
 
-      const poll = async (interval: number) => {
-        try {
-          const r = await GitHubService.pollDeviceToken(res.device_code);
-          if (r.status === "approved" && r.access_token) {
-            await finish(r.access_token);
-            return;
-          }
-          if (r.status === "pending" || r.status === "slow_down") {
-            const next = r.interval || interval;
-            pollTimer.current = setTimeout(() => poll(next), next * 1000);
-            return;
-          }
-          setError(r.error_description || "Sign-in wasn't completed. Request a new code to try again.");
-        } catch (err) {
-          setError(errorText(err));
-        }
-      };
-      pollTimer.current = setTimeout(() => poll(res.interval || 5), (res.interval || 5) * 1000);
+      cancelPoll.current = pollDeviceFlow({
+        deviceCode: res.device_code,
+        interval: res.interval,
+        expiresIn: res.expires_in,
+        onApproved: finish,
+        onFailure: setError,
+      });
     } catch (err) {
-      setError(`Couldn't reach GitHub. ${errorText(err)}`);
+      setError(errorText(err));
     } finally {
       setIsStarting(false);
     }
@@ -230,6 +220,10 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
                 href={device.verification_uri}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternal(device.verification_uri);
+                }}
                 className={`mt-3 w-full h-[52px] rounded-xl bg-sky-500 text-[#04121d] text-[16px] font-semibold flex items-center justify-center gap-2 active:bg-sky-400 ${
                   expired ? "pointer-events-none opacity-40" : ""
                 }`}

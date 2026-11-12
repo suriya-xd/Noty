@@ -17,14 +17,43 @@ export const isTauriEnvironment = (): boolean => {
   return typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 };
 
-// Safe invoke wrapper: uses Tauri IPC if native, or Vite dev server API to operate on real Git repo
+/**
+ * Opens a web page in the system browser. In the apps this goes through the opener plugin; a
+ * target="_blank" link or window.open() isn't reliably handed to the browser by a Tauri webview
+ * (on Android it can do nothing), and the sign-in screens depend on it.
+ */
+export async function openExternal(url: string): Promise<void> {
+  if (isTauriEnvironment()) {
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url);
+      return;
+    } catch (err) {
+      console.warn("[GitVault] opener failed, falling back to window.open:", err);
+    }
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/** Tauri rejects with a plain string (the Rust `Err(String)`); make that a normal Error. */
+function nativeError(err: unknown, cmd: string): Error {
+  if (err instanceof Error) return err;
+  if (typeof err === "string" && err) return new Error(err);
+  if (err && typeof err === "object" && "message" in err) return new Error(String((err as { message: unknown }).message));
+  return new Error(`${cmd} failed`);
+}
+
+// Runs a backend command: Tauri IPC in the desktop and mobile apps, or the Vite dev server API in
+// a browser during development. In the native apps a failure is the real answer and is thrown as
+// is. (It used to fall through to the browser mock, which replied "Unknown command" and hid why
+// GitHub sign-in failed.) The mock is only for a plain browser with no backend at all.
 async function invokeTauri<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       return await invoke<T>(cmd, args);
     } catch (err) {
-      console.warn(`[GitVault Native] invoke failed for ${cmd}, falling back to web API:`, err);
+      throw nativeError(err, cmd);
     }
   }
 
@@ -345,6 +374,14 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       if (!targetUrl) throw new Error("Remote URL is required");
       return "Successfully connected to GitHub repository!" as unknown as T;
     }
+
+    case "github_start_device_flow":
+    case "github_poll_device_token":
+      // GitHub's sign-in endpoints don't allow calls from a web page, so a browser with no backend
+      // can't do the code sign-in. The apps and the dev server can.
+      throw new Error(
+        "Signing in with a browser code works in the Noty desktop and mobile apps. Here, use a personal access token instead."
+      );
 
     default:
       throw new Error(`Unknown command: ${cmd}`);

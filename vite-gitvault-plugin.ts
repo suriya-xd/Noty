@@ -1,10 +1,31 @@
 import type { Plugin } from "vite";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import util from "node:util";
 
 const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
+
+/**
+ * Runs git with an argument list. Nothing is passed through a shell, so values that came from a
+ * request (remote URL, branch, name, email, token, commit message) can't be turned into commands.
+ */
+const git = (args: string[], cwd: string) => execFileAsync("git", args, { cwd });
+
+/** Branch names go to git as arguments; refuse anything that could be read as an option. */
+function safeBranch(name: unknown): string {
+  const value = typeof name === "string" ? name.trim() : "";
+  if (!/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(value)) throw new Error(`Invalid branch name: ${value}`);
+  return value;
+}
+
+/** Remote URLs: https or ssh forms only, never something git would read as an option. */
+function safeRemoteUrl(url: unknown): string {
+  const value = typeof url === "string" ? url.trim() : "";
+  if (!/^(https:\/\/|http:\/\/|ssh:\/\/|git@)[^\s"'`$;&|<>]+$/.test(value)) throw new Error("Invalid remote URL");
+  return value;
+}
 
 export function gitVaultPlugin(): Plugin {
   return {
@@ -13,6 +34,23 @@ export function gitVaultPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith("/api/gitvault/")) {
           return next();
+        }
+
+        // This API reads and writes files and runs git with no sign-in, so it answers only the page
+        // it serves. A browser attaches Origin to cross-site requests; a different site open in
+        // another tab must not be able to drive it.
+        const origin = req.headers.origin;
+        if (origin && req.headers.host) {
+          let originHost = "";
+          try {
+            originHost = new URL(origin).host;
+          } catch {}
+          if (originHost !== req.headers.host) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "Cross-origin requests are not allowed." }));
+            return;
+          }
         }
 
         const endpoint = req.url.replace("/api/gitvault/", "").split("?")[0];
@@ -279,7 +317,7 @@ export function gitVaultPlugin(): Plugin {
               // Stage all files
               await execAsync("git add -A", { cwd: vaultPath });
               const msg = body.commit_message || `Vault update: ${new Date().toISOString()}`;
-              await execAsync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, { cwd: vaultPath });
+              await git(["commit", "-m", String(msg)], vaultPath);
               
               // Push to origin
               if (!preStatus.remote_url) {
@@ -288,7 +326,7 @@ export function gitVaultPlugin(): Plugin {
 
               try {
                 const branch = preStatus.branch || "main";
-                await execAsync(`git push -u origin ${branch}`, { cwd: vaultPath });
+                await git(["push", "-u", "origin", safeBranch(branch)], vaultPath);
               } catch (pushErr: any) {
                 return sendError(`Committed locally, but failed to push to GitHub: ${pushErr.message}. Check your remote URL and credentials in Settings.`);
               }
@@ -350,27 +388,27 @@ export function gitVaultPlugin(): Plugin {
                 } catch {}
 
                 if (hasOrigin) {
-                  await execAsync(`git remote set-url origin "${cleanUrl}"`, { cwd: vaultPath });
+                  await git(["remote", "set-url", "origin", safeRemoteUrl(cleanUrl)], vaultPath);
                 } else {
-                  await execAsync(`git remote add origin "${cleanUrl}"`, { cwd: vaultPath });
+                  await git(["remote", "add", "origin", safeRemoteUrl(cleanUrl)], vaultPath);
                 }
               }
 
               if (cfg.branch) {
                 const cleanBranch = cfg.branch.trim();
                 try {
-                  await execAsync(`git branch -M "${cleanBranch}"`, { cwd: vaultPath });
+                  await git(["branch", "-M", safeBranch(cleanBranch)], vaultPath);
                 } catch {}
               }
 
               if (cfg.user_name) {
-                await execAsync(`git config user.name "${cfg.user_name.trim()}"`, { cwd: vaultPath });
+                await git(["config", "user.name", String(cfg.user_name).trim()], vaultPath);
               }
               if (cfg.user_email) {
-                await execAsync(`git config user.email "${cfg.user_email.trim()}"`, { cwd: vaultPath });
+                await git(["config", "user.email", String(cfg.user_email).trim()], vaultPath);
               }
               if (cfg.github_token !== undefined) {
-                await execAsync(`git config gitvault.token "${cfg.github_token.trim()}"`, { cwd: vaultPath });
+                await git(["config", "gitvault.token", String(cfg.github_token).trim()], vaultPath);
               }
 
               // Return updated config
@@ -402,7 +440,7 @@ export function gitVaultPlugin(): Plugin {
               if (!targetUrl) return sendError("Remote URL is required", 400);
 
               try {
-                await execAsync(`git ls-remote "${targetUrl}"`, { cwd: vaultPath });
+                await git(["ls-remote", safeRemoteUrl(targetUrl)], vaultPath);
                 sendJson({ success: true, message: "Successfully connected to GitHub repository!" });
               } catch (testErr: any) {
                 sendError(`Connection failed: ${testErr.message}`, 400);
@@ -526,26 +564,26 @@ export function gitVaultPlugin(): Plugin {
               } catch {}
 
               if (hasOrigin) {
-                await execAsync(`git remote set-url origin "${remoteUrl}"`, { cwd: targetPath });
+                await git(["remote", "set-url", "origin", safeRemoteUrl(remoteUrl)], targetPath);
               } else {
-                await execAsync(`git remote add origin "${remoteUrl}"`, { cwd: targetPath });
+                await git(["remote", "add", "origin", safeRemoteUrl(remoteUrl)], targetPath);
               }
 
-              if (userName) await execAsync(`git config user.name "${userName}"`, { cwd: targetPath });
-              if (userEmail) await execAsync(`git config user.email "${userEmail}"`, { cwd: targetPath });
-              if (token) await execAsync(`git config gitvault.token "${token}"`, { cwd: targetPath });
+              if (userName) await git(["config", "user.name", String(userName)], targetPath);
+              if (userEmail) await git(["config", "user.email", String(userEmail)], targetPath);
+              if (token) await git(["config", "gitvault.token", String(token)], targetPath);
 
               // Fetch from origin
               try {
                 await execAsync("git fetch origin", { cwd: targetPath });
                 try {
-                  await execAsync(`git checkout -B ${branch} origin/${branch}`, { cwd: targetPath });
+                  await git(["checkout", "-B", safeBranch(branch), `origin/${safeBranch(branch)}`], targetPath);
                 } catch {
-                  await execAsync(`git branch -M ${branch}`, { cwd: targetPath });
+                  await git(["branch", "-M", safeBranch(branch)], targetPath);
                 }
               } catch (e) {
                 console.warn("fetch failed during connect:", e);
-                await execAsync(`git branch -M ${branch}`, { cwd: targetPath });
+                await git(["branch", "-M", safeBranch(branch)], targetPath);
               }
 
               // If no markdown notes exist, create initial Welcome note
@@ -594,11 +632,11 @@ export function gitVaultPlugin(): Plugin {
                   let base = "";
                   let remote = "";
                   try {
-                    const { stdout: b } = await execAsync(`git show HEAD:${p}`, { cwd: vaultPath });
+                    const { stdout: b } = await git(["show", `HEAD:${p}`], vaultPath);
                     base = b;
                   } catch {}
                   try {
-                    const { stdout: r } = await execAsync(`git show origin/main:${p}`, { cwd: vaultPath });
+                    const { stdout: r } = await git(["show", `origin/main:${p}`], vaultPath);
                     remote = r;
                   } catch {}
                   const local = fs.existsSync(path.join(vaultPath, p)) ? fs.readFileSync(path.join(vaultPath, p), "utf-8") : "";

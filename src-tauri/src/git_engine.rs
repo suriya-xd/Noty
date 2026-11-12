@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use git2::{BranchType, Cred, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
+use git2::{BranchType, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
 use similar::{ChangeTag, TextDiff};
 
 use crate::models::{
@@ -550,27 +550,42 @@ fn find_remote_tracking_branch(repo: &Repository, branch_name: &str) -> (Option<
     (None, None)
 }
 
+/// Credentials for a remote: the saved GitHub token, or whatever the system git offers.
+///
+/// libgit2 calls this again every time the server rejects what it was given, so answering with the
+/// same token each time would retry forever (a hung push/fetch). It is offered once; a second call
+/// means the server said no, and that is reported as an error the user can act on. Nothing here
+/// may panic: the release build aborts on panic, which would close the whole app.
+fn credentials_callback(
+    token: Option<String>,
+) -> impl FnMut(&str, Option<&str>, CredentialType) -> Result<Cred, git2::Error> {
+    let mut offered = false;
+    move |url, username_from_url, allowed| {
+        if offered {
+            return Err(git2::Error::from_str(
+                "GitHub rejected the saved sign-in. It may have expired or been revoked: sign in again from Settings.",
+            ));
+        }
+        offered = true;
+
+        if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(t) = token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                return Cred::userpass_plaintext("git", t);
+            }
+        }
+        git2::Config::open_default()
+            .and_then(|cfg| Cred::credential_helper(&cfg, url, username_from_url))
+            .or_else(|_| Cred::default())
+    }
+}
+
 fn create_remote_callbacks(repo: &Repository) -> RemoteCallbacks<'static> {
     let mut callbacks = RemoteCallbacks::new();
     let token_opt = repo
         .config()
         .ok()
         .and_then(|c| c.get_string("gitvault.token").ok());
-
-    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
-        if let Some(ref token) = token_opt {
-            if !token.trim().is_empty() {
-                return Cred::userpass_plaintext("git", token.trim());
-            }
-        }
-        Cred::default().or_else(|_| {
-            Cred::credential_helper(
-                &git2::Config::open_default().unwrap(),
-                _url,
-                username_from_url,
-            )
-        })
-    });
+    callbacks.credentials(credentials_callback(token_opt));
     callbacks
 }
 
@@ -656,20 +671,7 @@ pub fn test_remote_connection(repo_path: &str, remote_url: &str, token: Option<S
     });
 
     let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(move |_url, username_from_url, _allowed_types| {
-        if let Some(ref t) = saved_token {
-            if !t.trim().is_empty() {
-                return Cred::userpass_plaintext("git", t.trim());
-            }
-        }
-        Cred::default().or_else(|_| {
-            Cred::credential_helper(
-                &git2::Config::open_default().unwrap(),
-                _url,
-                username_from_url,
-            )
-        })
-    });
+    callbacks.credentials(credentials_callback(saved_token));
 
     let mut fetch_opts = FetchOptions::new();
     fetch_opts.remote_callbacks(callbacks);

@@ -21,44 +21,81 @@ pub struct DeviceTokenResponse {
     pub error_description: Option<String>,
 }
 
+/// One HTTP agent for GitHub calls. ureq has no timeouts unless asked, so without these a dead
+/// connection (common on mobile networks) would hang the sign-in forever.
+fn github_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("Noty")
+        .build()
+}
+
+/// POSTs a form to GitHub and returns the JSON body. GitHub reports many failures as an HTTP
+/// error status *with* a JSON explanation, so the body is read for both outcomes.
+fn post_form(url: &str, form: &[(&str, &str)]) -> Result<serde_json::Value, String> {
+    match github_agent().post(url).set("Accept", "application/json").send_form(form) {
+        Ok(resp) => resp
+            .into_json::<serde_json::Value>()
+            .map_err(|e| format!("GitHub sent a response that couldn't be read: {}", e)),
+        Err(ureq::Error::Status(code, resp)) => {
+            let detail = resp
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| v.get("error_description").and_then(|d| d.as_str()).map(String::from));
+            Err(format!(
+                "GitHub returned HTTP {}{}",
+                code,
+                detail.map(|d| format!(": {}", d)).unwrap_or_default()
+            ))
+        }
+        Err(e) => Err(format!("Couldn't connect to GitHub: {}", e)),
+    }
+}
+
 pub fn start_device_flow(client_id: Option<String>) -> Result<DeviceCodeResponse, String> {
-    let cid = client_id.unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
-    let url = "https://github.com/login/device/code";
+    let cid = client_id
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
 
-    let resp = ureq::post(url)
-        .set("Accept", "application/json")
-        .send_form(&[
-            ("client_id", cid.as_str()),
-            ("scope", "repo,read:user,user:email"),
-        ])
-        .map_err(|e| format!("Failed to initiate GitHub device code: {}", e))?;
+    let v = post_form(
+        "https://github.com/login/device/code",
+        &[("client_id", cid.as_str()), ("scope", "repo,read:user,user:email")],
+    )?;
 
-    let device_resp: DeviceCodeResponse = resp
-        .into_json()
-        .map_err(|e| format!("Invalid JSON response from GitHub: {}", e))?;
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        let desc = v.get("error_description").and_then(|d| d.as_str()).unwrap_or("");
+        return Err(match err {
+            "device_flow_disabled" => "Browser sign-in isn't enabled for this app's GitHub OAuth app. \
+                Turn on \"Enable Device Flow\" in its GitHub settings, or sign in with a personal access token."
+                .to_string(),
+            "incorrect_client_credentials" => {
+                "GitHub doesn't recognise this app's client ID.".to_string()
+            }
+            other => format!("GitHub refused the sign-in request ({}). {}", other, desc),
+        });
+    }
 
-    Ok(device_resp)
+    serde_json::from_value::<DeviceCodeResponse>(v)
+        .map_err(|e| format!("GitHub's sign-in response was missing something: {}", e))
 }
 
 pub fn poll_device_token(
     client_id: Option<String>,
     device_code: String,
 ) -> Result<DeviceTokenResponse, String> {
-    let cid = client_id.unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
-    let url = "https://github.com/login/oauth/access_token";
+    let cid = client_id
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
 
-    let resp = ureq::post(url)
-        .set("Accept", "application/json")
-        .send_form(&[
+    let v = post_form(
+        "https://github.com/login/oauth/access_token",
+        &[
             ("client_id", cid.as_str()),
             ("device_code", device_code.as_str()),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ])
-        .map_err(|e| format!("Failed to poll GitHub device token: {}", e))?;
-
-    let v: serde_json::Value = resp
-        .into_json()
-        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+        ],
+    )?;
 
     if let Some(token) = v.get("access_token").and_then(|t| t.as_str()) {
         return Ok(DeviceTokenResponse {

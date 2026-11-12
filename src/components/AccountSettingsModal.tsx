@@ -1,5 +1,5 @@
 import { useEscapeKey, ConfirmDialog } from "./dialogs";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { FC } from "react";
 import {
   User,
@@ -17,7 +17,8 @@ import {
   HardDrive,
   Laptop,
 } from "lucide-react";
-import { GitHubService } from "../services/githubService";
+import { GitHubService, pollDeviceFlow } from "../services/githubService";
+import { GitVaultBridge, openExternal } from "../services/gitVaultBridge";
 import { DeviceCodeResponse, GitHubUser } from "../types/gitVault";
 
 const GithubIcon: FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -52,11 +53,16 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   const [deviceFlowData, setDeviceFlowData] = useState<DeviceCodeResponse | null>(null);
   const [isStartingDeviceFlow, setIsStartingDeviceFlow] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
+  const cancelPollRef = useRef<(() => void) | null>(null);
   const [deviceFlowError, setDeviceFlowError] = useState<string | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
+      // Closing abandons an account switch in progress; it must not finish in the background.
+      cancelPollRef.current?.();
+      cancelPollRef.current = null;
+      setIsPolling(false);
       setIsSwitchingAccount(false);
       setDeviceFlowData(null);
       return;
@@ -69,6 +75,13 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
       setCurrentUser(null);
     }
   }, [isOpen]);
+
+  useEffect(
+    () => () => {
+      cancelPollRef.current?.();
+    },
+    []
+  );
 
   if (!isOpen) return null;
 
@@ -86,7 +99,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
         setTimeout(() => setCodeCopied(false), 3000);
       } catch {}
 
-      startPolling(data.device_code, data.interval || 5);
+      startPolling(data);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setDeviceFlowError(msg);
@@ -95,44 +108,45 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
     }
   };
 
-  const startPolling = (deviceCode: string, intervalSecs: number) => {
+  const startPolling = (data: DeviceCodeResponse) => {
     setIsPolling(true);
-
-    const poll = async (currInterval: number) => {
-      try {
-        const res = await GitHubService.pollDeviceToken(deviceCode);
-        if (res.status === "approved" && res.access_token) {
-          setIsPolling(false);
-          const newUser = await GitHubService.validateToken(res.access_token);
-          GitHubService.saveGitHubAuth(res.access_token, newUser);
-          setCurrentUser(newUser);
-          setIsSwitchingAccount(false);
-          setDeviceFlowData(null);
-          onAccountChanged?.();
-          return;
-        }
-
-        if (res.status === "pending" || res.status === "slow_down") {
-          const nextInterval = res.interval || currInterval;
-          setTimeout(() => poll(nextInterval), nextInterval * 1000);
-          return;
-        }
-
+    cancelPollRef.current = pollDeviceFlow({
+      deviceCode: data.device_code,
+      interval: data.interval,
+      expiresIn: data.expires_in,
+      onApproved: async (accessToken) => {
+        const newUser = await GitHubService.validateToken(accessToken);
+        GitHubService.saveGitHubAuth(accessToken, newUser);
+        await setVaultToken(accessToken);
         setIsPolling(false);
-        setDeviceFlowError(res.error_description || "Authentication was cancelled.");
-      } catch (err: unknown) {
+        setCurrentUser(newUser);
+        setIsSwitchingAccount(false);
+        setDeviceFlowData(null);
+        onAccountChanged?.();
+      },
+      onFailure: (message) => {
         setIsPolling(false);
-        const msg = err instanceof Error ? err.message : String(err);
-        setDeviceFlowError(msg);
-      }
-    };
-
-    setTimeout(() => poll(intervalSecs), intervalSecs * 1000);
+        setDeviceFlowError(message);
+      },
+    });
   };
 
-  const handleSignOut = () => {
+  /**
+   * The vault's git config holds its own copy of the token, and that copy is what pushes and
+   * fetches use. Keep it in step with the signed-in account (an empty token means signed out).
+   */
+  const setVaultToken = async (token: string) => {
+    try {
+      await GitVaultBridge.setVaultConfig(vaultPath, { github_token: token });
+    } catch (err) {
+      console.warn("Couldn't update the vault's saved GitHub token:", err);
+    }
+  };
+
+  const handleSignOut = async () => {
     setIsConfirmingSignOut(false);
     GitHubService.clearGitHubAuth();
+    await setVaultToken("");
     setCurrentUser(null);
     onAccountChanged?.();
   };
@@ -144,7 +158,7 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
       setCodeCopied(true);
       setTimeout(() => setCodeCopied(false), 3000);
     } catch {}
-    window.open(deviceFlowData.verification_uri || "https://github.com/login/device", "_blank");
+    void openExternal(deviceFlowData.verification_uri || "https://github.com/login/device");
   };
 
   return (

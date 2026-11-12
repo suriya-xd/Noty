@@ -25,8 +25,8 @@ import {
   Copy,
   RefreshCw,
 } from "lucide-react";
-import { GitHubService } from "../services/githubService";
-import { GitVaultBridge } from "../services/gitVaultBridge";
+import { GitHubService, pollDeviceFlow } from "../services/githubService";
+import { GitVaultBridge, openExternal } from "../services/gitVaultBridge";
 import { DeviceCodeResponse, GitHubRepo, GitHubUser } from "../types/gitVault";
 
 const GithubIcon: FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
@@ -71,7 +71,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
   const [deviceFlowError, setDeviceFlowError] = useState<string | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
 
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPollRef = useRef<(() => void) | null>(null);
 
   // Step 2: Repository Selection State
   const [repoTab, setRepoTab] = useState<"select" | "create">("select");
@@ -114,11 +114,19 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollTimerRef.current) {
-        clearTimeout(pollTimerRef.current);
-      }
+      cancelPollRef.current?.();
+      cancelPollRef.current = null;
     };
   }, []);
+
+  // Closing the modal abandons an in-progress sign-in: it must not finish later in the background.
+  useEffect(() => {
+    if (isOpen) return;
+    cancelPollRef.current?.();
+    cancelPollRef.current = null;
+    setIsPollingDeviceToken(false);
+    setDeviceFlowData(null);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -126,9 +134,8 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
   const handleStartDeviceFlow = async () => {
     setIsStartingDeviceFlow(true);
     setDeviceFlowError(null);
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-    }
+    cancelPollRef.current?.();
+    cancelPollRef.current = null;
 
     try {
       const data = await GitHubService.startDeviceFlow();
@@ -140,7 +147,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
         setTimeout(() => setCodeCopied(false), 3000);
       } catch {}
 
-      startDeviceTokenPolling(data.device_code, data.interval || 5);
+      startDeviceTokenPolling(data);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setDeviceFlowError(msg || "Failed to initiate GitHub browser login.");
@@ -149,41 +156,28 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
     }
   };
 
-  const startDeviceTokenPolling = (deviceCode: string, intervalSeconds: number) => {
+  const startDeviceTokenPolling = (data: DeviceCodeResponse) => {
     setIsPollingDeviceToken(true);
-
-    const poll = async (currInterval: number) => {
-      try {
-        const res = await GitHubService.pollDeviceToken(deviceCode);
-        if (res.status === "approved" && res.access_token) {
-          setIsPollingDeviceToken(false);
-          const user = await GitHubService.validateToken(res.access_token);
-          setToken(res.access_token);
-          setCurrentUser(user);
-          GitHubService.saveGitHubAuth(res.access_token, user);
-          setAuthorName(user.name || user.login);
-          setAuthorEmail(user.email || "");
-          setCurrentStep(2);
-          await loadUserRepos(res.access_token);
-          return;
-        }
-
-        if (res.status === "pending" || res.status === "slow_down") {
-          const nextInterval = res.interval || currInterval;
-          pollTimerRef.current = setTimeout(() => poll(nextInterval), nextInterval * 1000);
-          return;
-        }
-
+    cancelPollRef.current = pollDeviceFlow({
+      deviceCode: data.device_code,
+      interval: data.interval,
+      expiresIn: data.expires_in,
+      onApproved: async (accessToken) => {
+        const user = await GitHubService.validateToken(accessToken);
         setIsPollingDeviceToken(false);
-        setDeviceFlowError(res.error_description || "Authentication was not completed.");
-      } catch (err: unknown) {
+        setToken(accessToken);
+        setCurrentUser(user);
+        GitHubService.saveGitHubAuth(accessToken, user);
+        setAuthorName(user.name || user.login);
+        setAuthorEmail(user.email || "");
+        setCurrentStep(2);
+        await loadUserRepos(accessToken);
+      },
+      onFailure: (message) => {
         setIsPollingDeviceToken(false);
-        const msg = err instanceof Error ? err.message : String(err);
-        setDeviceFlowError(msg);
-      }
-    };
-
-    pollTimerRef.current = setTimeout(() => poll(intervalSeconds), intervalSeconds * 1000);
+        setDeviceFlowError(message);
+      },
+    });
   };
 
   const handleOpenGitHubBrowser = async () => {
@@ -195,7 +189,7 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({
     } catch {}
 
     const url = deviceFlowData.verification_uri || "https://github.com/login/device";
-    window.open(url, "_blank");
+    void openExternal(url);
   };
 
   // 2. Authenticate with GitHub PAT (Manual Fallback)
