@@ -152,28 +152,61 @@ fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Resul
     fs_engine::save_image_file(&vault_path, &rel_path, data)
 }
 
-/// Android keeps its trusted root certificates in a system folder. The OpenSSL bundled with the
-/// app (used by git for https://github.com) looks in a folder that doesn't exist on Android, so
-/// without this every fetch and push fails with "the SSL certificate is invalid". Setting
-/// SSL_CERT_DIR points OpenSSL at the system folder. Runs once, before git makes any connection.
+/// Makes https work for git on Android. The OpenSSL bundled with the app has no certificate store
+/// of its own there, so every fetch and push fails with "the SSL certificate is invalid".
+///
+/// Pointing OpenSSL at Android's certificate folder (SSL_CERT_DIR) does not help: OpenSSL finds a
+/// certificate in a folder by a file name derived from a hash, and Android names its files with
+/// the older hash that current OpenSSL no longer looks for. So the system certificates are joined
+/// into one file, which is read whole and needs no file names, and git is told to use that file.
 #[cfg(target_os = "android")]
-fn trust_android_system_certificates() {
-    let dirs: Vec<&str> = ["/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"]
-        .into_iter()
-        .filter(|d| std::path::Path::new(d).is_dir())
-        .collect();
-    if !dirs.is_empty() {
-        std::env::set_var("SSL_CERT_DIR", dirs.join(":"));
+fn trust_android_system_certificates(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    // Newer Android versions keep the up-to-date set in the first folder; the second is the
+    // older location. One complete set is enough.
+    let mut bundle: Vec<u8> = Vec::new();
+    for dir in ["/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"] {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            if let Ok(bytes) = std::fs::read(entry.path()) {
+                bundle.extend_from_slice(&bytes);
+                bundle.push(b'\n');
+            }
+        }
+        if !bundle.is_empty() {
+            break;
+        }
+    }
+    if bundle.is_empty() {
+        return;
+    }
+
+    let Ok(dir) = app.path().app_cache_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("system-certificates.pem");
+    if std::fs::write(&file, &bundle).is_err() {
+        return;
+    }
+
+    // The environment variable covers OpenSSL's own start-up; the direct call covers a git
+    // library that has already started.
+    std::env::set_var("SSL_CERT_FILE", &file);
+    // Safety: runs once during start-up, before any command (and so any git work) can run.
+    unsafe {
+        let _ = git2::opts::set_ssl_cert_file(&file);
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "android")]
-    trust_android_system_certificates();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|_app| {
+            #[cfg(target_os = "android")]
+            trust_android_system_certificates(_app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_repo_status,
             fetch_remote,

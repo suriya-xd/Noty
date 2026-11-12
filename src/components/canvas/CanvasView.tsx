@@ -30,6 +30,9 @@ import {
   isNodeInsideGroup,
   isNodeInViewport,
   isPointInRect,
+  scaleRectAboutCenter,
+  MIN_NODE_WIDTH,
+  MIN_NODE_HEIGHT,
 } from "../../utils/canvas/math";
 import { LayoutDashboard, LayoutGrid } from "lucide-react";
 import { CanvasHistory } from "../../utils/canvas/history";
@@ -52,6 +55,8 @@ interface CanvasViewProps {
   onClose?: () => void;
   onRefreshFiles?: () => Promise<void>;
   onPreviewImage?: (src: string, alt?: string, title?: string) => void;
+  /** Touch screens (the mobile app): cards have no resize handles and are resized by pinching. */
+  touchMode?: boolean;
 }
 
 export const CanvasView: FC<CanvasViewProps> = ({
@@ -64,8 +69,18 @@ export const CanvasView: FC<CanvasViewProps> = ({
   onClose,
   onRefreshFiles,
   onPreviewImage,
+  touchMode = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Latest values for the touch handlers below, which are attached once.
+  const touchStateRef = useRef<{
+    touchMode: boolean;
+    selected: Set<string>;
+    nodes: CanvasNode[];
+    snapGrid: boolean;
+    setNodeRect: (nodeId: string, rect: Rect) => void;
+    finishResize: () => void;
+  } | null>(null);
 
   // 1. Core Canvas Data State
   const [canvasData, setCanvasData] = useState<CanvasData>(() =>
@@ -120,7 +135,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
     const el = containerRef.current;
     if (!el) return;
 
-    type Mode = "idle" | "pending" | "drag" | "pinch";
+    type Mode = "idle" | "pending" | "drag" | "pinch" | "resize";
     let mode: Mode = "idle";
     let target: Element | null = null;
     let button = 0;
@@ -130,6 +145,42 @@ export const CanvasView: FC<CanvasViewProps> = ({
     let lastY = 0;
     let pinchDist = 0;
     let pinchMid = { x: 0, y: 0 };
+    // Pinching a selected card resizes it (touch mode only).
+    let resizeId: string | null = null;
+    let resizeFrom: Rect | null = null;
+    let resizeDist = 0;
+
+    /** The selected card under a two-finger touch: one a finger is on, or one the pinch is centred on. */
+    const selectedCardUnder = (touches: TouchList, mid: { x: number; y: number }): string | null => {
+      const st = touchStateRef.current;
+      if (!st?.touchMode || st.selected.size === 0) return null;
+      for (const touch of [touches[0], touches[1]]) {
+        const id = (touch.target as Element | null)?.closest?.("[data-node-id]")?.getAttribute("data-node-id");
+        if (id && st.selected.has(id)) return id;
+      }
+      for (const id of st.selected) {
+        const r = document.getElementById(`canvas-node-${id}`)?.getBoundingClientRect();
+        if (r && mid.x >= r.left && mid.x <= r.right && mid.y >= r.top && mid.y <= r.bottom) return id;
+      }
+      return null;
+    };
+    const endResize = () => {
+      const st = touchStateRef.current;
+      if (resizeId && st) {
+        const node = st.nodes.find((n) => n.id === resizeId);
+        if (node && st.snapGrid) {
+          st.setNodeRect(resizeId, {
+            x: snapToGrid(node.x),
+            y: snapToGrid(node.y),
+            width: snapToGrid(node.width),
+            height: snapToGrid(node.height),
+          });
+        }
+        st.finishResize();
+      }
+      resizeId = null;
+      resizeFrom = null;
+    };
 
     const fire = (type: "mousedown" | "mousemove" | "mouseup", x: number, y: number) => {
       target?.dispatchEvent(
@@ -158,6 +209,16 @@ export const CanvasView: FC<CanvasViewProps> = ({
       if (e.touches.length === 2) {
         if (mode === "drag") fire("mouseup", lastX, lastY);
         const m = measure(e.touches);
+        const cardId = selectedCardUnder(e.touches, m.mid);
+        const card = cardId ? touchStateRef.current?.nodes.find((n) => n.id === cardId) : undefined;
+        if (card && m.dist > 0) {
+          resizeId = card.id;
+          resizeFrom = { x: card.x, y: card.y, width: card.width, height: card.height };
+          resizeDist = m.dist;
+          mode = "resize";
+          e.preventDefault();
+          return;
+        }
         pinchDist = m.dist;
         pinchMid = m.mid;
         mode = "pinch";
@@ -179,6 +240,13 @@ export const CanvasView: FC<CanvasViewProps> = ({
     };
 
     const onMove = (e: TouchEvent) => {
+      if (mode === "resize") {
+        if (e.touches.length < 2 || !resizeId || !resizeFrom) return;
+        e.preventDefault();
+        const m = measure(e.touches);
+        touchStateRef.current?.setNodeRect(resizeId, scaleRectAboutCenter(resizeFrom, m.dist / resizeDist));
+        return;
+      }
       if (mode === "pinch") {
         if (e.touches.length < 2) return;
         e.preventDefault();
@@ -217,6 +285,13 @@ export const CanvasView: FC<CanvasViewProps> = ({
         // Also stops the browser from sending its own mouse events / click for this gesture.
         e.preventDefault();
         fire("mouseup", lastX, lastY);
+      }
+      if (mode === "resize") {
+        // Lifting either finger ends the resize; the other one must lift too before a new gesture.
+        e.preventDefault();
+        if (resizeId) endResize();
+        if (e.touches.length === 0) mode = "idle";
+        return;
       }
       // After a pinch, wait for every finger to lift before starting a new gesture.
       if (e.touches.length === 0 || mode !== "pinch") mode = "idle";
@@ -485,6 +560,11 @@ export const CanvasView: FC<CanvasViewProps> = ({
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
     if (contextMenu) setContextMenu(null);
 
+    // The toolbars sit inside the canvas, so pressing one of their buttons arrives here too.
+    // That is not a press on empty canvas: treating it as one cleared the selection, which
+    // removed the selection toolbar before its button could act.
+    if ((e.target as Element).closest?.("[data-canvas-ui]")) return;
+
     // Middle mouse button or Space + left click => Pan
     if (e.button === 1 || (e.button === 0 && isSpacePressed)) {
       e.preventDefault();
@@ -518,6 +598,20 @@ export const CanvasView: FC<CanvasViewProps> = ({
   };
 
   // --------------------------------------------------------------------------
+  touchStateRef.current = {
+    touchMode,
+    selected: selectedNodeIds,
+    nodes: canvasData.nodes,
+    snapGrid,
+    setNodeRect: (nodeId, rect) =>
+      setCanvasData((prev) => ({
+        ...prev,
+        nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, ...rect } : n)),
+      })),
+    // Records the resize in the undo history and saves it, as a handle resize does.
+    finishResize: () => commitCanvasChange((prev) => prev),
+  };
+
   // Global Mouse Move (Pan, Drag Nodes, Resize, Marquee, Draft Edge)
   // --------------------------------------------------------------------------
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -556,8 +650,8 @@ export const CanvasView: FC<CanvasViewProps> = ({
       let newW = initialRect.width;
       let newH = initialRect.height;
 
-      const minW = 120;
-      const minH = 60;
+      const minW = MIN_NODE_WIDTH;
+      const minH = MIN_NODE_HEIGHT;
 
       if (handle.includes("e")) newW = Math.max(minW, initialRect.width + dx);
       if (handle.includes("s")) newH = Math.max(minH, initialRect.height + dy);
@@ -1057,6 +1151,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
   // --------------------------------------------------------------------------
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
+    if ((e.target as Element).closest?.("[data-canvas-ui]")) return;
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const screenX = e.clientX;
@@ -1216,6 +1311,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
               isGroup={isGroup}
               zIndex={zIndex}
               vaultPath={vaultPath}
+              touchMode={touchMode}
               onSelect={handleSelectNode}
               onStartDrag={handleStartDragNode}
               onStartResize={handleStartResize}

@@ -29,6 +29,8 @@ export interface DeviceFlowPollOptions {
   interval: number;
   /** Seconds until the code expires, from GitHub's response. */
   expiresIn: number;
+  /** When the code expires (ms since epoch). Used instead of `expiresIn` when resuming a sign-in. */
+  expiresAt?: number;
   /** Called once, with the access token, when the user approves. A throw is reported via onFailure. */
   onApproved: (token: string) => Promise<void> | void;
   onFailure: (message: string) => void;
@@ -37,38 +39,61 @@ export interface DeviceFlowPollOptions {
 /** Network errors tolerated in a row while waiting for approval before giving up. */
 const MAX_POLL_ERRORS = 4;
 
+/** True while the app is in the background (on a phone: the user is in the browser signing in). */
+const appHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
 /**
  * Waits for the user to approve a device code in the browser. Returns a function that stops it,
  * which callers must run when the screen closes or a new code is requested; otherwise an old
  * attempt could finish a sign-in the user already walked away from.
+ *
+ * On a phone the user leaves the app to approve, and a backgrounded app can't be relied on to
+ * make requests: they may fail or simply not run. So failures while hidden never end the
+ * sign-in, and coming back to the app checks again straight away.
  */
 export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let interval = Math.max(1, opts.interval || 5);
   let errors = 0;
-  const deadline = Date.now() + (opts.expiresIn || 900) * 1000;
+  let checking = false;
+  let lastCheck = Date.now();
+  const deadline = opts.expiresAt ?? Date.now() + (opts.expiresIn || 900) * 1000;
+
+  const onVisibility = () => {
+    if (stopped || appHidden()) return;
+    // Back in the app: forget failures from the background and check as soon as GitHub's
+    // minimum spacing between checks allows.
+    errors = 0;
+    schedule(Math.max(0, lastCheck + interval * 1000 - Date.now()));
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
 
   const stop = () => {
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = null;
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
   };
   const fail = (message: string) => {
     if (stopped) return;
     stop();
     opts.onFailure(message);
   };
-  const schedule = () => {
-    if (!stopped) timer = setTimeout(check, interval * 1000);
-  };
-
-  const check = async () => {
+  function schedule(delayMs = interval * 1000) {
     if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(check, delayMs);
+  }
+
+  async function check() {
+    if (stopped || checking) return;
     if (Date.now() > deadline) {
       fail("That code expired. Request a new one to try again.");
       return;
     }
+    checking = true;
+    lastCheck = Date.now();
     try {
       const r = await GitHubService.pollDeviceToken(opts.deviceCode);
       if (stopped) return;
@@ -96,14 +121,26 @@ export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
       }
     } catch (err) {
       if (stopped) return;
-      errors++;
+      // A failure in the background says nothing about the sign-in; keep waiting.
+      if (!appHidden()) errors++;
       if (errors >= MAX_POLL_ERRORS) fail(err instanceof Error ? err.message : String(err));
       else schedule();
+    } finally {
+      checking = false;
     }
-  };
+  }
 
   schedule();
   return stop;
+}
+
+const PENDING_SIGN_IN_STORAGE_KEY = "noetic_pending_sign_in";
+
+/** A sign-in the user has started but not yet approved, kept so it survives the app restarting. */
+export interface PendingSignIn {
+  device: DeviceCodeResponse;
+  /** When the code expires (ms since epoch). */
+  expiresAt: number;
 }
 
 export const GitHubService = {
@@ -233,6 +270,40 @@ export const GitHubService = {
       user_name: user.name || user.login,
       user_email: user.email || `${user.login}@users.noreply.github.com`,
     });
+  },
+
+  /**
+   * Remembers a sign-in that is waiting for approval. A phone can close the app while the user
+   * is in the browser; with this the app picks the same code up again when it reopens.
+   */
+  savePendingSignIn(device: DeviceCodeResponse): PendingSignIn {
+    const pending: PendingSignIn = { device, expiresAt: Date.now() + (device.expires_in || 900) * 1000 };
+    try {
+      localStorage.setItem(PENDING_SIGN_IN_STORAGE_KEY, JSON.stringify(pending));
+    } catch {}
+    return pending;
+  },
+
+  /** The waiting sign-in, if there is one with enough time left to be worth resuming. */
+  getPendingSignIn(): PendingSignIn | null {
+    try {
+      const raw = localStorage.getItem(PENDING_SIGN_IN_STORAGE_KEY);
+      if (!raw) return null;
+      const pending = JSON.parse(raw) as PendingSignIn;
+      if (!pending?.device?.device_code || pending.expiresAt - Date.now() < 15_000) {
+        localStorage.removeItem(PENDING_SIGN_IN_STORAGE_KEY);
+        return null;
+      }
+      return pending;
+    } catch {
+      return null;
+    }
+  },
+
+  clearPendingSignIn(): void {
+    try {
+      localStorage.removeItem(PENDING_SIGN_IN_STORAGE_KEY);
+    } catch {}
   },
 
   /**

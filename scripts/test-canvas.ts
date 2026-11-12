@@ -268,6 +268,22 @@ async function runCanvasTests() {
   }
   console.log(`  ✓ Text element dynamic scaling validated: SmallCard=${shortTextSmallCard}px, DefaultCard=${shortTextDefaultCard}px, LargeCard=${shortTextLargeCard}px.`);
 
+  // Pinch-to-resize (touch screens)
+  {
+    const { scaleRectAboutCenter } = await import("../src/utils/canvas/math");
+    const same = (a: object, b: object, what: string) => {
+      if (JSON.stringify(a) !== JSON.stringify(b)) {
+        throw new Error(`${what}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
+      }
+    };
+    const card = { x: 100, y: 100, width: 400, height: 200 };
+    same(scaleRectAboutCenter(card, 1.5), { x: 0, y: 50, width: 600, height: 300 }, "pinch out grows about the centre");
+    same(scaleRectAboutCenter(card, 0.5), { x: 200, y: 150, width: 200, height: 100 }, "pinch in shrinks about the centre");
+    same(scaleRectAboutCenter(card, 0.01), { x: 240, y: 170, width: 120, height: 60 }, "pinch in stops at the minimum size, in proportion");
+    same(scaleRectAboutCenter({ x: 0, y: 0, width: 100, height: 50 }, 0.5), { x: 0, y: 0, width: 100, height: 50 }, "an undersized card does not shrink further");
+    console.log("  ✓ Pinch-to-resize scales about the centre and respects the minimum size.");
+  }
+
   console.log("\n>>> ALL CANVAS TESTS PASSED SUCCESSFULLY! <<<\n");
 }
 

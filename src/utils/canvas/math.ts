@@ -435,4 +435,25 @@ export function calculateCanvasTextNodeFontSize(
   return Math.round(Math.min(32, Math.max(11, calculated)));
 }
 
+/** Smallest size a card can be resized to. */
+export const MIN_NODE_WIDTH = 120;
+export const MIN_NODE_HEIGHT = 60;
 
+/**
+ * Scales a card about its centre, keeping its proportions, as a pinch gesture does. The scale is
+ * held at the point where either side would drop below its minimum, so a card can't be pinched
+ * out of shape.
+ */
+export function scaleRectAboutCenter(rect: Rect, scale: number): Rect {
+  const floor = Math.max(MIN_NODE_WIDTH / rect.width, MIN_NODE_HEIGHT / rect.height);
+  // A card already under the minimum can only grow.
+  const s = Math.max(scale, Math.min(floor, 1));
+  const width = rect.width * s;
+  const height = rect.height * s;
+  return {
+    x: rect.x + (rect.width - width) / 2,
+    y: rect.y + (rect.height - height) / 2,
+    width,
+    height,
+  };
+}

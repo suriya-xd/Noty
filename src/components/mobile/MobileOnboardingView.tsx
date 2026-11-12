@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FC } from "react";
 import { ArrowLeft, Check, Copy, ExternalLink, FileText, RefreshCw } from "lucide-react";
 import { GitHubService, pollDeviceFlow } from "../../services/githubService";
+import type { PendingSignIn } from "../../services/githubService";
 import { openExternal } from "../../services/noeticBridge";
 import type { DeviceCodeResponse } from "../../types/noetic";
 
@@ -23,6 +24,7 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const expiresAt = useRef(0);
 
   const cancelPoll = useRef<(() => void) | null>(null);
   const stopPolling = useCallback(() => {
@@ -30,10 +32,16 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
     cancelPoll.current = null;
   }, []);
 
-  // Reset whenever the view is closed.
+  // Reset whenever the view is closed. A sign-in the user walked away from is forgotten too.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (isOpen) return;
+    if (isOpen) {
+      wasOpen.current = true;
+      return;
+    }
     stopPolling();
+    if (wasOpen.current) GitHubService.clearPendingSignIn();
+    wasOpen.current = false;
     setStep("welcome");
     setDevice(null);
     setError(null);
@@ -43,6 +51,7 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
 
   const finish = useCallback(
     async (token: string) => {
+      GitHubService.clearPendingSignIn();
       const user = await GitHubService.validateToken(token);
       GitHubService.saveGitHubAuth(token, user);
       onAuthenticated();
@@ -50,23 +59,44 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
     [onAuthenticated]
   );
 
+  /** Shows the code and waits for it to be approved in the browser. */
+  const waitForApproval = useCallback(
+    (pending: PendingSignIn) => {
+      stopPolling();
+      expiresAt.current = pending.expiresAt;
+      setDevice(pending.device);
+      setSecondsLeft(Math.max(0, Math.round((pending.expiresAt - Date.now()) / 1000)));
+      setStep("code");
+      cancelPoll.current = pollDeviceFlow({
+        deviceCode: pending.device.device_code,
+        interval: pending.device.interval,
+        expiresIn: pending.device.expires_in,
+        expiresAt: pending.expiresAt,
+        onApproved: finish,
+        onFailure: (message) => {
+          GitHubService.clearPendingSignIn();
+          setError(message);
+        },
+      });
+    },
+    [finish, stopPolling]
+  );
+
+  // The phone may close the app while the user signs in to GitHub in the browser. If a code was
+  // waiting when that happened, carry on with it instead of starting over.
+  useEffect(() => {
+    if (!isOpen) return;
+    const pending = GitHubService.getPendingSignIn();
+    if (pending) waitForApproval(pending);
+  }, [isOpen, waitForApproval]);
+
   const startDeviceFlow = async () => {
     stopPolling();
     setError(null);
     setIsStarting(true);
     try {
       const res = await GitHubService.startDeviceFlow();
-      setDevice(res);
-      setSecondsLeft(res.expires_in);
-      setStep("code");
-
-      cancelPoll.current = pollDeviceFlow({
-        deviceCode: res.device_code,
-        interval: res.interval,
-        expiresIn: res.expires_in,
-        onApproved: finish,
-        onFailure: setError,
-      });
+      waitForApproval(GitHubService.savePendingSignIn(res));
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -77,7 +107,11 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
   // Countdown for the one-time code.
   useEffect(() => {
     if (step !== "code") return;
-    const t = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
+    // Worked out from the clock, not counted down: timers barely run while the app is in the background.
+    const t = setInterval(
+      () => setSecondsLeft(Math.max(0, Math.round((expiresAt.current - Date.now()) / 1000))),
+      1000
+    );
     return () => clearInterval(t);
   }, [step, device]);
 
@@ -101,6 +135,7 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
 
   const back = () => {
     stopPolling();
+    GitHubService.clearPendingSignIn();
     setError(null);
     setStep("welcome");
   };

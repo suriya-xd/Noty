@@ -16,6 +16,11 @@ interface CanvasNodeItemProps {
   isGroup: boolean;
   zIndex: number;
   vaultPath: string;
+  /**
+   * Touch screens: no resize handles (they sit on top of the connection dots and are too small
+   * to hit); a selected card is resized by pinching it instead, and the dots are larger.
+   */
+  touchMode?: boolean;
   onSelect: (e: React.MouseEvent, nodeId: string) => void;
   onStartDrag: (e: React.MouseEvent, nodeId: string) => void;
   onStartResize: (e: React.MouseEvent, nodeId: string, handle: ResizeHandle) => void;
@@ -31,6 +36,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   isGroup,
   zIndex,
   vaultPath,
+  touchMode = false,
   onSelect,
   onStartDrag,
   onStartResize,
@@ -151,14 +157,14 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
               e.stopPropagation();
               onStartEdgeConnect(e, node.id, side);
             }}
-            className={`canvas-handle absolute z-30 w-3.5 h-3.5 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md hover:scale-135 hover:bg-sky-300 transition-all cursor-crosshair ${getSideHandlePosition(
+            className={`canvas-handle absolute z-30 ${touchMode ? "w-5 h-5" : "w-3.5 h-3.5"} rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md hover:scale-135 hover:bg-sky-300 transition-all cursor-crosshair ${getSideHandlePosition(
               side
             )}`}
           />
         ))}
 
-      {/* 8 Resize Handles (Visible when selected) */}
-      {isSelected && (
+      {/* 8 Resize Handles (Visible when selected; not on touch screens, where pinching resizes) */}
+      {isSelected && !touchMode && (
         <>
           {/* Corners */}
           <div

@@ -151,6 +151,76 @@ console.log("\nDevice flow polling");
   eq("an error while finishing sign-in is reported once", [calls.length, log], [1, ["validation failed"]]);
 }
 
+console.log("\nSigning in while the app is in the background");
+{
+  // A stand-in for the page: the app is hidden while the user is in the browser.
+  const listeners: Array<() => void> = [];
+  const doc = {
+    visibilityState: "visible",
+    addEventListener: (_: string, fn: () => void) => void listeners.push(fn),
+    removeEventListener: (_: string, fn: () => void) => void listeners.splice(listeners.indexOf(fn), 1),
+  };
+  (globalThis as any).document = doc;
+  const show = (visible: boolean) => {
+    doc.visibilityState = visible ? "visible" : "hidden";
+    listeners.slice().forEach((fn) => fn());
+  };
+
+  {
+    const errors = Array.from({ length: 30 }, () => new Error("request failed in background"));
+    script([...errors, res({ status: "approved", access_token: "late" })]);
+    const { log } = run({ interval: 5 });
+    show(false);
+    await advance(150_000);
+    eq("failures while hidden never end the sign-in", log, []);
+    show(true);
+    await advance(10_000);
+    eq("...and it completes once the app is back", log, ["approved:late"]);
+  }
+  {
+    const calls = script([res({}), res({ status: "approved", access_token: "now" })]);
+    const { log } = run({ interval: 5 });
+    await advance(5_000);
+    show(false);
+    now += 90_000; // timers did not run at all while hidden
+    show(true);
+    await advance(0);
+    eq("returning to the app checks straight away", [calls.length, log], [2, ["approved:now"]]);
+  }
+  {
+    const calls = script([res({}), res({})]);
+    const { stop } = run({ interval: 5 });
+    await advance(5_000);
+    show(false);
+    now += 2_000;
+    show(true);
+    await advance(2_999);
+    eq("...but never sooner than GitHub's interval", calls.length, 1);
+    await advance(1);
+    eq("...then on time", calls.length, 2);
+    stop();
+  }
+  {
+    script([new Error("e1"), new Error("e2"), new Error("e3"), new Error("e4")]);
+    const { log } = run({ interval: 5 });
+    await advance(120_000);
+    eq("failures while visible still give up", log, ["failed:e4"]);
+  }
+  {
+    const { log, stop } = run({ interval: 5 });
+    stop();
+    eq("stopping removes the listener", [listeners.length, log], [0, []]);
+  }
+  {
+    script([]);
+    const log: string[] = [];
+    pollDeviceFlow({ deviceCode: "dc", interval: 5, expiresIn: 900, expiresAt: now + 12_000, onApproved: () => {}, onFailure: (m) => void log.push(m) });
+    await advance(30_000);
+    eq("a resumed sign-in keeps the original expiry", log.length === 1 && log[0].startsWith("That code expired"), true);
+  }
+  delete (globalThis as any).document;
+}
+
 console.log("\nBridge error handling");
 {
   (globalThis as any).setTimeout = realSetTimeout; // the mock backend uses a real delay

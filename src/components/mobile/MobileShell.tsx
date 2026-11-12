@@ -1059,6 +1059,7 @@ export const MobileShell: FC<MobileShellProps> = ({
             onOpenFile={onSelectFile}
             onRefreshFiles={onRefreshFiles}
             onPreviewImage={onPreviewImage}
+            touchMode
           />
         ) : (
           <Editor

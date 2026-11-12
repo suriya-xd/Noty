@@ -207,6 +207,61 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
         </button>
       </div>
 
+      {/* The colour panel is a sibling of the selection toolbar, not a child: on phones the toolbar
+          scrolls sideways, and a scrolling box clips anything that drops below it. */}
+      {selectedCount > 0 && isColorPickerOpen && (
+        <div data-canvas-ui className="canvas-colorpanel absolute top-[10.5rem] lg:top-[7.25rem] left-1/2 -translate-x-1/2 p-2.5 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl z-50 flex flex-col gap-2 min-w-44 text-xs select-none">
+          <span className="text-[10px] font-semibold uppercase text-zinc-400 font-mono">
+            Preset Colors
+          </span>
+          <div className="grid grid-cols-6 gap-1.5">
+            {(Object.keys(PRESET_COLOR_MAP) as CanvasPresetColor[]).map((key) => {
+              const preset = PRESET_COLOR_MAP[key];
+              return (
+                <button
+                  key={key}
+                  onClick={() => {
+                    onChangeColor(key);
+                    setIsColorPickerOpen(false);
+                  }}
+                  title={preset.name}
+                  style={{ backgroundColor: preset.hex }}
+                  className="w-6 h-6 rounded-full hover:scale-115 transition-transform border border-white/20 cursor-pointer shadow-sm"
+                />
+              );
+            })}
+          </div>
+          <div className="border-t border-[#30363d] my-1" />
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={customHex}
+              onChange={(e) => setCustomHex(e.target.value)}
+              className="w-6 h-6 rounded border-0 cursor-pointer bg-transparent"
+            />
+            <button
+              onClick={() => {
+                onChangeColor(customHex);
+                setIsColorPickerOpen(false);
+              }}
+              className="text-[11px] text-sky-400 hover:underline cursor-pointer"
+            >
+              Apply Hex
+            </button>
+            <button
+              onClick={() => {
+                onChangeColor(undefined);
+                setIsColorPickerOpen(false);
+              }}
+              className="text-[11px] text-zinc-400 hover:text-red-400 ml-auto cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      
+      )}
+
       {/* 3. Floating Selection Toolbar (when nodes are selected) */}
       {selectedCount > 0 && (
         <div data-canvas-ui className="canvas-selbar absolute top-[7.5rem] lg:top-[4.25rem] left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 p-1 bg-[#161b22] border border-sky-500/40 backdrop-blur-md rounded-xl shadow-2xl text-xs select-none animate-in fade-in zoom-in-95 duration-150">
@@ -224,57 +279,6 @@ export const CanvasToolbar: FC<CanvasToolbarProps> = ({
               <Palette className="w-4 h-4 text-sky-400" />
             </button>
 
-            {isColorPickerOpen && (
-              <div className="absolute top-full mt-2 left-0 p-2.5 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl z-50 flex flex-col gap-2 min-w-44">
-                <span className="text-[10px] font-semibold uppercase text-zinc-400 font-mono">
-                  Preset Colors
-                </span>
-                <div className="grid grid-cols-6 gap-1.5">
-                  {(Object.keys(PRESET_COLOR_MAP) as CanvasPresetColor[]).map((key) => {
-                    const preset = PRESET_COLOR_MAP[key];
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => {
-                          onChangeColor(key);
-                          setIsColorPickerOpen(false);
-                        }}
-                        title={preset.name}
-                        style={{ backgroundColor: preset.hex }}
-                        className="w-6 h-6 rounded-full hover:scale-115 transition-transform border border-white/20 cursor-pointer shadow-sm"
-                      />
-                    );
-                  })}
-                </div>
-                <div className="border-t border-[#30363d] my-1" />
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={customHex}
-                    onChange={(e) => setCustomHex(e.target.value)}
-                    className="w-6 h-6 rounded border-0 cursor-pointer bg-transparent"
-                  />
-                  <button
-                    onClick={() => {
-                      onChangeColor(customHex);
-                      setIsColorPickerOpen(false);
-                    }}
-                    className="text-[11px] text-sky-400 hover:underline cursor-pointer"
-                  >
-                    Apply Hex
-                  </button>
-                  <button
-                    onClick={() => {
-                      onChangeColor(undefined);
-                      setIsColorPickerOpen(false);
-                    }}
-                    className="text-[11px] text-zinc-400 hover:text-red-400 ml-auto cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
 
           {onZoomToSelection && (
