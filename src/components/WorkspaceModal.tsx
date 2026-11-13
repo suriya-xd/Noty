@@ -1,7 +1,7 @@
 import { useEscapeKey } from "./dialogs";
 import { useEffect, useState } from "react";
 import type { FC, FormEvent } from "react";
-import { AlertCircle, Check, Layers, Loader2, Plus, X } from "lucide-react";
+import { AlertCircle, Check, Layers, Loader2, Plus, RefreshCw, X } from "lucide-react";
 import { GitHubService } from "../services/githubService";
 import { NoeticBridge } from "../services/noeticBridge";
 import type { RepoStatusPayload } from "../types/noetic";
@@ -32,6 +32,9 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
   const [busy, setBusy] = useState<string | null>(null); // workspace being opened, or "+" while creating
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  // The cloud's list couldn't be loaded. An empty list then means "unknown", not "none yet".
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0); // bumped by "Try again" to load once more
 
   useEscapeKey(isOpen && !busy, onClose);
 
@@ -45,6 +48,7 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    setLoadFailed(false);
     (async () => {
       try {
         // Show what this device already knows straight away, then check the cloud.
@@ -61,7 +65,10 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
         setWorkspaces(list.workspaces);
         setCurrent(list.current);
       } catch (err) {
-        if (!cancelled) setError(errorText(err));
+        if (!cancelled) {
+          setError(errorText(err));
+          setLoadFailed(true);
+        }
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -69,7 +76,7 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
     return () => {
       cancelled = true;
     };
-  }, [isOpen, isConnected, vaultPath]);
+  }, [isOpen, isConnected, vaultPath, attempt]);
 
   if (!isOpen) return null;
 
@@ -108,7 +115,11 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
     }
   };
 
-  const isFirst = !isLoading && workspaces.length === 0;
+  // Nothing is known: neither this device nor the cloud could say which workspaces exist. Offering
+  // to name a "first" workspace here would be wrong when the account already has some, and one
+  // made now would start a history separate from theirs. So only a retry is offered.
+  const isUnknown = !isLoading && loadFailed && workspaces.length === 0;
+  const isFirst = !isLoading && !loadFailed && workspaces.length === 0;
   const tidy = tidyName(newName);
 
   return (
@@ -153,6 +164,20 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
             <div className="py-10 flex flex-col items-center justify-center gap-2 text-zinc-400 text-xs">
               <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
               <span>{isConnected ? "Loading your workspaces…" : "Getting your notes ready…"}</span>
+            </div>
+          ) : isUnknown ? (
+            <div className="py-4 flex flex-col items-center gap-3 text-center">
+              <p className="text-xs text-zinc-400">
+                Your workspaces couldn't be loaded, so none are shown. Check your connection and try again.
+              </p>
+              <button
+                type="button"
+                onClick={() => setAttempt((n) => n + 1)}
+                className="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Try again</span>
+              </button>
             </div>
           ) : (
             <>

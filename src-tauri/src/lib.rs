@@ -152,23 +152,33 @@ fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Resul
     fs_engine::save_image_file(&vault_path, &rel_path, data)
 }
 
-/// Makes https work for git on Android. The OpenSSL bundled with the app has no certificate store
-/// of its own there, so every fetch and push fails with "the SSL certificate is invalid".
+#[cfg(target_os = "android")]
+#[allow(non_upper_case_globals)]
+extern "C" {
+    /// libgit2's single OpenSSL context, from which every https connection git makes is created
+    /// (libgit2 src/libgit2/streams/openssl.c). It is made when libgit2 starts and never replaced.
+    static git__ssl_ctx: *mut openssl_sys::SSL_CTX;
+}
+
+/// Makes https work for git on Android. The OpenSSL bundled with the app trusts no certificates
+/// there, so every fetch and push fails with "the SSL certificate is invalid".
 ///
-/// Pointing OpenSSL at Android's certificate folder (SSL_CERT_DIR) does not help: OpenSSL finds a
-/// certificate in a folder by a file name derived from a hash, and Android names its files with
-/// the older hash that current OpenSSL no longer looks for. So the system certificates are joined
-/// into one file, which is read whole and needs no file names, and git is told to use that file.
+/// OpenSSL can't be pointed at a certificate file or folder on Android: openssl-src builds it for
+/// Android with `no-stdio`, which leaves it unable to open any file (SSL_CERT_FILE, SSL_CERT_DIR
+/// and git's own certificate-location setting all fail, the last with "x509 certificate
+/// routines::BIO lib"). So Rust reads Android's system certificates, and each one is parsed in
+/// memory and added straight to the trusted store of git's OpenSSL context.
 ///
 /// Returns what was done, or the step that failed. It is shown with any certificate error (see
 /// `git_engine::CERT_SETUP`), so a failure on a phone says why instead of failing silently.
 #[cfg(target_os = "android")]
-fn trust_android_system_certificates(app: &tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager;
+fn trust_android_system_certificates() -> Result<String, String> {
+    use std::os::raw::c_int;
+    use std::ptr;
 
     // Newer Android versions keep the up-to-date set in the first folder; the second is the
     // older location. One complete set is enough.
-    let mut bundle: Vec<u8> = Vec::new();
+    let mut certs: Vec<Vec<u8>> = Vec::new();
     let mut source = "";
     let mut read_errors: Vec<String> = Vec::new();
     for dir in ["/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"] {
@@ -179,35 +189,52 @@ fn trust_android_system_certificates(app: &tauri::AppHandle) -> Result<String, S
                 continue;
             }
         };
-        for entry in entries.flatten() {
-            if let Ok(bytes) = std::fs::read(entry.path()) {
-                bundle.extend_from_slice(&bytes);
-                bundle.push(b'\n');
-            }
-        }
-        if !bundle.is_empty() {
+        certs.extend(entries.flatten().filter_map(|entry| std::fs::read(entry.path()).ok()));
+        if !certs.is_empty() {
             source = dir;
             break;
         }
     }
-    if bundle.is_empty() {
+    if certs.is_empty() {
         return Err(format!("no system certificates could be read ({})", read_errors.join("; ")));
     }
-    let count = bundle.windows(27).filter(|w| *w == b"-----BEGIN CERTIFICATE-----").count();
 
-    let dir = app.path().app_cache_dir().map_err(|e| format!("no cache folder: {}", e))?;
-    let _ = std::fs::create_dir_all(&dir);
-    let file = dir.join("system-certificates.pem");
-    std::fs::write(&file, &bundle).map_err(|e| format!("couldn't write {}: {}", file.display(), e))?;
+    // Safety: runs once during start-up, before any command (and so any git connection) can run.
+    // libgit2_sys::init starts libgit2, which creates git__ssl_ctx; libgit2 is never shut down, so
+    // the context lives as long as the app. The store keeps its own reference to each certificate
+    // added, so ours is freed straight after.
+    let added = unsafe {
+        libgit2_sys::init();
+        let ctx = git__ssl_ctx;
+        if ctx.is_null() {
+            return Err("git's https support didn't start".to_string());
+        }
+        let store = openssl_sys::SSL_CTX_get_cert_store(ctx);
+        let mut added = 0;
+        for pem in &certs {
+            // Each Android file holds one certificate in PEM form, followed by a text description.
+            let bio = openssl_sys::BIO_new_mem_buf(pem.as_ptr().cast(), pem.len() as c_int);
+            if bio.is_null() {
+                continue;
+            }
+            let cert = openssl_sys::PEM_read_bio_X509(bio, ptr::null_mut(), None, ptr::null_mut());
+            if !cert.is_null() {
+                if openssl_sys::X509_STORE_add_cert(store, cert) == 1 {
+                    added += 1;
+                }
+                openssl_sys::X509_free(cert);
+            }
+            openssl_sys::BIO_free_all(bio);
+        }
+        // Don't leave parse errors queued, where they'd be reported with a later, unrelated error.
+        openssl_sys::ERR_clear_error();
+        added
+    };
 
-    // The environment variable covers OpenSSL's own start-up; the direct call covers a git
-    // library that has already started.
-    std::env::set_var("SSL_CERT_FILE", &file);
-    // Safety: runs once during start-up, before any command (and so any git work) can run.
-    unsafe { git2::opts::set_ssl_cert_file(&file) }
-        .map_err(|e| format!("git didn't accept the {} certificates from {}: {}", count, source, e.message()))?;
-
-    Ok(format!("{} certificates loaded from {}", count, source))
+    if added == 0 {
+        return Err(format!("none of the {} certificates in {} could be added", certs.len(), source));
+    }
+    Ok(format!("{} of {} certificates added from {}", added, certs.len(), source))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -217,7 +244,7 @@ pub fn run() {
         .setup(|_app| {
             #[cfg(target_os = "android")]
             {
-                let outcome = trust_android_system_certificates(_app.handle()).unwrap_or_else(|e| format!("failed, {}", e));
+                let outcome = trust_android_system_certificates().unwrap_or_else(|e| format!("failed, {}", e));
                 let _ = git_engine::CERT_SETUP.set(outcome);
             }
             Ok(())
