@@ -31,6 +31,8 @@ export interface DeviceFlowPollOptions {
   expiresIn: number;
   /** When the code expires (ms since epoch). Used instead of `expiresIn` when resuming a sign-in. */
   expiresAt?: number;
+  /** Called when GitHub asks for more time between checks, with the new spacing in seconds. */
+  onIntervalChange?: (seconds: number) => void;
   /** Called once, with the access token, when the user approves. A throw is reported via onFailure. */
   onApproved: (token: string) => Promise<void> | void;
   onFailure: (message: string) => void;
@@ -63,9 +65,10 @@ export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
   const onVisibility = () => {
     if (stopped || appHidden()) return;
     // Back in the app: forget failures from the background and check as soon as GitHub's
-    // minimum spacing between checks allows.
+    // minimum spacing between checks allows. GitHub measures that spacing between arrivals, so a
+    // second is added: a check sent exactly on time can arrive early and earn a "slow down".
     errors = 0;
-    schedule(Math.max(0, lastCheck + interval * 1000 - Date.now()));
+    schedule(Math.max(0, lastCheck + (interval + 1) * 1000 - Date.now()));
   };
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
 
@@ -111,6 +114,7 @@ export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
         schedule();
       } else if (r.status === "slow_down") {
         interval = r.interval && r.interval > interval ? r.interval : interval + 5;
+        opts.onIntervalChange?.(interval);
         schedule();
       } else if (r.status === "denied") {
         fail(r.error_description || "Sign-in was declined on GitHub.");
@@ -298,6 +302,18 @@ export const GitHubService = {
     } catch {
       return null;
     }
+  },
+
+  /** Records the spacing between checks GitHub asked for, on the waiting sign-in. */
+  updatePendingSignInInterval(seconds: number): void {
+    try {
+      const raw = localStorage.getItem(PENDING_SIGN_IN_STORAGE_KEY);
+      if (!raw) return;
+      const pending = JSON.parse(raw) as PendingSignIn;
+      if (!pending?.device) return;
+      pending.device.interval = Math.max(pending.device.interval || 0, seconds);
+      localStorage.setItem(PENDING_SIGN_IN_STORAGE_KEY, JSON.stringify(pending));
+    } catch {}
   },
 
   clearPendingSignIn(): void {

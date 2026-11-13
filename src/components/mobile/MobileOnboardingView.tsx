@@ -52,15 +52,23 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
 
   useEffect(() => stopPolling, [stopPolling]);
 
-  const finish = useCallback(
-    async (token: string) => {
-      GitHubService.clearPendingSignIn();
-      const user = await GitHubService.validateToken(token);
-      GitHubService.saveGitHubAuth(token, user);
-      onAuthenticated();
-    },
-    [onAuthenticated]
-  );
+  // The parent passes a new `onAuthenticated` on every render (it re-renders at least every few
+  // seconds). Reading it through a ref keeps `finish` and `waitForApproval` the same functions, so
+  // the resume effect below runs only when the view opens. Before, every parent render restarted
+  // the polling: the answer of a check in flight was thrown away, and GitHub's "slow down"
+  // (which raises the required wait between checks) was forgotten, so the new poller checked too
+  // soon, got "slow down" again, and never got the token: stuck on "Waiting for approval".
+  const onAuthenticatedRef = useRef(onAuthenticated);
+  useEffect(() => {
+    onAuthenticatedRef.current = onAuthenticated;
+  });
+
+  const finish = useCallback(async (token: string) => {
+    GitHubService.clearPendingSignIn();
+    const user = await GitHubService.validateToken(token);
+    GitHubService.saveGitHubAuth(token, user);
+    onAuthenticatedRef.current();
+  }, []);
 
   /** Shows the code and waits for it to be approved in the browser. */
   const waitForApproval = useCallback(
@@ -75,6 +83,8 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
         interval: pending.device.interval,
         expiresIn: pending.device.expires_in,
         expiresAt: pending.expiresAt,
+        // Remembered with the pending sign-in, so a restarted app doesn't check too soon either.
+        onIntervalChange: (seconds) => GitHubService.updatePendingSignInInterval(seconds),
         onApproved: finish,
         onFailure: (message) => {
           GitHubService.clearPendingSignIn();
