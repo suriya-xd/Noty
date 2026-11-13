@@ -160,7 +160,21 @@ fn fetch_origin(repo: &Repository) -> Result<(), String> {
     fetch_opts.prune(git2::FetchPrune::On);
     remote
         .fetch(&["+refs/heads/*:refs/remotes/origin/*"], Some(&mut fetch_opts), None)
-        .map_err(|e| format!("Couldn't reach your cloud storage: {}", e))
+        .map_err(|e| format!("Couldn't reach your cloud storage: {}{}", e, cert_setup_note(&e)))
+}
+
+/// What start-up did to make https certificates trusted. Only set on Android (see
+/// `trust_android_system_certificates` in lib.rs), where git can't use the system's own store.
+pub static CERT_SETUP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// For a certificate error, the outcome of the certificate set-up, so a failure on a phone shows
+/// which step went wrong. Empty for every other error, and on platforms with no such set-up.
+fn cert_setup_note(e: &git2::Error) -> String {
+    let is_cert_error = e.code() == git2::ErrorCode::Certificate || e.class() == git2::ErrorClass::Ssl;
+    match CERT_SETUP.get() {
+        Some(outcome) if is_cert_error => format!(" [certificate setup: {}]", outcome),
+        _ => String::new(),
+    }
 }
 
 /// Fetch from origin remote without modifying worktree. This runs in the background, so a failed
@@ -236,7 +250,7 @@ fn push_ref(repo: &Repository, src_ref: &str, branch: &str) -> Result<(), String
     let refspec = format!("{}:refs/heads/{}", src_ref, branch);
     remote
         .push(&[&refspec], Some(&mut push_opts))
-        .map_err(|e| e.message().to_string())?;
+        .map_err(|e| format!("{}{}", e.message(), cert_setup_note(&e)))?;
 
     // Record what origin now has, so the status is right without waiting for the next fetch.
     if let Ok(oid) = repo.refname_to_id(src_ref) {

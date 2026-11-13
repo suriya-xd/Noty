@@ -159,15 +159,26 @@ fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Resul
 /// certificate in a folder by a file name derived from a hash, and Android names its files with
 /// the older hash that current OpenSSL no longer looks for. So the system certificates are joined
 /// into one file, which is read whole and needs no file names, and git is told to use that file.
+///
+/// Returns what was done, or the step that failed. It is shown with any certificate error (see
+/// `git_engine::CERT_SETUP`), so a failure on a phone says why instead of failing silently.
 #[cfg(target_os = "android")]
-fn trust_android_system_certificates(app: &tauri::AppHandle) {
+fn trust_android_system_certificates(app: &tauri::AppHandle) -> Result<String, String> {
     use tauri::Manager;
 
     // Newer Android versions keep the up-to-date set in the first folder; the second is the
     // older location. One complete set is enough.
     let mut bundle: Vec<u8> = Vec::new();
+    let mut source = "";
+    let mut read_errors: Vec<String> = Vec::new();
     for dir in ["/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts"] {
-        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                read_errors.push(format!("{}: {}", dir, e));
+                continue;
+            }
+        };
         for entry in entries.flatten() {
             if let Ok(bytes) = std::fs::read(entry.path()) {
                 bundle.extend_from_slice(&bytes);
@@ -175,27 +186,28 @@ fn trust_android_system_certificates(app: &tauri::AppHandle) {
             }
         }
         if !bundle.is_empty() {
+            source = dir;
             break;
         }
     }
     if bundle.is_empty() {
-        return;
+        return Err(format!("no system certificates could be read ({})", read_errors.join("; ")));
     }
+    let count = bundle.windows(27).filter(|w| *w == b"-----BEGIN CERTIFICATE-----").count();
 
-    let Ok(dir) = app.path().app_cache_dir() else { return };
+    let dir = app.path().app_cache_dir().map_err(|e| format!("no cache folder: {}", e))?;
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join("system-certificates.pem");
-    if std::fs::write(&file, &bundle).is_err() {
-        return;
-    }
+    std::fs::write(&file, &bundle).map_err(|e| format!("couldn't write {}: {}", file.display(), e))?;
 
     // The environment variable covers OpenSSL's own start-up; the direct call covers a git
     // library that has already started.
     std::env::set_var("SSL_CERT_FILE", &file);
     // Safety: runs once during start-up, before any command (and so any git work) can run.
-    unsafe {
-        let _ = git2::opts::set_ssl_cert_file(&file);
-    }
+    unsafe { git2::opts::set_ssl_cert_file(&file) }
+        .map_err(|e| format!("git didn't accept the {} certificates from {}: {}", count, source, e.message()))?;
+
+    Ok(format!("{} certificates loaded from {}", count, source))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -204,7 +216,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             #[cfg(target_os = "android")]
-            trust_android_system_certificates(_app.handle());
+            {
+                let outcome = trust_android_system_certificates(_app.handle()).unwrap_or_else(|e| format!("failed, {}", e));
+                let _ = git_engine::CERT_SETUP.set(outcome);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
