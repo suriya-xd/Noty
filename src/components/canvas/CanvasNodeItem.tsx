@@ -57,16 +57,27 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   // Connection sides
   const sides: CanvasSide[] = ["top", "right", "bottom", "left"];
 
-  const getSideHandlePosition = (side: CanvasSide): string => {
+  // Connection ports float outside the card, clear of the edge (where resize handles sit).
+  // Touch screens get a wider gap, since each port's finger-sized hit area reaches 14px around it.
+  const portSize = touchMode ? 20 : 14;
+  const portGap = touchMode ? 32 : 12;
+  const portReach = portGap + portSize;
+
+  /**
+   * The strip from the card edge out to a port. On desktop it is part of the port, so the pointer
+   * can cross the gap without leaving the card (which would hide the ports) and pressing anywhere
+   * on it starts a connection. Touch screens have no hover, so there only the dot is touchable.
+   */
+  const getPortStripStyle = (side: CanvasSide): React.CSSProperties => {
     switch (side) {
       case "top":
-        return "top-0 left-1/2 -translate-x-1/2 -translate-y-1/2";
+        return { bottom: "100%", left: "50%", transform: "translateX(-50%)", width: portSize, height: portReach, alignItems: "flex-start", justifyContent: "center" };
       case "bottom":
-        return "bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2";
+        return { top: "100%", left: "50%", transform: "translateX(-50%)", width: portSize, height: portReach, alignItems: "flex-end", justifyContent: "center" };
       case "left":
-        return "left-0 top-1/2 -translate-x-1/2 -translate-y-1/2";
+        return { right: "100%", top: "50%", transform: "translateY(-50%)", width: portReach, height: portSize, alignItems: "center", justifyContent: "flex-start" };
       case "right":
-        return "right-0 top-1/2 translate-x-1/2 -translate-y-1/2";
+        return { left: "100%", top: "50%", transform: "translateY(-50%)", width: portReach, height: portSize, alignItems: "center", justifyContent: "flex-end" };
     }
   };
 
@@ -163,10 +174,14 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
               e.stopPropagation();
               onStartEdgeConnect(e, node.id, side);
             }}
-            className={`canvas-handle absolute z-30 ${touchMode ? "w-5 h-5" : "w-3.5 h-3.5"} rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md hover:scale-135 hover:bg-sky-300 transition-all cursor-crosshair ${getSideHandlePosition(
-              side
-            )}`}
-          />
+            style={getPortStripStyle(side)}
+            className={`absolute z-30 flex group/port cursor-crosshair ${touchMode ? "pointer-events-none" : ""}`}
+          >
+            <div
+              style={{ width: portSize, height: portSize }}
+              className="canvas-handle relative shrink-0 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md group-hover/port:scale-135 group-hover/port:bg-sky-300 transition-all pointer-events-auto"
+            />
+          </div>
         ))}
 
       {/* 8 Resize Handles (Visible when selected; not on touch screens, where pinching resizes) */}
