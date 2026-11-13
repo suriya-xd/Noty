@@ -13,6 +13,7 @@ import {
   Check,
   AlertCircle,
 } from "lucide-react";
+import { useBackLayer } from "../utils/backNavigation";
 
 export interface InsertImageModalProps {
   isOpen: boolean;
@@ -35,6 +36,8 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
   onRefreshFiles,
   title = "Insert Image",
 }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onClose);
   useEscapeKey(isOpen, onClose);
   const [activeTab, setActiveTab] = useState<"upload" | "vault" | "url">("upload");
 

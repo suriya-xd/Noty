@@ -6,7 +6,7 @@ import {
   keymap,
   highlightActiveLine,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -29,6 +29,8 @@ import {
   ListChecks,
   Quote,
   Link2,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -37,6 +39,10 @@ import {
   livePreviewConfigFacet,
 } from "./obsidianLivePreview";
 import { applyFormat } from "./editorCommands";
+import { MAX_UNDO_STEPS, historyStatus, limitedHistory, limitedRedo, limitedUndo } from "./editorHistory";
+import type { HistoryStatus } from "./editorHistory";
+import { keepCursorClear } from "./cursorVisibility";
+import { useBackLayer } from "../utils/backNavigation";
 import { inlineTitle } from "./inlineTitle";
 import { baseNameOf, fileNameFromTitle, pathForName } from "../utils/noteTitle";
 import { blockDragHandle } from "./blockDrag";
@@ -70,6 +76,8 @@ export interface EditorHandle {
   openInsertImage: () => void;
   toggleLinks: () => void;
   focus: () => void;
+  undo: () => void;
+  redo: () => void;
 }
 
 interface EditorProps {
@@ -77,6 +85,8 @@ interface EditorProps {
   chrome?: "full" | "minimal";
   apiRef?: MutableRefObject<EditorHandle | null>;
   onSaveStatusChange?: (status: "synced" | "saving") => void;
+  /** Whether Undo and Redo can be used, for a host that shows its own buttons. */
+  onHistoryChange?: (status: HistoryStatus) => void;
   filePath: string | null;
   initialContent: string;
   vaultPath?: string;
@@ -142,6 +152,7 @@ export const Editor: FC<EditorProps> = ({
   chrome = "full",
   apiRef,
   onSaveStatusChange,
+  onHistoryChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorViewRef = useRef<EditorView | null>(null);
@@ -152,6 +163,10 @@ export const Editor: FC<EditorProps> = ({
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<"synced" | "saving">("synced");
+  const [undoState, setUndoState] = useState<HistoryStatus>({ canUndo: false, canRedo: false });
+
+  // On phones, Back closes the links panel before leaving the note.
+  useBackLayer(chrome === "minimal" && showBacklinks, () => setShowBacklinks(false));
 
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(filePath || "");
@@ -179,6 +194,19 @@ export const Editor: FC<EditorProps> = ({
   }, [saveStatus, onSaveStatusChange]);
 
   useEffect(() => {
+    onHistoryChange?.(undoState);
+  }, [undoState, onHistoryChange]);
+
+  const runUndo = useCallback(() => {
+    const view = editorViewRef.current;
+    if (view) limitedUndo(view);
+  }, []);
+  const runRedo = useCallback(() => {
+    const view = editorViewRef.current;
+    if (view) limitedRedo(view);
+  }, []);
+
+  useEffect(() => {
     if (!apiRef) return;
     apiRef.current = {
       format(kind) {
@@ -187,11 +215,13 @@ export const Editor: FC<EditorProps> = ({
       openInsertImage: () => setIsInsertImageOpen(true),
       toggleLinks: () => setShowBacklinks((v) => !v),
       focus: () => editorViewRef.current?.focus(),
+      undo: runUndo,
+      redo: runRedo,
     };
     return () => {
       apiRef.current = null;
     };
-  }, [apiRef]);
+  }, [apiRef, runUndo, runRedo]);
 
   const handleInsertImage = useCallback(
     (imagePathOrUrl: string, altText?: string) => {
@@ -445,7 +475,9 @@ export const Editor: FC<EditorProps> = ({
       doc: initialContent,
       extensions: [
         highlightActiveLine(),
-        history(),
+        limitedHistory(),
+        // Phones: keep the line being written on clear of the on-screen keyboard.
+        chrome === "minimal" ? keepCursorClear() : [],
         markdown(),
         syntaxHighlighting(markdownHighlightStyle, { fallback: true }),
         livePreviewConfigFacet.of({
@@ -471,7 +503,6 @@ export const Editor: FC<EditorProps> = ({
           { key: "Mod-i", run: (v) => applyFormat(v, "italic") },
           { key: "Mod-k", run: (v) => applyFormat(v, "link") },
           ...defaultKeymap,
-          ...historyKeymap,
         ]),
         EditorView.lineWrapping,
         EditorView.domEventHandlers({
@@ -537,6 +568,12 @@ export const Editor: FC<EditorProps> = ({
           },
         }),
         EditorView.updateListener.of((update) => {
+          if (update.transactions.length > 0) {
+            const next = historyStatus(update.view);
+            setUndoState((prev) =>
+              prev.canUndo === next.canUndo && prev.canRedo === next.canRedo ? prev : next
+            );
+          }
           if (update.docChanged) {
             const currentText = update.state.doc.toString();
             updateStats(currentText);
@@ -555,6 +592,8 @@ export const Editor: FC<EditorProps> = ({
     });
 
     editorViewRef.current = view;
+    // A newly opened note has no history.
+    setUndoState({ canUndo: false, canRedo: false });
 
     return () => {
       const leavingPath = latestPathRef.current;
@@ -661,6 +700,30 @@ export const Editor: FC<EditorProps> = ({
         </div>
 
         <div className="flex items-center gap-2 lg:gap-3 text-zinc-400 text-[11px] shrink-0">
+          {/* Undo / Redo (the last MAX_UNDO_STEPS changes) */}
+          <div className="flex items-center gap-0.5">
+            {(
+              [
+                { label: "Undo", shortcut: "Ctrl/Cmd+Z", icon: Undo2, run: runUndo, enabled: undoState.canUndo },
+                { label: "Redo", shortcut: "Ctrl/Cmd+Shift+Z", icon: Redo2, run: runRedo, enabled: undoState.canRedo },
+              ] as const
+            ).map((b) => (
+              <button
+                key={b.label}
+                type="button"
+                title={`${b.label} (${b.shortcut}). Up to ${MAX_UNDO_STEPS} steps.`}
+                aria-label={b.label}
+                disabled={!b.enabled}
+                // Keep the cursor in the note while the button is pressed.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={b.run}
+                className="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-[#21262d] transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-zinc-400"
+              >
+                <b.icon className="w-3.5 h-3.5" />
+              </button>
+            ))}
+          </div>
+
           {/* Insert Image Button */}
           <button
             type="button"

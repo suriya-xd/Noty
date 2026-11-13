@@ -19,6 +19,7 @@ import {
 import { GitHubService, pollDeviceFlow } from "../services/githubService";
 import { NoeticBridge, openExternal } from "../services/noeticBridge";
 import { DeviceCodeResponse, GitHubUser } from "../types/noetic";
+import { useBackLayer } from "../utils/backNavigation";
 
 const GithubIcon: FC<{ className?: string }> = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -43,6 +44,8 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   vaultPath,
   onAccountChanged,
 }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onClose);
   const [isConfirmingSignOut, setIsConfirmingSignOut] = useState(false);
   useEscapeKey(isOpen && !isConfirmingSignOut, onClose);
   const [currentUser, setCurrentUser] = useState<GitHubUser | null>(null);

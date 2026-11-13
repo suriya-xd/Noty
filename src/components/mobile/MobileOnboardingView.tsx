@@ -5,6 +5,7 @@ import { GitHubService, pollDeviceFlow } from "../../services/githubService";
 import type { PendingSignIn } from "../../services/githubService";
 import { openExternal } from "../../services/noeticBridge";
 import type { DeviceCodeResponse } from "../../types/noetic";
+import { useBackLayer } from "../../utils/backNavigation";
 
 interface MobileOnboardingViewProps {
   isOpen: boolean;
@@ -18,6 +19,8 @@ type Step = "welcome" | "code";
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, onAuthenticated, onCancel }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onCancel);
   const [step, setStep] = useState<Step>("welcome");
   const [device, setDevice] = useState<DeviceCodeResponse | null>(null);
   const [isStarting, setIsStarting] = useState(false);

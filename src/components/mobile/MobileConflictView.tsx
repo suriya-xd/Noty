@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FC } from "react";
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Cloud, Smartphone } from "lucide-react";
 import { ConflictFile, ConflictResolution } from "../../types/noetic";
+import { useBackLayer } from "../../utils/backNavigation";
 
 interface MobileConflictViewProps {
   conflicts: ConflictFile[];
@@ -13,6 +14,8 @@ interface MobileConflictViewProps {
 type Choice = "local" | "remote";
 
 export const MobileConflictView: FC<MobileConflictViewProps> = ({ conflicts, isOpen, onClose, onApplyResolutions }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onClose);
   const [index, setIndex] = useState(0);
   const [choices, setChoices] = useState<Record<string, Choice>>({});
 

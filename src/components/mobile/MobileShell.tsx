@@ -30,10 +30,11 @@ import {
   MoreVertical,
   Pencil,
   Plus,
+  Redo2,
   RefreshCw,
   Search,
-  Settings,
   Trash2,
+  Undo2,
   UploadCloud,
   User,
   X,
@@ -58,6 +59,41 @@ import {
   sortTreeNodes,
 } from "../../utils/customOrder";
 import { ConfirmSheet, Sheet, SheetAction, TextPromptSheet } from "./mobileUi";
+import { goBack, pushBackEntry, useBackLayer, useBackNavigation } from "../../utils/backNavigation";
+import type { HistoryStatus } from "../editorHistory";
+
+/**
+ * How much of the page the on-screen keyboard covers, for browsers that draw the keyboard over
+ * the page instead of making the page shorter. (The Android app makes the page shorter itself,
+ * see MainActivity.kt, so there this stays 0.) Pinch-zooming also shrinks the visible area, so
+ * it's ignored while zoomed.
+ */
+function useKeyboardOverlap(): number {
+  const [overlap, setOverlap] = useState(0);
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const covered = window.innerHeight - vv.height - vv.offsetTop;
+      setOverlap(Math.abs(vv.scale - 1) < 0.01 && covered > 60 ? Math.round(covered) : 0);
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+  return overlap;
+}
+
+/** Releases (takes off the history) every Back entry in a trail. */
+function releaseAll(trail: { current: (() => void)[] }) {
+  const releases = trail.current;
+  trail.current = [];
+  releases.forEach((release) => release());
+}
 
 interface MobileShellProps {
   vaultPath: string;
@@ -90,7 +126,7 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-type Tab = "dashboard" | "notes" | "sync" | "settings";
+type Tab = "dashboard" | "notes" | "sync";
 
 function buildFileTree(entries: VaultEntry[]): TreeNode[] {
   const rootNodes: TreeNode[] = [];
@@ -329,8 +365,59 @@ export const MobileShell: FC<MobileShellProps> = ({
   onRefreshFiles,
   onPreviewImage,
 }) => {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTabState] = useState<Tab>("dashboard");
   const [query, setQuery] = useState("");
+
+  // ---- Back navigation -----------------------------------------------------
+  // Android's Back returns to the previously visited page instead of closing the app (see
+  // utils/backNavigation). Tabs and notes keep a trail of where the user came from.
+  useBackNavigation();
+  const tabTrail = useRef<(() => void)[]>([]);
+  const noteTrail = useRef<(() => void)[]>([]);
+
+  /** Shows a tab. Back returns to the tab before; the dashboard is home, so going there clears that trail. */
+  const setTab = (next: Tab) => {
+    if (next === tab) return;
+    if (next === "dashboard") {
+      releaseAll(tabTrail);
+    } else {
+      const previous = tab;
+      const release: () => void = pushBackEntry(() => {
+        tabTrail.current = tabTrail.current.filter((r) => r !== release);
+        setTabState(previous);
+      });
+      tabTrail.current.push(release);
+    }
+    setTabState(next);
+  };
+
+  // Back from a note: to the note it was opened from (by a link), else to the page underneath.
+  const activePathRef = useRef(activeFilePath);
+  activePathRef.current = activeFilePath;
+  const openFile = useCallback(
+    (path: string) => {
+      const previous = activePathRef.current;
+      if (previous && path && path !== previous) {
+        const release: () => void = pushBackEntry(() => {
+          noteTrail.current = noteTrail.current.filter((r) => r !== release);
+          onSelectFile(previous);
+        });
+        noteTrail.current.push(release);
+      }
+      onSelectFile(path);
+    },
+    [onSelectFile]
+  );
+  useBackLayer(!!activeFilePath, () => onSelectFile(""));
+  useEffect(() => {
+    if (!activeFilePath) releaseAll(noteTrail);
+  }, [activeFilePath]);
+  /** The editor's back arrow does what the device's Back does. */
+  const leaveNote = () => {
+    if (!goBack()) onSelectFile("");
+  };
+
+  const keyboardOverlap = useKeyboardOverlap();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const [customOrder, setCustomOrder] = useState<CustomOrderMap>(() => getStoredCustomOrder(vaultPath));
@@ -350,6 +437,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   const editorApi = useRef<EditorHandle | null>(null);
   const [saveState, setSaveState] = useState<"synced" | "saving">("synced");
   const handleSaveStatus = useCallback((s: "synced" | "saving") => setSaveState(s), []);
+  const [undoState, setUndoState] = useState<HistoryStatus>({ canUndo: false, canRedo: false });
 
   // Link counts on the dashboard come from the backlinks index, which fills in asynchronously.
   const [, setLinksVersion] = useState(0);
@@ -537,7 +625,7 @@ export const MobileShell: FC<MobileShellProps> = ({
       <li key={node.path} className="flex items-center" style={indent}>
         <button
           type="button"
-          onClick={() => onSelectFile(node.path)}
+          onClick={() => openFile(node.path)}
           className="flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pl-2 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors"
         >
           <span className="w-4 shrink-0" />
@@ -689,7 +777,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                       <li key={note.path}>
                         <button
                           type="button"
-                          onClick={() => onSelectFile(note.path)}
+                          onClick={() => openFile(note.path)}
                           className="w-full min-h-[64px] px-4 py-2.5 flex items-center gap-3 text-left active:bg-[#1c2128]"
                         >
                           {canvas ? (
@@ -775,7 +863,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                   <li key={f.path}>
                     <button
                       type="button"
-                      onClick={() => onSelectFile(f.path)}
+                      onClick={() => openFile(f.path)}
                       className="w-full min-h-[56px] px-3 rounded-xl flex items-center gap-3 text-left active:bg-[#161b22]"
                     >
                       {isCanvasPath(f.name) ? (
@@ -889,7 +977,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                 <li key={f.path}>
                   <button
                     type="button"
-                    onClick={() => onSelectFile(f.path)}
+                    onClick={() => openFile(f.path)}
                     className="w-full min-h-[56px] px-4 flex items-center gap-3 text-left active:bg-[#1c2128]"
                   >
                     <span className="flex-1 min-w-0">
@@ -948,19 +1036,12 @@ export const MobileShell: FC<MobileShellProps> = ({
             </select>
           </section>
         )}
-      </div>
-    </>
-  );
 
-  // ---- settings tab ------------------------------------------------------
-  const settingsTab = (
-    <>
-      <header className="pt-safe bg-[#0d1117] shrink-0">
-        <div className="h-14 px-4 flex items-center">
-          <h1 className="font-headline text-[22px] font-semibold text-[#f0f6fc]">Settings</h1>
-        </div>
-      </header>
-      <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-8 space-y-6">
+        {/* Settings: below the sync features on the same page. */}
+        <h2 className="pt-4 border-t border-[#21262d] font-headline text-[18px] font-semibold text-[#f0f6fc]">
+          Settings
+        </h2>
+
         <section>
           <SectionLabel>Account</SectionLabel>
           <button
@@ -991,12 +1072,6 @@ export const MobileShell: FC<MobileShellProps> = ({
           <SectionLabel>Notes</SectionLabel>
           <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
             <SettingsRow icon={Folder} label="Location on this device" value={vaultPath} mono />
-            <SettingsRow
-              icon={Layers}
-              label="Workspace"
-              value={workspaceName}
-              onClick={account ? onOpenWorkspaces : onOpenOnboarding}
-            />
             <SettingsRow icon={ArrowUpDown} label="Note order" value={sortLabel} onClick={() => setSortSheetOpen(true)} />
           </div>
         </section>
@@ -1005,7 +1080,7 @@ export const MobileShell: FC<MobileShellProps> = ({
           <SectionLabel>How saving works</SectionLabel>
           <p className="rounded-2xl bg-[#161b22] border border-[#21262d] p-4 text-[14px] leading-relaxed text-[#8b949e]">
             Notes save to this device as you type. They are backed up, and reach your other devices, when you
-            tap <span className="text-[#e6edf3]">Save</span> on the Sync tab.
+            tap <span className="text-[#e6edf3]">Save</span> at the top of this page.
           </p>
         </section>
 
@@ -1022,10 +1097,11 @@ export const MobileShell: FC<MobileShellProps> = ({
   const formatButtons = FORMAT_BUTTONS.filter((b) => b !== "divider");
 
   const editorScreen = activeFilePath && (
-    <div className="absolute inset-0 z-30 flex flex-col bg-[#0d1117] m-screen-in">
+    // Ends where the keyboard begins, so the formatting bar sits right above it (see useKeyboardOverlap).
+    <div className="absolute inset-0 z-30 flex flex-col bg-[#0d1117] m-screen-in" style={{ bottom: keyboardOverlap }}>
       <header className="pt-safe bg-[#0d1117] border-b border-[#21262d] shrink-0">
         <div className="h-14 px-1.5 flex items-center gap-0.5">
-          <IconButton icon={ArrowLeft} label="Back" onClick={() => onSelectFile("")} />
+          <IconButton icon={ArrowLeft} label="Back" onClick={leaveNote} />
           <button
             type="button"
             onClick={() => setRenaming({ path: activeFilePath, name: activeName, isDirectory: false })}
@@ -1043,6 +1119,27 @@ export const MobileShell: FC<MobileShellProps> = ({
                 : `Saved on device${activeParent ? ` · ${activeParent}` : ""}`}
             </span>
           </button>
+          {!activeIsCanvas &&
+            (
+              [
+                { label: "Undo", icon: Undo2, enabled: undoState.canUndo, run: () => editorApi.current?.undo() },
+                { label: "Redo", icon: Redo2, enabled: undoState.canRedo, run: () => editorApi.current?.redo() },
+              ] as const
+            ).map((b) => (
+              <button
+                key={b.label}
+                type="button"
+                aria-label={b.label}
+                disabled={!b.enabled}
+                // Keep the editor focused (and the keyboard open) while tapping.
+                onPointerDown={(e) => e.preventDefault()}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={b.run}
+                className="w-11 h-11 shrink-0 rounded-full flex items-center justify-center text-[#c9d1d9] active:bg-[#21262d] active:text-[#f0f6fc] disabled:text-[#484f58] disabled:active:bg-transparent transition-colors"
+              >
+                <b.icon className="w-5 h-5" />
+              </button>
+            ))}
           <IconButton icon={MoreVertical} label="Note options" onClick={() => setEditorMenuOpen(true)} />
         </div>
       </header>
@@ -1056,7 +1153,7 @@ export const MobileShell: FC<MobileShellProps> = ({
             vaultPath={vaultPath}
             vaultFiles={files}
             onDebouncedSave={onDebouncedSave}
-            onOpenFile={onSelectFile}
+            onOpenFile={openFile}
             onRefreshFiles={onRefreshFiles}
             onPreviewImage={onPreviewImage}
             touchMode
@@ -1066,11 +1163,12 @@ export const MobileShell: FC<MobileShellProps> = ({
             chrome="minimal"
             apiRef={editorApi}
             onSaveStatusChange={handleSaveStatus}
+            onHistoryChange={setUndoState}
             filePath={activeFilePath}
             initialContent={activeFileContent}
             onDebouncedSave={onDebouncedSave}
             onRenameFile={onRenameFile}
-            onOpenFile={onSelectFile}
+            onOpenFile={openFile}
             onCreateFile={onCreateFile}
             vaultPath={vaultPath}
             vaultFiles={files}
@@ -1119,7 +1217,6 @@ export const MobileShell: FC<MobileShellProps> = ({
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "notes", label: "Notes", icon: FileText },
     { id: "sync", label: "Sync", icon: RefreshCw },
-    { id: "settings", label: "Settings", icon: Settings },
   ];
   const sheetNode = itemSheet?.node;
   const sheetIndex = itemSheet ? itemSheet.siblings.findIndex((s) => s.path === itemSheet.node.path) : -1;
@@ -1136,7 +1233,6 @@ export const MobileShell: FC<MobileShellProps> = ({
         {tab === "dashboard" && dashboardTab}
         {tab === "notes" && notesTab}
         {tab === "sync" && syncTab}
-        {tab === "settings" && settingsTab}
       </main>
 
       <nav aria-label="Primary" className="shrink-0 bg-[#161b22] border-t border-[#21262d] pb-safe">

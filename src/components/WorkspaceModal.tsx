@@ -5,6 +5,7 @@ import { AlertCircle, Check, Layers, Loader2, Plus, RefreshCw, X } from "lucide-
 import { GitHubService } from "../services/githubService";
 import { NoeticBridge } from "../services/noeticBridge";
 import type { RepoStatusPayload } from "../types/noetic";
+import { useBackLayer } from "../utils/backNavigation";
 
 interface WorkspaceModalProps {
   isOpen: boolean;
@@ -26,6 +27,8 @@ const tidyName = (name: string) => name.trim().split(/\s+/).filter(Boolean).join
  * also prepares the account's storage, so this is where the first workspace gets its name.
  */
 export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vaultPath, isConnected, onSwitched }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onClose);
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);

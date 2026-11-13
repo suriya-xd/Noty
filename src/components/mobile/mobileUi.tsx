@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FC, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
+import { useBackLayer } from "../../utils/backNavigation";
 
 /**
  * Shared touch primitives for the mobile shell: a bottom sheet, action rows,
@@ -16,6 +17,7 @@ interface SheetProps {
 }
 
 export const Sheet: FC<SheetProps> = ({ open, onClose, title, subtitle, children }) => {
+  useBackLayer(open, onClose);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {

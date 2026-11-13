@@ -12,6 +12,7 @@ import {
   Image as ImageIcon,
   Scan,
 } from "lucide-react";
+import { useBackLayer } from "../utils/backNavigation";
 
 export interface ImagePreviewModalProps {
   isOpen: boolean;
@@ -28,6 +29,8 @@ export const ImagePreviewModal: FC<ImagePreviewModalProps> = ({
   title,
   onClose,
 }) => {
+  // On phones, Back closes this.
+  useBackLayer(isOpen, onClose);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [rotation, setRotation] = useState(0);
