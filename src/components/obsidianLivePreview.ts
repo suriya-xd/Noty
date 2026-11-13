@@ -13,6 +13,11 @@ import { resolveImageUrl } from "../services/noeticBridge";
 export interface LivePreviewConfig {
   vaultPath: string;
   onPreviewImage?: (src: string, alt?: string, title?: string) => void;
+  /**
+   * Never show Markdown markers ("#", "**", "*", ">", list bullets), not even on the line being
+   * edited. Used by canvas cards, which show formatted text only.
+   */
+  alwaysHideMarkers?: boolean;
 }
 
 export const livePreviewConfigFacet = Facet.define<LivePreviewConfig, LivePreviewConfig>({
@@ -60,6 +65,19 @@ class CheckboxWidget extends WidgetType {
 }
 
 // Visual Horizontal Rule Widget
+// "•" shown in place of a "- ", "* " or "+ " list marker
+class BulletWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "cm-md-bullet";
+    span.textContent = "• ";
+    return span;
+  }
+}
+
 class HrWidget extends WidgetType {
   toDOM(): HTMLElement {
     const hr = document.createElement("div");
@@ -493,9 +511,9 @@ function buildLivePreviewDecorations(view: EditorView): DecorationSet {
     while (pos <= to) {
       const line = doc.lineAt(pos);
       const text = line.text;
-      const isCursorOnLine = selection.ranges.some(
-        (r) => r.from <= line.to && r.to >= line.from
-      );
+      const isCursorOnLine =
+        !config.alwaysHideMarkers &&
+        selection.ranges.some((r) => r.from <= line.to && r.to >= line.from);
 
       // 1. Code fence check (```)
       if (/^```/.test(text.trim())) {
@@ -610,11 +628,20 @@ function buildLivePreviewDecorations(view: EditorView): DecorationSet {
         continue;
       }
 
-      // 6. Inline Formatting & Images
-      if (text.length > 0) {
+      // 6. Bulleted lists: shown as "•" when markers are always hidden
+      const bulletMatch = config.alwaysHideMarkers ? text.match(/^(\s*)([-*+])\s/) : null;
+      let inlineOffset = 0;
+      if (bulletMatch) {
+        const markerFrom = line.from + bulletMatch[1].length;
+        builder.add(markerFrom, markerFrom + 2, Decoration.replace({ widget: new BulletWidget() }));
+        inlineOffset = bulletMatch[0].length;
+      }
+
+      // 7. Inline Formatting & Images (after any bullet, so ranges stay in order)
+      if (text.length > inlineOffset) {
         const inlineSpans = collectInlineSpans(
-          text,
-          line.from,
+          text.slice(inlineOffset),
+          line.from + inlineOffset,
           isCursorOnLine,
           selection,
           config.vaultPath,

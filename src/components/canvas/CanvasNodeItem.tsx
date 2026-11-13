@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { FC } from "react";
 import { CanvasNode, CanvasSide } from "../../types/canvas";
 import { getCanvasColorStyles } from "../../utils/canvas/parser";
-import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
+import { calculateCanvasNodeFontSize, getTextNodeFontSize } from "../../utils/canvas/math";
 import { CanvasTextNode } from "./CanvasTextNode";
 import { CanvasFileNode } from "./CanvasFileNode";
 import { CanvasLinkNode } from "./CanvasLinkNode";
@@ -16,6 +16,8 @@ interface CanvasNodeItemProps {
   isGroup: boolean;
   zIndex: number;
   vaultPath: string;
+  /** File cards only: the referenced note is not in the vault. */
+  isMissing?: boolean;
   /**
    * Touch screens: no resize handles (they sit on top of the connection dots and are too small
    * to hit); a selected card is resized by pinching it instead, and the dots are larger.
@@ -36,6 +38,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   isGroup,
   zIndex,
   vaultPath,
+  isMissing = false,
   touchMode = false,
   onSelect,
   onStartDrag,
@@ -124,9 +127,11 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
           <CanvasTextNode
             node={node}
             isSelected={isSelected}
+            vaultPath={vaultPath}
             isEditing={isEditingText}
             onEditingChange={setIsEditingText}
-            onUpdateText={(text) => onUpdateNode({ ...node, text })}
+            // Store the font size with the text, so older cards stop auto-sizing as they're edited.
+            onUpdateText={(text) => onUpdateNode({ ...node, text, fontSize: getTextNodeFontSize(node) })}
             onNavigateFile={onOpenFile}
           />
         )}
@@ -134,6 +139,7 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
           <CanvasFileNode
             node={node}
             vaultPath={vaultPath}
+            isMissing={isMissing}
             onOpenFile={onOpenFile}
             onPreviewImage={onPreviewImage}
           />

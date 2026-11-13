@@ -457,3 +457,93 @@ export function scaleRectAboutCenter(rect: Rect, scale: number): Rect {
     height,
   };
 }
+
+/** Font size for new text cards. */
+export const TEXT_NODE_DEFAULT_FONT_SIZE = 16;
+const TEXT_NODE_MIN_FONT_SIZE = 6;
+const TEXT_NODE_MAX_FONT_SIZE = 400;
+
+/** A text card's font size: its stored size, or (older cards) one computed once from its shape. */
+export function getTextNodeFontSize(node: {
+  width: number;
+  height: number;
+  text?: string;
+  fontSize?: unknown;
+}): number {
+  if (typeof node.fontSize === "number" && node.fontSize > 0) return node.fontSize;
+  return calculateCanvasTextNodeFontSize(node.width, node.height, node.text);
+}
+
+/** Clamps a scaled text-card font size and rounds it to 0.1px. */
+export function clampTextNodeFontSize(size: number): number {
+  const clamped = Math.min(TEXT_NODE_MAX_FONT_SIZE, Math.max(TEXT_NODE_MIN_FONT_SIZE, size));
+  return Math.round(clamped * 10) / 10;
+}
+
+/**
+ * Scales a card from a corner handle, keeping its proportions and pinning the opposite corner.
+ * Returns the new rect and the scale applied (for scaling the card's font by the same amount).
+ * The scale stops where the card would go below its minimum size or the font below its minimum.
+ */
+export function scaleRectFromCorner(
+  rect: Rect,
+  handle: "nw" | "ne" | "sw" | "se",
+  dx: number,
+  dy: number,
+  fontSize?: number
+): { rect: Rect; scale: number } {
+  const sx = (handle.includes("e") ? rect.width + dx : rect.width - dx) / rect.width;
+  const sy = (handle.includes("s") ? rect.height + dy : rect.height - dy) / rect.height;
+  // Follow whichever direction the pointer moved further.
+  let scale = Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy;
+  const floor = Math.max(
+    MIN_NODE_WIDTH / rect.width,
+    MIN_NODE_HEIGHT / rect.height,
+    fontSize ? TEXT_NODE_MIN_FONT_SIZE / fontSize : 0
+  );
+  scale = Math.max(scale, Math.min(floor, 1));
+  if (fontSize) scale = Math.min(scale, TEXT_NODE_MAX_FONT_SIZE / fontSize);
+
+  const width = rect.width * scale;
+  const height = rect.height * scale;
+  return {
+    rect: {
+      x: handle.includes("w") ? rect.x + rect.width - width : rect.x,
+      y: handle.includes("n") ? rect.y + rect.height - height : rect.y,
+      width,
+      height,
+    },
+    scale,
+  };
+}
+
+// Space a text card's border (1px each side) and padding (12px each side) take around its text.
+const TEXT_CARD_CHROME = 26;
+
+/**
+ * The card height a text card needs to show all of its text at a given card width, measured from
+ * the rendered card (a hidden copy of its text laid out at that width). Null when the card isn't
+ * showing its rendered text (e.g. it is being edited, or is empty).
+ */
+export function measureTextCardHeight(nodeId: string, cardWidth: number): number | null {
+  const el = document.querySelector<HTMLElement>(
+    `#canvas-node-${CSS.escape(nodeId)} [data-canvas-text-measure]`
+  );
+  if (!el?.parentElement) return null;
+  const clone = el.cloneNode(true) as HTMLElement;
+  Object.assign(clone.style, {
+    position: "absolute",
+    visibility: "hidden",
+    pointerEvents: "none",
+    left: "0",
+    top: "0",
+    height: "auto",
+    display: "flow-root", // include the first/last block's margins in the height
+    width: `${Math.max(1, cardWidth - TEXT_CARD_CHROME)}px`,
+  });
+  el.parentElement.appendChild(clone);
+  // offsetHeight is layout size, unaffected by the canvas zoom transform.
+  const height = clone.offsetHeight;
+  clone.remove();
+  return Math.ceil(height) + TEXT_CARD_CHROME;
+}

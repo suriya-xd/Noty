@@ -3,6 +3,7 @@ import type { FC } from "react";
 import { CanvasGroupNode as ICanvasGroupNode } from "../../types/canvas";
 import { Folder, Edit2, Check } from "lucide-react";
 import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
+import { stripMarkdownMarkers } from "../../utils/canvas/plainText";
 
 interface CanvasGroupNodeProps {
   node: ICanvasGroupNode;
@@ -79,7 +80,7 @@ export const CanvasGroupNode: FC<CanvasGroupNodeProps> = ({
               style={{ fontSize: `${labelFontSize}px` }}
               className="font-semibold text-zinc-200"
             >
-              {node.label || "Untitled Group"}
+              {stripMarkdownMarkers(node.label || "") || "Untitled Group"}
             </span>
             <button
               onClick={(e) => {

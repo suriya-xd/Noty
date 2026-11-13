@@ -18,6 +18,11 @@ export interface CanvasNodeBase {
 export interface CanvasTextNode extends CanvasNodeBase {
   type: "text";
   text: string;
+  /**
+   * Font size in px (extension field). Changes only when the card is scaled from a corner or
+   * pinched; older cards without it get one computed from their size and text.
+   */
+  fontSize?: number;
 }
 
 export interface CanvasFileNode extends CanvasNodeBase {

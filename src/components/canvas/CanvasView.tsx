@@ -31,6 +31,11 @@ import {
   isNodeInViewport,
   isPointInRect,
   scaleRectAboutCenter,
+  scaleRectFromCorner,
+  clampTextNodeFontSize,
+  getTextNodeFontSize,
+  measureTextCardHeight,
+  TEXT_NODE_DEFAULT_FONT_SIZE,
   MIN_NODE_WIDTH,
   MIN_NODE_HEIGHT,
 } from "../../utils/canvas/math";
@@ -78,7 +83,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
     selected: Set<string>;
     nodes: CanvasNode[];
     snapGrid: boolean;
-    setNodeRect: (nodeId: string, rect: Rect) => void;
+    setNodeRect: (nodeId: string, rect: Rect & { fontSize?: number }) => void;
     finishResize: () => void;
   } | null>(null);
 
@@ -149,6 +154,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
     let resizeId: string | null = null;
     let resizeFrom: Rect | null = null;
     let resizeDist = 0;
+    let resizeFont: number | undefined; // text cards scale their font with the pinch
 
     /** The selected card under a two-finger touch: one a finger is on, or one the pinch is centred on. */
     const selectedCardUnder = (touches: TouchList, mid: { x: number; y: number }): string | null => {
@@ -169,11 +175,13 @@ export const CanvasView: FC<CanvasViewProps> = ({
       if (resizeId && st) {
         const node = st.nodes.find((n) => n.id === resizeId);
         if (node && st.snapGrid) {
+          // Text cards keep their pinched size: snapping it would break the text/card proportion.
+          const isText = node.type === "text";
           st.setNodeRect(resizeId, {
             x: snapToGrid(node.x),
             y: snapToGrid(node.y),
-            width: snapToGrid(node.width),
-            height: snapToGrid(node.height),
+            width: isText ? node.width : snapToGrid(node.width),
+            height: isText ? node.height : snapToGrid(node.height),
           });
         }
         st.finishResize();
@@ -215,6 +223,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
           resizeId = card.id;
           resizeFrom = { x: card.x, y: card.y, width: card.width, height: card.height };
           resizeDist = m.dist;
+          resizeFont = card.type === "text" ? getTextNodeFontSize(card) : undefined;
           mode = "resize";
           e.preventDefault();
           return;
@@ -244,7 +253,13 @@ export const CanvasView: FC<CanvasViewProps> = ({
         if (e.touches.length < 2 || !resizeId || !resizeFrom) return;
         e.preventDefault();
         const m = measure(e.touches);
-        touchStateRef.current?.setNodeRect(resizeId, scaleRectAboutCenter(resizeFrom, m.dist / resizeDist));
+        const rect = scaleRectAboutCenter(resizeFrom, m.dist / resizeDist);
+        touchStateRef.current?.setNodeRect(resizeId, {
+          ...rect,
+          ...(resizeFont !== undefined
+            ? { fontSize: clampTextNodeFontSize((resizeFont * rect.width) / resizeFrom.width) }
+            : {}),
+        });
         return;
       }
       if (mode === "pinch") {
@@ -398,6 +413,10 @@ export const CanvasView: FC<CanvasViewProps> = ({
     handle: ResizeHandle;
     initialRect: Rect;
     startWorld: Point;
+    /** Text cards: font size at the start, scaled by corner handles. */
+    initialFontSize?: number;
+    /** Text cards: card height needed to show all the text, by card width (cached per resize). */
+    fitHeights?: Map<number, number | null>;
   } | null>(null);
 
   // Marquee selection
@@ -418,6 +437,12 @@ export const CanvasView: FC<CanvasViewProps> = ({
   const [isAddImageModalOpen, setIsAddImageModalOpen] = useState(false);
   const addNoteTargetWorldPos = useRef<Point>({ x: 100, y: 100 });
   const [isAddLinkOpen, setIsAddLinkOpen] = useState(false);
+
+  // Vault note paths, to flag cards whose note was deleted or renamed outside the canvas
+  const vaultFilePaths = useMemo(
+    () => new Set(vaultFiles.filter((f) => !f.is_directory).map((f) => f.path)),
+    [vaultFiles]
+  );
 
   // Map of nodes by ID for fast edge lookup
   const nodesMap = useMemo(() => {
@@ -641,9 +666,38 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     // 3. Resizing Node
     if (resizingNode) {
-      const { nodeId, handle, initialRect, startWorld } = resizingNode;
+      const { nodeId, handle, initialRect, startWorld, initialFontSize, fitHeights } = resizingNode;
       const dx = currentWorld.x - startWorld.x;
       const dy = currentWorld.y - startWorld.y;
+
+      // Text cards: corners scale the card and its text together; sides reshape the card at the
+      // same font size, but never so small that text is cut off.
+      if (initialFontSize !== undefined && fitHeights) {
+        let next: Rect;
+        let fontSize = initialFontSize;
+        if (handle.length === 2) {
+          const scaled = scaleRectFromCorner(
+            initialRect,
+            handle as "nw" | "ne" | "sw" | "se",
+            dx,
+            dy,
+            initialFontSize
+          );
+          next = scaled.rect;
+          fontSize = clampTextNodeFontSize(initialFontSize * scaled.scale);
+        } else {
+          next = resizeTextCardFromSide(initialRect, handle, dx, dy, (width) => {
+            const key = Math.round(width);
+            if (!fitHeights.has(key)) fitHeights.set(key, measureTextCardHeight(nodeId, key));
+            return fitHeights.get(key) ?? null;
+          });
+        }
+        setCanvasData((prev) => ({
+          ...prev,
+          nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, ...next, fontSize } : n)),
+        }));
+        return;
+      }
 
       let newX = initialRect.x;
       let newY = initialRect.y;
@@ -816,6 +870,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
             width: 250,
             height: 160,
             text: "",
+            fontSize: TEXT_NODE_DEFAULT_FONT_SIZE,
           };
           const newEdge: CanvasEdge = {
             id: `edge_${Math.random().toString(36).slice(2, 10)}`,
@@ -901,6 +956,52 @@ export const CanvasView: FC<CanvasViewProps> = ({
     };
   };
 
+  /**
+   * Resizes a text card from a side handle. The font stays the same, so the card can shrink only
+   * until its text would no longer fit (a card that already overflows can't shrink further).
+   * `fitHeight(width)` is the card height its text needs at that width, or null if unknown.
+   */
+  const resizeTextCardFromSide = (
+    initial: Rect,
+    handle: ResizeHandle,
+    dx: number,
+    dy: number,
+    fitHeight: (width: number) => number | null
+  ): Rect => {
+    let { x, y, width, height } = initial;
+    if (handle === "n" || handle === "s") {
+      height = Math.max(MIN_NODE_HEIGHT, handle === "s" ? initial.height + dy : initial.height - dy);
+      if (snapGrid) height = snapToGrid(height);
+      const needed = fitHeight(initial.width);
+      if (needed !== null) height = Math.max(height, Math.min(needed, initial.height));
+      if (handle === "n") y = initial.y + initial.height - height;
+    } else {
+      width = Math.max(MIN_NODE_WIDTH, handle === "e" ? initial.width + dx : initial.width - dx);
+      if (snapGrid) width = snapToGrid(width);
+      const fits = (w: number) => {
+        const needed = fitHeight(w);
+        return needed === null || needed <= initial.height;
+      };
+      if (width < initial.width && !fits(width)) {
+        if (!fits(initial.width)) {
+          width = initial.width; // already overflowing: don't make it worse
+        } else {
+          // Narrowest width (to the pixel) at which the text still fits.
+          let lo = width;
+          let hi = initial.width;
+          while (hi - lo > 1) {
+            const mid = Math.floor((lo + hi) / 2);
+            if (fits(mid)) hi = mid;
+            else lo = mid;
+          }
+          width = hi;
+        }
+      }
+      if (handle === "w") x = initial.x + initial.width - width;
+    }
+    return { x, y, width, height };
+  };
+
   const handleStartResize = (e: React.MouseEvent, nodeId: string, handle: ResizeHandle) => {
     e.stopPropagation();
     if (!containerRef.current) return;
@@ -918,6 +1019,9 @@ export const CanvasView: FC<CanvasViewProps> = ({
       handle,
       initialRect: { x: node.x, y: node.y, width: node.width, height: node.height },
       startWorld,
+      ...(node.type === "text"
+        ? { initialFontSize: getTextNodeFontSize(node), fitHeights: new Map() }
+        : {}),
     });
   };
 
@@ -947,9 +1051,10 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     let newNode: CanvasNode;
     if (type === "text") {
-      newNode = { id, type: "text", x, y, width: 320, height: 200, text: "# New Note\n\nWrite here...", ...extra };
+      newNode = { id, type: "text", x, y, width: 320, height: 200, text: "# New Note\n\nWrite here...", fontSize: TEXT_NODE_DEFAULT_FONT_SIZE, ...extra };
     } else if (type === "file") {
-      newNode = { id, type: "file", x, y, width: 340, height: 260, file: (extra.file as string) || "Welcome.md", ...extra };
+      // Note cards only show the note's name, so they start compact (images pass their own size).
+      newNode = { id, type: "file", x, y, width: 300, height: 140, file: (extra.file as string) || "Welcome.md", ...extra };
     } else if (type === "link") {
       newNode = { id, type: "link", x, y, width: 300, height: 140, url: (extra.url as string) || "https://jsoncanvas.org", ...extra };
     } else {
@@ -961,6 +1066,26 @@ export const CanvasView: FC<CanvasViewProps> = ({
       nodes: [...prev.nodes, newNode],
     }));
     setSelectedNodeIds(new Set([id]));
+  };
+
+  /**
+   * Creates a new note in the vault and places it on the canvas. A bare name goes next to the
+   * canvas file; a name with a "/" is a vault path. Throws (with a readable message) on failure.
+   */
+  const handleCreateNote = async (name: string) => {
+    let relPath = name.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!relPath) throw new Error("Enter a note name.");
+    if (!/\.md$/i.test(relPath)) relPath += ".md";
+    if (!relPath.includes("/")) {
+      const canvasDir = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+      if (canvasDir) relPath = `${canvasDir}/${relPath}`;
+    }
+    if (vaultFilePaths.has(relPath)) {
+      throw new Error(`"${relPath}" already exists. Pick it from the list to add it.`);
+    }
+    await NoeticBridge.createFile(vaultPath, relPath);
+    if (onRefreshFiles) await onRefreshFiles();
+    addNodeAtPosition("file", addNoteTargetWorldPos.current, { file: relPath });
   };
 
   const handleDoubleClickCanvas = (e: React.MouseEvent) => {
@@ -1311,6 +1436,12 @@ export const CanvasView: FC<CanvasViewProps> = ({
               isGroup={isGroup}
               zIndex={zIndex}
               vaultPath={vaultPath}
+              isMissing={
+                node.type === "file" &&
+                vaultFilePaths.size > 0 &&
+                /\.md$/i.test(node.file) &&
+                !vaultFilePaths.has(node.file)
+              }
               touchMode={touchMode}
               onSelect={handleSelectNode}
               onStartDrag={handleStartDragNode}
@@ -1478,6 +1609,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
         onSelectNote={(notePath) => {
           addNodeAtPosition("file", addNoteTargetWorldPos.current, { file: notePath });
         }}
+        onCreateNote={handleCreateNote}
       />
 
       {/* Add Image Modal */}

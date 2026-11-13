@@ -1,13 +1,15 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import type { FC } from "react";
 import { CanvasTextNode as ICanvasTextNode } from "../../types/canvas";
 import { MarkdownViewer } from "../MarkdownViewer";
+import { CanvasMarkdownEditor } from "./CanvasMarkdownEditor";
 import { Edit3, Check } from "lucide-react";
-import { calculateCanvasTextNodeFontSize } from "../../utils/canvas/math";
+import { getTextNodeFontSize } from "../../utils/canvas/math";
 
 interface CanvasTextNodeProps {
   node: ICanvasTextNode;
   isSelected: boolean;
+  vaultPath: string;
   isEditing?: boolean;
   onEditingChange?: (isEditing: boolean) => void;
   onUpdateText: (newText: string) => void;
@@ -17,6 +19,7 @@ interface CanvasTextNodeProps {
 export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
   node,
   isSelected: _isSelected,
+  vaultPath,
   isEditing: controlledIsEditing,
   onEditingChange,
   onUpdateText,
@@ -30,37 +33,21 @@ export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
   };
 
   const [editText, setEditText] = useState(node.text);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setEditText(node.text);
   }, [node.text]);
 
-  useEffect(() => {
-    if (isEditing && textareaRef.current) {
-      textareaRef.current.focus();
-      const len = textareaRef.current.value.length;
-      textareaRef.current.setSelectionRange(len, len);
-    }
-  }, [isEditing]);
-
-  const handleFinishEditing = () => {
+  const handleFinishEditing = (finalText: string = editText) => {
     setIsEditing(false);
-    if (editText !== node.text) {
-      onUpdateText(editText);
+    if (finalText !== node.text) {
+      onUpdateText(finalText);
     }
   };
 
-  // Dynamically calculate font size tailored for Text elements, updating while typing and resizing
-  const dynamicFontSize = useMemo(
-    () =>
-      calculateCanvasTextNodeFontSize(
-        node.width,
-        node.height,
-        isEditing ? editText : node.text
-      ),
-    [node.width, node.height, isEditing, editText, node.text]
-  );
+  // Fixed per card: changes only when the card is scaled from a corner (or pinched), never
+  // while typing or when a side handle reshapes the card.
+  const dynamicFontSize = getTextNodeFontSize(node);
 
   return (
     <div
@@ -96,7 +83,7 @@ export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
               e.stopPropagation();
               setIsEditing(true);
             }}
-            title="Edit Markdown (Double-click)"
+            title="Edit text (Double-click)"
             className="p-1.5 rounded-md bg-[#0d1117]/80 hover:bg-[#21262d] text-zinc-400 hover:text-white transition-all cursor-pointer opacity-0 group-hover/text:opacity-100 [@media(pointer:coarse)]:opacity-60"
           >
             <Edit3 className="w-3 h-3" />
@@ -114,40 +101,34 @@ export const CanvasTextNode: FC<CanvasTextNodeProps> = ({
         }}
       >
         {isEditing ? (
-          <textarea
-            ref={textareaRef}
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            onBlur={handleFinishEditing}
-            onMouseDown={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Escape") {
-                setIsEditing(false);
-                setEditText(node.text);
-              }
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                handleFinishEditing();
-              }
+          <CanvasMarkdownEditor
+            initialText={node.text}
+            vaultPath={vaultPath}
+            fontSize={dynamicFontSize}
+            onChange={setEditText}
+            onFinish={handleFinishEditing}
+            onCancel={() => {
+              setEditText(node.text);
+              setIsEditing(false);
             }}
-            placeholder="Type text or markdown here... (Ctrl+Enter to finish)"
-            style={{ fontSize: `${dynamicFontSize}px`, lineHeight: 1.35 }}
-            className="w-full h-full bg-[#0d1117]/60 text-white rounded-lg p-2.5 resize-none outline-none ring-1 ring-sky-500/50 focus:ring-sky-400 leading-relaxed placeholder-zinc-500 selection:bg-sky-500/30 transition-all font-sans"
           />
         ) : (
           <div className="w-full h-full cursor-text" style={{ fontSize: `${dynamicFontSize}px` }}>
             {node.text.trim() ? (
-              <MarkdownViewer
-                content={node.text}
-                fontSize={dynamicFontSize}
-                onNavigateFile={onNavigateFile}
-              />
+              // Measured (cloned at other widths) to stop side handles from hiding the text.
+              <div data-canvas-text-measure>
+                <MarkdownViewer
+                  content={node.text}
+                  fontSize={dynamicFontSize}
+                  onNavigateFile={onNavigateFile}
+                />
+              </div>
             ) : (
               <div
                 style={{ fontSize: `${dynamicFontSize}px` }}
                 className="text-zinc-500 italic h-full flex items-center justify-center text-center p-2"
               >
-                Double-click to write Markdown...
+                Double-click to write...
               </div>
             )}
           </div>

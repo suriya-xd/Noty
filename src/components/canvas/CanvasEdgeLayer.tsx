@@ -8,6 +8,7 @@ import {
 } from "../../utils/canvas/math";
 import { PRESET_COLOR_MAP, resolveCanvasColor } from "../../utils/canvas/parser";
 import { X, Check } from "lucide-react";
+import { stripMarkdownMarkers } from "../../utils/canvas/plainText";
 
 interface CanvasEdgeLayerProps {
   edges: CanvasEdge[];
@@ -201,7 +202,7 @@ export const CanvasEdgeLayer: FC<CanvasEdgeLayerProps> = ({
                       }`}
                     >
                       <span className="truncate max-w-[100px]">
-                        {edge.label || "Add label..."}
+                        {(edge.label && stripMarkdownMarkers(edge.label)) || "Add label..."}
                       </span>
                       {isSelected && (
                         <button
