@@ -1,3 +1,4 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   ConflictFile,
   ConflictResolution,
@@ -559,22 +560,18 @@ export function resolveImageUrl(src: string, vaultPath: string): string {
     return src;
   }
 
+  // Notes store images as paths relative to the notes folder (e.g. `assets/x.png`), so each
+  // device loads its own synced copy. Turn that into a URL this webview can load.
   const cleanSrc = src.replace(/^\/+/, "");
+  const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
 
+  // Desktop and mobile apps: read straight from disk through Tauri's asset protocol. The notes
+  // folder is allowed for it in init_or_open_vault (src-tauri/src/lib.rs).
   if (isTauriEnvironment()) {
-    try {
-      const { convertFileSrc } =
-        (window as unknown as { __TAURI__?: { core?: { convertFileSrc: (path: string) => string } } })
-          .__TAURI__?.core || {};
-      if (typeof convertFileSrc === "function") {
-        const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
-        return convertFileSrc(full);
-      }
-    } catch {}
+    return convertFileSrc(full);
   }
 
-  // Vite dev server raw file serving
-  const full = `${vaultPath}/${cleanSrc}`.replace(/\\/g, "/");
+  // Browser during development: the Vite dev server serves the file (vite-noetic-plugin.ts).
   return `/api/noetic/raw?full_path=${encodeURIComponent(full)}`;
 }
 

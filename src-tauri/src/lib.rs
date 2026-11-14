@@ -131,7 +131,16 @@ fn default_vault_dir(_app: &tauri::AppHandle) -> Option<String> {
 
 #[tauri::command(rename_all = "snake_case")]
 fn init_or_open_vault(app: tauri::AppHandle, vault_path: Option<String>) -> Result<VaultInfo, String> {
-    fs_engine::init_or_open_vault(vault_path.or_else(|| default_vault_dir(&app)))
+    use tauri::Manager;
+    let info = fs_engine::init_or_open_vault(vault_path.or_else(|| default_vault_dir(&app)))?;
+    // Let the webview load files from the notes folder (and only there) through the asset
+    // protocol, so images saved as `assets/x.png` are shown from this device's copy. The folder
+    // isn't known until now (it can be anywhere on desktop, and is inside the app's storage on
+    // phones), so the static scope in tauri.conf.json is empty and access is granted here.
+    app.asset_protocol_scope()
+        .allow_directory(&info.path, true)
+        .map_err(|e| format!("Failed to allow image access to the notes folder: {}", e))?;
+    Ok(info)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
