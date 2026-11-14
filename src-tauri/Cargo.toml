@@ -28,9 +28,17 @@ walkdir = "2.5"
 # done, so every request failed with "no TLS backend is configured".
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
-# Desktop (Windows, macOS, Linux): use native TLS (Schannel on Windows, SecureTransport on macOS, OpenSSL on Linux)
-[target.'cfg(not(target_os = "android"))'.dependencies]
+# Windows and Linux: libgit2's HTTPS uses Schannel (Windows) or the system OpenSSL (Linux).
+[target.'cfg(not(any(target_os = "android", target_os = "macos")))'.dependencies]
 git2 = "0.19"
+
+# macOS: libgit2's HTTPS uses SecureTransport, but its SSH support (libssh2) still needs OpenSSL.
+# Build OpenSSL into the app: linking it dynamically tied the release binary to the build
+# machine's Homebrew copy (/opt/homebrew/opt/openssl@4), so it crashed at launch on other Macs
+# ("Library not loaded: libssl.4.dylib"), and even on Macs with Homebrew, since macOS refuses to
+# load a library signed by a different team into the app.
+[target.'cfg(target_os = "macos")'.dependencies]
+git2 = { version = "0.19", features = ["vendored-openssl"] }
 
 # Android: use vendored OpenSSL compiled via Android NDK clang
 [target.'cfg(target_os = "android")'.dependencies]
