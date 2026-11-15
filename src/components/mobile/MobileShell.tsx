@@ -425,7 +425,20 @@ export const MobileShell: FC<MobileShellProps> = ({
   };
 
   const keyboardOverlap = useKeyboardOverlap();
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // Folders start closed; this holds the ones the user has opened.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const isFolderCollapsed = (path: string) => !expanded.has(path);
+  /** Opens a folder and every folder above it, so it's actually visible. */
+  const expandFolder = (path: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      let p = path;
+      while (p) {
+        next.add(p);
+        p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+      }
+      return next;
+    });
 
   const [customOrder, setCustomOrder] = useState<CustomOrderMap>(() => getStoredCustomOrder(vaultPath));
   const [sortMode, setSortModeState] = useState<SortMode>(() => getStoredSortMode(vaultPath));
@@ -505,7 +518,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   };
 
   const toggleFolder = (path: string) =>
-    setCollapsed((prev) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
       else next.add(path);
@@ -528,13 +541,7 @@ export const MobileShell: FC<MobileShellProps> = ({
       const ext = creating.type === "canvas" ? ".canvas" : ".md";
       onCreateFile(`${prefix}${raw.endsWith(ext) ? raw : raw + ext}`);
     }
-    if (creating.parent) {
-      setCollapsed((prev) => {
-        const next = new Set(prev);
-        next.delete(creating.parent);
-        return next;
-      });
-    }
+    if (creating.parent) expandFolder(creating.parent);
     setCreating(null);
   };
 
@@ -604,24 +611,13 @@ export const MobileShell: FC<MobileShellProps> = ({
     }
     if (sortMode !== "custom") setSortMode("custom");
     applyOrder(plan.order);
-    if (target.position === "inside" && target.path) {
-      setCollapsed((prev) => {
-        const next = new Set(prev);
-        next.delete(target.path);
-        return next;
-      });
-    }
+    if (target.position === "inside" && target.path) expandFolder(target.path);
   };
 
   const { drag, bindRow } = useTreeDrag({
     scrollRef: notesScrollRef,
-    isCollapsed: (path) => collapsed.has(path),
-    onOpenFolder: (path) =>
-      setCollapsed((prev) => {
-        const next = new Set(prev);
-        next.delete(path);
-        return next;
-      }),
+    isCollapsed: isFolderCollapsed,
+    onOpenFolder: expandFolder,
     onDrop: (item, target) => void handleTreeDrop(item, target),
   });
 
@@ -662,7 +658,7 @@ export const MobileShell: FC<MobileShellProps> = ({
     const openMenu = () => setItemSheet({ node, siblings });
 
     if (node.isDirectory) {
-      const isCollapsed = collapsed.has(node.path);
+      const isCollapsed = isFolderCollapsed(node.path);
       const children = sorted(node.children, node.path);
       return (
         <li key={node.path}>
@@ -764,11 +760,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   const hasTopCanvas = topFiles.some((n) => isCanvasPath(n.name));
 
   const openFolder = (path: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.delete(path);
-      return next;
-    });
+    expandFolder(path);
     setQuery("");
     setTab("notes");
   };

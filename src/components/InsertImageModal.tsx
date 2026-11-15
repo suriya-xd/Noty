@@ -1,8 +1,16 @@
 import { useEscapeKey } from "./dialogs";
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import type { FC, ChangeEvent, DragEvent } from "react";
 import { VaultEntry } from "../types/noetic";
-import { NoeticBridge, resolveImageUrl } from "../services/noeticBridge";
+import { resolveImageUrl } from "../services/noeticBridge";
+import {
+  altTextFor,
+  imageFromDataTransfer,
+  isImageFile,
+  peekClipboardImage,
+  readClipboardImage,
+  saveImageToAssets,
+} from "../utils/imageUpload";
 import {
   X,
   Upload,
@@ -12,6 +20,7 @@ import {
   Search,
   Check,
   AlertCircle,
+  ClipboardPaste,
 } from "lucide-react";
 import { useBackLayer } from "../utils/backNavigation";
 
@@ -61,6 +70,37 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
 
   // Error state
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** The chosen image came from the clipboard (shown as such). */
+  const [fromClipboard, setFromClipboard] = useState(false);
+  const [clipboardHint, setClipboardHint] = useState<string | null>(null);
+  const acceptFileRef = useRef<(file: File, clipboard?: boolean) => void>(() => {});
+
+  // Each time the dialog opens: start clean, take an image that's already on the clipboard when
+  // that can be read without asking, and accept a paste (Ctrl/Cmd+V) at any point.
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedFile(null);
+    setUploadPreview(null);
+    setErrorMessage(null);
+    setClipboardHint(null);
+    setFromClipboard(false);
+    let cancelled = false;
+    void peekClipboardImage().then((file) => {
+      if (file && !cancelled) acceptFileRef.current(file, true);
+    });
+    const onPaste = (e: ClipboardEvent) => {
+      if (e.defaultPrevented) return; // already taken by the paste box
+      const file = imageFromDataTransfer(e.clipboardData);
+      if (!file) return;
+      e.preventDefault();
+      acceptFileRef.current(file, true);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("paste", onPaste);
+    };
+  }, [isOpen]);
 
   // Filter vault files to images
   const existingImages = useMemo(() => {
@@ -75,23 +115,36 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Handle file selection from disk
-  const handleFileChange = (file: File) => {
-    const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    if (!IMAGE_EXTENSIONS.has(ext)) {
+  // Handle file selection from disk or the clipboard
+  const handleFileChange = (file: File, clipboard = false) => {
+    if (!isImageFile(file)) {
       setErrorMessage("Please select a supported image file (PNG, JPG, GIF, WebP, SVG, BMP)");
       return;
     }
     setErrorMessage(null);
+    setClipboardHint(null);
+    setActiveTab("upload");
+    setFromClipboard(clipboard);
     setSelectedFile(file);
-    const defaultAlt = file.name.replace(/\.[^/.]+$/, "");
-    setUploadAlt(defaultAlt);
+    setUploadAlt(altTextFor(file));
 
     const reader = new FileReader();
     reader.onload = (e) => {
       setUploadPreview(e.target?.result as string);
     };
     reader.readAsDataURL(file);
+  };
+
+  acceptFileRef.current = handleFileChange;
+
+  /** The Paste button: reads the clipboard (the tap counts as permission where one is needed). */
+  const handlePasteButton = async () => {
+    const file = await readClipboardImage();
+    if (file) handleFileChange(file, true);
+    else
+      setClipboardHint(
+        "Couldn't find an image on the clipboard. Copy one first, or long-press the box below and choose Paste."
+      );
   };
 
   const onFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -124,16 +177,12 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
     setErrorMessage(null);
 
     try {
-      // Clean filename and prefix with assets/
-      const safeName = selectedFile.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const relPath = `assets/${safeName}`;
-
-      // Convert file to raw bytes for native Tauri invoke
-      const arrayBuffer = await selectedFile.arrayBuffer();
-      const rawBytes = new Uint8Array(arrayBuffer);
-
-      // Save via bridge
-      await NoeticBridge.saveImageFile(vaultPath, relPath, uploadPreview, rawBytes);
+      // Saved in the assets folder under a free name, so an existing image is never replaced.
+      const relPath = await saveImageToAssets(
+        vaultPath,
+        selectedFile,
+        vaultFiles.map((f) => f.path)
+      );
 
       // Refresh files list in App
       if (onRefreshFiles) {
@@ -272,7 +321,47 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
                     The image is saved with your notes, in the assets folder
                   </span>
                 </div>
-              ) : (
+              ) : null}
+
+              {/* Paste an image that's on the clipboard */}
+              {!uploadPreview && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePasteButton}
+                    className="h-11 rounded-xl border border-[#30363d] bg-[#0d1117]/60 hover:bg-[#21262d] active:bg-[#21262d] text-sm font-medium text-zinc-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ClipboardPaste className="w-4 h-4 text-purple-400" />
+                    Paste image from clipboard
+                  </button>
+                  <div
+                    contentEditable
+                    suppressContentEditableWarning
+                    role="textbox"
+                    aria-label="Paste an image here"
+                    inputMode="none"
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      const file = imageFromDataTransfer(e.clipboardData);
+                      if (file) handleFileChange(file, true);
+                      else setClipboardHint("That wasn't an image. Copy an image, then paste it here.");
+                    }}
+                    onBeforeInput={(e) => {
+                      // Images from a phone keyboard's clipboard arrive as an input, not a paste.
+                      const ev = e.nativeEvent as InputEvent;
+                      e.preventDefault();
+                      const file = imageFromDataTransfer(ev.dataTransfer);
+                      if (file) handleFileChange(file, true);
+                    }}
+                    className="min-h-11 px-3 py-2.5 rounded-xl border border-dashed border-[#30363d] text-center text-[12px] text-zinc-500 outline-none focus:border-purple-500/70 focus:text-zinc-300 select-text"
+                  >
+                    Or press Ctrl/⌘+V — on a phone, long-press here and choose Paste
+                  </div>
+                  {clipboardHint && <p className="text-[11px] text-amber-300/90 px-1">{clipboardHint}</p>}
+                </div>
+              )}
+
+              {uploadPreview && (
                 <div className="flex flex-col gap-3">
                   <div className="relative rounded-xl overflow-hidden border border-[#30363d] bg-[#0d1117] max-h-52 flex items-center justify-center p-2 group">
                     <img
@@ -294,7 +383,7 @@ export const InsertImageModal: FC<InsertImageModalProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between text-zinc-400 text-[11px] px-1 font-mono">
-                    <span className="truncate max-w-xs">{selectedFile?.name}</span>
+                    <span className="truncate max-w-xs">{fromClipboard ? "Image from your clipboard" : selectedFile?.name}</span>
                     <span>{selectedFile ? (selectedFile.size / 1024).toFixed(1) + " KB" : ""}</span>
                   </div>
 

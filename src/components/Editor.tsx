@@ -53,7 +53,8 @@ import { blockDragHandle } from "./blockDrag";
 import type { FormatKind } from "./editorCommands";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { InsertImageModal } from "./InsertImageModal";
-import { NoeticBridge, openExternal } from "../services/noeticBridge";
+import { openExternal } from "../services/noeticBridge";
+import { altTextFor, imageFromDataTransfer, saveImageToAssets } from "../utils/imageUpload";
 import { VaultEntry } from "../types/noetic";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
@@ -251,27 +252,18 @@ export const Editor: FC<EditorProps> = ({
     [filePath, onDebouncedSave]
   );
 
+  // Paths already in the notes folder, read when an image is saved so its name is never reused.
+  const vaultFilesRef = useRef(vaultFiles);
+  vaultFilesRef.current = vaultFiles;
+
+  /** Saves a pasted or dropped image into the assets folder and inserts it at the cursor. */
   const saveAndInsertFile = useCallback(
     async (file: File) => {
       try {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const base64 = e.target?.result as string;
-          const arrayBuffer = await file.arrayBuffer();
-          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const relPath = `assets/${safeName}`;
-          if (vaultPath) {
-            await NoeticBridge.saveImageFile(
-              vaultPath,
-              relPath,
-              base64,
-              new Uint8Array(arrayBuffer)
-            );
-            if (onRefreshFiles) await onRefreshFiles();
-          }
-          handleInsertImage(relPath, file.name.replace(/\.[^/.]+$/, ""));
-        };
-        reader.readAsDataURL(file);
+        if (!vaultPath) return;
+        const relPath = await saveImageToAssets(vaultPath, file, (vaultFilesRef.current ?? []).map((f) => f.path));
+        if (onRefreshFiles) await onRefreshFiles();
+        handleInsertImage(relPath, altTextFor(file));
       } catch (err) {
         console.error("Failed to save and insert image:", err);
       }
@@ -560,21 +552,25 @@ export const Editor: FC<EditorProps> = ({
             }
             return false;
           },
+          // Pasting an image (Ctrl/Cmd+V, or Paste from the phone's text menu) saves it with the
+          // note's other images and inserts it.
           paste(event) {
-            const items = event.clipboardData?.items;
-            if (items) {
-              for (const item of Array.from(items)) {
-                if (item.type.startsWith("image/")) {
-                  const file = item.getAsFile();
-                  if (file) {
-                    event.preventDefault();
-                    saveAndInsertFileRef.current(file);
-                    return true;
-                  }
-                }
-              }
-            }
-            return false;
+            const file = imageFromDataTransfer(event.clipboardData);
+            if (!file) return false;
+            event.preventDefault();
+            saveAndInsertFileRef.current(file);
+            return true;
+          },
+          // Phone keyboards (e.g. Gboard's clipboard strip) insert images as an input event
+          // rather than a paste.
+          beforeinput(event) {
+            const e = event as InputEvent;
+            if (!e.inputType?.startsWith("insertFrom") && e.inputType !== "insertReplacementText") return false;
+            const file = imageFromDataTransfer(e.dataTransfer);
+            if (!file) return false;
+            event.preventDefault();
+            saveAndInsertFileRef.current(file);
+            return true;
           },
           drop(event) {
             const files = event.dataTransfer?.files;

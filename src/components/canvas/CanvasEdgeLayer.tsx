@@ -152,18 +152,19 @@ export const CanvasEdgeLayer: FC<CanvasEdgeLayerProps> = ({
               className="transition-colors pointer-events-none"
             />
 
-            {/* Edge Label / Midpoint Interactive Badge */}
+            {/* Midpoint: the label, and once the line is selected (one click or tap on it), an
+                "x" button that removes the connection. */}
             {(edge.label || isSelected) && (
               <foreignObject
-                x={curve.midpoint.x - 75}
-                y={curve.midpoint.y - 16}
-                width={150}
-                height={32}
-                className="overflow-visible pointer-events-auto"
+                x={curve.midpoint.x - 120}
+                y={curve.midpoint.y - 20}
+                width={240}
+                height={40}
+                className="overflow-visible pointer-events-none"
               >
-                <div className="flex items-center justify-center w-full h-full">
+                <div data-canvas-ui className="flex items-center justify-center gap-1.5 w-full h-full">
                   {editingLabelEdgeId === edge.id ? (
-                    <div className="flex items-center gap-1 bg-[#161b22] border border-sky-400 rounded-full px-2 py-0.5 shadow-lg">
+                    <div className="pointer-events-auto flex items-center gap-1 bg-[#161b22] border border-sky-400 rounded-full px-2 py-0.5 shadow-lg">
                       <input
                         type="text"
                         autoFocus
@@ -186,37 +187,43 @@ export const CanvasEdgeLayer: FC<CanvasEdgeLayerProps> = ({
                       </button>
                     </div>
                   ) : (
-                    <div
+                    (edge.label || isSelected) && (
+                      <div
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectEdge(e, edge.id);
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          handleStartEditLabel(edge);
+                        }}
+                        title="Double-click to edit the label"
+                        className={`pointer-events-auto px-2.5 py-0.5 rounded-full text-[11px] font-medium border shadow-md cursor-pointer backdrop-blur-sm transition-all ${
+                          isSelected
+                            ? "bg-sky-950/90 text-sky-300 border-sky-500/60 shadow-[0_0_10px_rgba(56,189,248,0.4)]"
+                            : "bg-[#161b22]/90 text-zinc-300 border-[#30363d] hover:border-zinc-500 hover:text-white"
+                        }`}
+                      >
+                        <span className="block truncate max-w-[110px]">
+                          {(edge.label && stripMarkdownMarkers(edge.label)) || "Add label..."}
+                        </span>
+                      </div>
+                    )
+                  )}
+                  {isSelected && editingLabelEdgeId !== edge.id && (
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSelectEdge(e, edge.id);
+                        onDeleteEdge(edge.id);
                       }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        handleStartEditLabel(edge);
-                      }}
-                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border shadow-md flex items-center gap-1.5 cursor-pointer backdrop-blur-sm transition-all ${
-                        isSelected
-                          ? "bg-sky-950/90 text-sky-300 border-sky-500/60 shadow-[0_0_10px_rgba(56,189,248,0.4)]"
-                          : "bg-[#161b22]/90 text-zinc-300 border-[#30363d] hover:border-zinc-500 hover:text-white"
-                      }`}
+                      title="Remove connection"
+                      aria-label="Remove connection"
+                      className="pointer-events-auto w-8 h-8 shrink-0 rounded-full flex items-center justify-center bg-[#161b22] border border-red-500/60 text-red-400 shadow-lg shadow-black/40 hover:bg-red-500 hover:text-white active:bg-red-500 active:text-white transition-colors cursor-pointer"
                     >
-                      <span className="truncate max-w-[100px]">
-                        {(edge.label && stripMarkdownMarkers(edge.label)) || "Add label..."}
-                      </span>
-                      {isSelected && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteEdge(edge.id);
-                          }}
-                          title="Delete edge"
-                          className="hover:text-red-400 text-zinc-400 ml-0.5"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      )}
-                    </div>
+                      <X className="w-4 h-4" strokeWidth={2.5} />
+                    </button>
                   )}
                 </div>
               </foreignObject>

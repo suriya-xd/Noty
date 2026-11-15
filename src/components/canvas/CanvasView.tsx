@@ -47,6 +47,7 @@ import { CanvasToolbar } from "./CanvasToolbar";
 import { CanvasContextMenu, ContextMenuState } from "./CanvasContextMenu";
 import { CanvasAddNoteModal } from "./CanvasAddNoteModal";
 import { InsertImageModal } from "../InsertImageModal";
+import { imageFromDataTransfer, saveImageToAssets } from "../../utils/imageUpload";
 import { NoeticBridge } from "../../services/noeticBridge";
 import { VaultEntry } from "../../types/noetic";
 
@@ -1068,6 +1069,40 @@ export const CanvasView: FC<CanvasViewProps> = ({
     setSelectedNodeIds(new Set([id]));
   };
 
+  /** Saves an image (dropped or pasted) with the notes and adds it to the canvas at `pos`. */
+  const addImageFile = async (file: File, pos: Point) => {
+    try {
+      const relPath = await saveImageToAssets(vaultPath, file, vaultFiles.map((f) => f.path));
+      if (onRefreshFiles) await onRefreshFiles();
+      addNodeAtPosition("file", pos, { file: relPath, width: 360, height: 260 });
+    } catch (err) {
+      console.error("Failed to add image to canvas:", err);
+    }
+  };
+
+  // Pasting an image (Ctrl/Cmd+V) puts it in the middle of the view. Pastes into a text field
+  // (e.g. a card being edited) and into the image dialog are left to those.
+  const pasteImageRef = useRef<(file: File) => void>(() => {});
+  pasteImageRef.current = (file: File) => {
+    const center = screenToWorld({ x: viewportSize.width / 2, y: viewportSize.height / 2 }, viewport);
+    void addImageFile(file, { x: center.x - 180, y: center.y - 130 });
+  };
+  const imageDialogOpenRef = useRef(false);
+  imageDialogOpenRef.current = isAddImageModalOpen;
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (e.defaultPrevented || imageDialogOpenRef.current) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.isContentEditable || el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+      const file = imageFromDataTransfer(e.clipboardData);
+      if (!file) return;
+      e.preventDefault();
+      pasteImageRef.current(file);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, []);
+
   /**
    * Creates a new note in the vault and places it on the canvas. A bare name goes next to the
    * canvas file; a name with a "/" is a vault path. Throws (with a readable message) on failure.
@@ -1121,20 +1156,9 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     // If an image file is dragged and dropped from OS/desktop
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith("image/"));
+      const file = imageFromDataTransfer(e.dataTransfer);
       if (file) {
-        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const relPath = `assets/${safeName}`;
-        file.arrayBuffer().then((buf) => {
-          const reader = new FileReader();
-          reader.onload = async (ev) => {
-            const base64 = ev.target?.result as string;
-            await NoeticBridge.saveImageFile(vaultPath, relPath, base64, new Uint8Array(buf));
-            if (onRefreshFiles) await onRefreshFiles();
-            addNodeAtPosition("file", worldPt, { file: relPath, width: 360, height: 260 });
-          };
-          reader.readAsDataURL(file);
-        });
+        void addImageFile(file, worldPt);
         return;
       }
     }

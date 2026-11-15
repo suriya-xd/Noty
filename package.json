@@ -22,6 +22,7 @@
     "test:lists": "npx tsx ./scripts/test-list-numbering.ts",
     "test:links": "npx tsx ./scripts/test-links.ts",
     "test:tree": "npx tsx ./scripts/test-tree-drop.ts",
+    "test:images": "npx tsx ./scripts/test-image-upload.ts",
     "test:auth": "npx tsx ./scripts/test-device-flow.ts",
     "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"
   },
