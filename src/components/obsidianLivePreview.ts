@@ -10,6 +10,7 @@ import {
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 import { resolveImageUrl } from "../services/noeticBridge";
 import { findLinksInLine } from "./editorCommands";
+import { isTableLine } from "./markdownTables";
 
 export interface LivePreviewConfig {
   vaultPath: string;
@@ -578,6 +579,12 @@ function buildLivePreviewDecorations(view: EditorView): DecorationSet {
 
       if (insideCodeBlock) {
         builder.add(line.from, line.from, codeBlockLine);
+        pos = line.to + 1;
+        continue;
+      }
+
+      // Tables are drawn by markdownTables.ts; their source is left as typed.
+      if (isTableLine(view.state, line.number)) {
         pos = line.to + 1;
         continue;
       }

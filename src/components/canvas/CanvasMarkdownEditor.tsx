@@ -5,6 +5,7 @@ import { EditorView, keymap, placeholder as placeholderExt } from "@codemirror/v
 import { nativeTyping } from "../nativeTyping";
 import { orderedListRenumbering } from "../listNumbering";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { markdownTables } from "../markdownTables";
 import { markdown } from "@codemirror/lang-markdown";
 import {
   obsidianLivePreviewPlugin,
@@ -80,6 +81,7 @@ export const CanvasMarkdownEditor: FC<CanvasMarkdownEditorProps> = ({
           livePreviewConfigFacet.of({ vaultPath, alwaysHideMarkers: true }),
           obsidianLivePreviewPlugin,
           obsidianTheme,
+          markdownTables(),
           canvasCardTheme,
           placeholderExt("Type here… (# heading, **bold**, *italic*, - list)"),
           EditorView.lineWrapping,

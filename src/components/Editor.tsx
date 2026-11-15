@@ -9,6 +9,7 @@ import {
 import { nativeTyping } from "./nativeTyping";
 import { orderedListRenumbering } from "./listNumbering";
 import { defaultKeymap } from "@codemirror/commands";
+import { markdownTables } from "./markdownTables";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -483,6 +484,7 @@ export const Editor: FC<EditorProps> = ({
         }),
         obsidianLivePreviewPlugin,
         obsidianTheme,
+        markdownTables(),
         blockDragHandle(),
         inlineTitle({
           getTitle: () => (openedName === null ? null : baseNameOf(latestPathRef.current ?? "")),

@@ -20,6 +20,7 @@
     "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts",
     "test:blocks": "npx tsx ./scripts/test-block-move.ts",
     "test:lists": "npx tsx ./scripts/test-list-numbering.ts",
+    "test:tables": "npx tsx ./scripts/test-tables.ts",
     "test:links": "npx tsx ./scripts/test-links.ts",
     "test:tree": "npx tsx ./scripts/test-tree-drop.ts",
     "test:images": "npx tsx ./scripts/test-image-upload.ts",
