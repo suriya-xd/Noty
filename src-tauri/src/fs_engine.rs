@@ -1,6 +1,64 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 use crate::models::{VaultEntry, VaultInfo};
+
+const OUTSIDE_VAULT: &str = "That path is outside your notes folder.";
+
+/// True for a name git treats as its own folder. The comparison is loose on purpose: Windows and
+/// macOS ignore case, and Windows also ignores trailing dots and spaces and knows the folder by
+/// its short name.
+fn is_git_dir_name(name: &str) -> bool {
+    let trimmed = name.trim_end_matches(['.', ' ']);
+    trimmed.eq_ignore_ascii_case(".git") || trimmed.eq_ignore_ascii_case("git~1")
+}
+
+/// Turns a path the page sent (relative to the notes folder) into a path on disk, refusing
+/// anything that would land outside the folder or inside its `.git` folder.
+///
+/// The page is the only caller of the file commands, and it shows notes that arrive from other
+/// devices. If a note ever managed to run script in it, these commands are what that script could
+/// reach, so they are limited to the notes themselves: no `..`, no absolute paths, no following a
+/// link out of the folder, and no `.git` (which holds the saved sign-in).
+pub fn resolve_in_vault(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let mut clean = PathBuf::new();
+    for part in Path::new(rel).components() {
+        match part {
+            Component::Normal(name) => {
+                if is_git_dir_name(&name.to_string_lossy()) {
+                    return Err(OUTSIDE_VAULT.to_string());
+                }
+                clean.push(name);
+            }
+            Component::CurDir => {}
+            _ => return Err(OUTSIDE_VAULT.to_string()),
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return Err(OUTSIDE_VAULT.to_string());
+    }
+    let full = root.join(&clean);
+
+    // A link inside the folder can point anywhere. Resolve the part of the path that exists
+    // already and make sure it is still under the folder.
+    let real_root = root.canonicalize().map_err(|e| format!("Failed to open the notes folder: {}", e))?;
+    let mut existing = full.as_path();
+    while existing.symlink_metadata().is_err() {
+        existing = existing.parent().ok_or_else(|| OUTSIDE_VAULT.to_string())?;
+    }
+    let real = existing.canonicalize().map_err(|_| OUTSIDE_VAULT.to_string())?;
+    if !real.starts_with(&real_root) {
+        return Err(OUTSIDE_VAULT.to_string());
+    }
+    Ok(full)
+}
+
+/// The same check for a full path (the page builds these as `<notes folder>/<relative path>`).
+pub fn resolve_full_in_vault(root: &Path, full_path: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(full_path)
+        .strip_prefix(root)
+        .map_err(|_| OUTSIDE_VAULT.to_string())?;
+    resolve_in_vault(root, &rel.to_string_lossy())
+}
 
 pub fn list_vault_files(vault_path: &str) -> Result<Vec<VaultEntry>, String> {
     let root = Path::new(vault_path);
@@ -58,12 +116,13 @@ pub fn list_vault_files(vault_path: &str) -> Result<Vec<VaultEntry>, String> {
     Ok(entries)
 }
 
-pub fn read_file_content(full_path: &str) -> Result<String, String> {
-    std::fs::read_to_string(full_path).map_err(|e| format!("Failed to read file: {}", e))
+pub fn read_file_content(vault_path: &str, full_path: &str) -> Result<String, String> {
+    let path = resolve_full_in_vault(Path::new(vault_path), full_path)?;
+    std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
-pub fn write_file_content(full_path: &str, content: &str) -> Result<(), String> {
-    let path = Path::new(full_path);
+pub fn write_file_content(vault_path: &str, full_path: &str, content: &str) -> Result<(), String> {
+    let path = resolve_full_in_vault(Path::new(vault_path), full_path)?;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -71,7 +130,7 @@ pub fn write_file_content(full_path: &str, content: &str) -> Result<(), String> 
 }
 
 pub fn create_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
-    let full_path = Path::new(vault_path).join(rel_path);
+    let full_path = resolve_in_vault(Path::new(vault_path), rel_path)?;
     if full_path.exists() {
         return Err("File already exists".to_string());
     }
@@ -88,7 +147,7 @@ pub fn create_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
 }
 
 pub fn create_folder(vault_path: &str, rel_path: &str) -> Result<(), String> {
-    let full_path = Path::new(vault_path).join(rel_path);
+    let full_path = resolve_in_vault(Path::new(vault_path), rel_path)?;
     if full_path.exists() {
         return Err("Folder already exists".to_string());
     }
@@ -96,7 +155,7 @@ pub fn create_folder(vault_path: &str, rel_path: &str) -> Result<(), String> {
 }
 
 pub fn delete_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
-    let full_path = Path::new(vault_path).join(rel_path);
+    let full_path = resolve_in_vault(Path::new(vault_path), rel_path)?;
     if !full_path.exists() {
         return Err("File does not exist".to_string());
     }
@@ -108,8 +167,8 @@ pub fn delete_file(vault_path: &str, rel_path: &str) -> Result<(), String> {
 }
 
 pub fn rename_file(vault_path: &str, old_path: &str, new_path: &str) -> Result<(), String> {
-    let old_full = Path::new(vault_path).join(old_path);
-    let new_full = Path::new(vault_path).join(new_path);
+    let old_full = resolve_in_vault(Path::new(vault_path), old_path)?;
+    let new_full = resolve_in_vault(Path::new(vault_path), new_path)?;
     if !old_full.exists() {
         return Err("Source file does not exist".to_string());
     }
@@ -160,11 +219,70 @@ pub fn init_or_open_vault(vault_path_opt: Option<String>) -> Result<VaultInfo, S
     })
 }
 
-pub fn save_image_file(vault_path: &str, rel_path: &str, data: Vec<u8>) -> Result<(), String> {
-    let full_path = Path::new(vault_path).join(rel_path);
+/// Saves an image sent as base64, with or without a `data:<type>;base64,` prefix.
+pub fn save_image_file(vault_path: &str, rel_path: &str, data_base64: &str) -> Result<(), String> {
+    use base64::Engine;
+    let encoded = data_base64.rsplit_once(',').map_or(data_base64, |(_, body)| body);
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|e| format!("Failed to read the image: {}", e))?;
+    let full_path = resolve_in_vault(Path::new(vault_path), rel_path)?;
     if let Some(parent) = full_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     std::fs::write(&full_path, data).map_err(|e| format!("Failed to save image file: {}", e))
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_vault(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("noetic-test-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn paths_inside_the_folder_are_allowed() {
+        let root = temp_vault("inside");
+        assert_eq!(resolve_in_vault(&root, "notes/a.md").unwrap(), root.join("notes/a.md"));
+        assert_eq!(resolve_in_vault(&root, "./new folder/deep/b.md").unwrap(), root.join("new folder/deep/b.md"));
+        let full = format!("{}/notes/a.md", root.display());
+        assert_eq!(resolve_full_in_vault(&root, &full).unwrap(), root.join("notes/a.md"));
+    }
+
+    #[test]
+    fn paths_outside_the_folder_are_refused() {
+        let root = temp_vault("outside");
+        for bad in ["", ".", "../x.md", "notes/../../x.md", "/etc/passwd", ".git/config", "notes/.GIT/x", ".git./config"] {
+            assert!(resolve_in_vault(&root, bad).is_err(), "{:?} should be refused", bad);
+        }
+        assert!(resolve_full_in_vault(&root, "/etc/passwd").is_err());
+        assert!(resolve_full_in_vault(&root, &format!("{}/../x", root.display())).is_err());
+        assert!(resolve_full_in_vault(&root, &root.to_string_lossy()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_folder_are_refused() {
+        let root = temp_vault("links");
+        let elsewhere = temp_vault("links-target");
+        std::os::unix::fs::symlink(&elsewhere, root.join("out")).unwrap();
+        assert!(resolve_in_vault(&root, "out/secret.md").is_err());
+        assert!(resolve_in_vault(&root, "out").is_err());
+    }
+
+    #[test]
+    fn images_are_decoded_from_data_urls() {
+        let root = temp_vault("images");
+        let vault = root.to_string_lossy().to_string();
+        save_image_file(&vault, "assets/a.bin", "data:image/png;base64,aGVsbG8=").unwrap();
+        assert_eq!(std::fs::read(root.join("assets/a.bin")).unwrap(), b"hello");
+        save_image_file(&vault, "assets/b.bin", "aGVsbG8=").unwrap();
+        assert_eq!(std::fs::read(root.join("assets/b.bin")).unwrap(), b"hello");
+        assert!(save_image_file(&vault, "../escape.bin", "aGVsbG8=").is_err());
+    }
+}

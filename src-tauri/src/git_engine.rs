@@ -1,7 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use git2::{BranchType, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
-use similar::{ChangeTag, TextDiff};
 
 use crate::models::{
     ConflictFile, ConflictHunk, ConflictResolution, FileStatus, RepoStatusPayload, SyncResult, SyncState,
@@ -478,7 +477,7 @@ pub fn resolve_conflicts(
     }
 
     for res in resolutions {
-        let full_path = Path::new(repo_path).join(&res.path);
+        let full_path = crate::fs_engine::resolve_in_vault(Path::new(repo_path), &res.path)?;
         if let Some(content) = res.custom_content {
             if let Some(parent) = full_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -499,56 +498,33 @@ enum LineMergeResult {
     Conflicted(ConflictFile),
 }
 
-/// Compute line-level 3-way merge using diff against base
+/// Combines the three versions of a note when only one side changed it. When both sides changed
+/// it (differently), the whole note is handed to the conflict resolver as one hunk.
 fn compute_3way_line_merge(
     base: &str,
     local: &str,
     remote: &str,
     path: &str,
 ) -> LineMergeResult {
-    // If local equals remote, trivial clean
-    if local == remote {
+    if local == remote || remote == base {
         return LineMergeResult::Clean(local.to_string());
     }
-    // If local unchanged from base, take remote
     if local == base {
         return LineMergeResult::Clean(remote.to_string());
     }
-    // If remote unchanged from base, take local
-    if remote == base {
-        return LineMergeResult::Clean(local.to_string());
-    }
 
-    let diff_local = TextDiff::from_lines(base, local);
-    let diff_remote = TextDiff::from_lines(base, remote);
-
-    let has_local_changes = diff_local.iter_all_changes().any(|c| c.tag() != ChangeTag::Equal);
-    let has_remote_changes = diff_remote.iter_all_changes().any(|c| c.tag() != ChangeTag::Equal);
-
-    // If both touched the file, analyze conflict hunks
-    if has_local_changes && has_remote_changes {
-        let mut hunks = Vec::new();
-        let hunk_id = format!("hunk_{}", path.replace(['/', '\\', '.'], "_"));
-
-        hunks.push(ConflictHunk {
-            id: hunk_id,
+    LineMergeResult::Conflicted(ConflictFile {
+        path: path.to_string(),
+        base_content: base.to_string(),
+        local_content: local.to_string(),
+        remote_content: remote.to_string(),
+        hunks: vec![ConflictHunk {
+            id: format!("hunk_{}", path.replace(['/', '\\', '.'], "_")),
             base_lines: base.to_string(),
             local_lines: local.to_string(),
             remote_lines: remote.to_string(),
-        });
-
-        LineMergeResult::Conflicted(ConflictFile {
-            path: path.to_string(),
-            base_content: base.to_string(),
-            local_content: local.to_string(),
-            remote_content: remote.to_string(),
-            hunks,
-        })
-    } else if has_local_changes {
-        LineMergeResult::Clean(local.to_string())
-    } else {
-        LineMergeResult::Clean(remote.to_string())
-    }
+        }],
+    })
 }
 
 fn fast_forward_to_commit(repo: &Repository, branch_name: &str, target_oid: git2::Oid) -> Result<(), String> {

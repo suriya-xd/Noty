@@ -44,7 +44,7 @@ import { RepoStatusPayload, VaultEntry } from "../../types/noetic";
 import { assetFiles, withoutAssets } from "../../utils/assets";
 import { Editor, FORMAT_BUTTONS } from "../Editor";
 import type { EditorHandle, RenameHandler } from "../Editor";
-import { CanvasView } from "../canvas/CanvasView";
+import { CanvasView } from "../canvas/LazyCanvasView";
 import { GitHubService } from "../../services/githubService";
 import { backlinksGraph } from "../../utils/wikilinks/backlinksGraph";
 import {

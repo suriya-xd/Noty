@@ -140,8 +140,8 @@ export async function saveImageToAssets(
   existingPaths: Iterable<string>
 ): Promise<string> {
   const relPath = assetPathFor(file, existingPaths);
-  const [dataUrl, buffer] = await Promise.all([readAsDataUrl(file), file.arrayBuffer()]);
-  await NoeticBridge.saveImageFile(vaultPath, relPath, dataUrl, new Uint8Array(buffer));
+  // Sent once, as base64: a list of byte values is several times larger to build and to parse.
+  await NoeticBridge.saveImageFile(vaultPath, relPath, await readAsDataUrl(file));
   return relPath;
 }
 

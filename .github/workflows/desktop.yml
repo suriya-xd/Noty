@@ -11,6 +11,10 @@ on:
       - master
   workflow_dispatch:
 
+# The builds only read the repository.
+permissions:
+  contents: read
+
 jobs:
   build-desktop:
     strategy:
@@ -70,10 +74,7 @@ jobs:
             librsvg2-dev
 
       - name: Install frontend dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: Build frontend bundle
-        run: npm run build
+        run: npm ci --legacy-peer-deps
 
       - name: Build Desktop application with Tauri
         run: npx tauri build ${{ matrix.args }}

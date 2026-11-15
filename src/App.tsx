@@ -1,20 +1,7 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { TopBar } from "./components/TopBar";
-import { Sidebar } from "./components/Sidebar";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Editor } from "./components/Editor";
 import type { OpenFileOptions } from "./components/Editor";
-import { NoteTabs } from "./components/NoteTabs";
-import { CanvasView } from "./components/canvas/CanvasView";
-import { Dashboard } from "./components/Dashboard";
-import { ConflictResolverModal } from "./components/ConflictResolverModal";
-import { OnboardingModal } from "./components/OnboardingModal";
-import { AccountSettingsModal } from "./components/AccountSettingsModal";
-import { WorkspaceModal } from "./components/WorkspaceModal";
-import { ImagePreviewModal } from "./components/ImagePreviewModal";
-import { AssetsModal } from "./components/AssetsModal";
-import { MobileShell } from "./components/mobile/MobileShell";
-import { MobileConflictView } from "./components/mobile/MobileConflictView";
-import { MobileOnboardingView } from "./components/mobile/MobileOnboardingView";
+import { CanvasView } from "./components/canvas/LazyCanvasView";
 import { NoeticBridge } from "./services/noeticBridge";
 import { GitHubService } from "./services/githubService";
 import {
@@ -27,6 +14,39 @@ import { vaultIndex } from "./utils/wikilinks/vaultIndex";
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
 import { isAssetPath, withoutAssets } from "./utils/assets";
+
+// Only what every start needs is in the first script. A device uses one of the two layouts, and
+// the dialogs are fetched the first time each is opened (see `useOpenedOnce`).
+const TopBar = lazy(() => import("./components/TopBar").then((m) => ({ default: m.TopBar })));
+const Sidebar = lazy(() => import("./components/Sidebar").then((m) => ({ default: m.Sidebar })));
+const NoteTabs = lazy(() => import("./components/NoteTabs").then((m) => ({ default: m.NoteTabs })));
+const Dashboard = lazy(() => import("./components/Dashboard").then((m) => ({ default: m.Dashboard })));
+const ConflictResolverModal = lazy(() =>
+  import("./components/ConflictResolverModal").then((m) => ({ default: m.ConflictResolverModal }))
+);
+const OnboardingModal = lazy(() => import("./components/OnboardingModal").then((m) => ({ default: m.OnboardingModal })));
+const AccountSettingsModal = lazy(() =>
+  import("./components/AccountSettingsModal").then((m) => ({ default: m.AccountSettingsModal }))
+);
+const WorkspaceModal = lazy(() => import("./components/WorkspaceModal").then((m) => ({ default: m.WorkspaceModal })));
+const ImagePreviewModal = lazy(() =>
+  import("./components/ImagePreviewModal").then((m) => ({ default: m.ImagePreviewModal }))
+);
+const AssetsModal = lazy(() => import("./components/AssetsModal").then((m) => ({ default: m.AssetsModal })));
+const MobileShell = lazy(() => import("./components/mobile/MobileShell").then((m) => ({ default: m.MobileShell })));
+const MobileConflictView = lazy(() =>
+  import("./components/mobile/MobileConflictView").then((m) => ({ default: m.MobileConflictView }))
+);
+const MobileOnboardingView = lazy(() =>
+  import("./components/mobile/MobileOnboardingView").then((m) => ({ default: m.MobileOnboardingView }))
+);
+
+/** False until `isOpen` is first true, then true for good: a dialog stays mounted once it has been used. */
+function useOpenedOnce(isOpen: boolean): boolean {
+  const opened = useRef(false);
+  if (isOpen) opened.current = true;
+  return opened.current;
+}
 
 export default function App() {
   const [vaultPath, setVaultPath] = useState<string>("/vault");
@@ -44,6 +64,8 @@ export default function App() {
   activeFilePathRef.current = activeFilePath;
   const filesRef = useRef<VaultEntry[]>([]);
   filesRef.current = files;
+  /** What each note looked like on disk when its links were last read: `<path>` to `<modified>:<size>`. */
+  const indexedNotesRef = useRef<Map<string, string>>(new Map());
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
 
@@ -100,14 +122,26 @@ export default function App() {
       // Re-index vault files in memory
       vaultIndex.reindex(list.map((f) => f.path));
 
-      // Asynchronously populate backlinks graph for all markdown & canvas files
+      // Keep the backlinks graph in step with the folder. Only notes that changed on disk since
+      // they were last read are read again, so a refresh after one edit doesn't re-read them all.
+      const indexed = indexedNotesRef.current;
+      const seen = new Set<string>();
       list.forEach((entry) => {
-        if (!entry.is_directory && (entry.path.endsWith(".md") || entry.path.endsWith(".canvas"))) {
-          NoeticBridge.readFileContent(`${path}/${entry.path}`)
-            .then((content) => backlinksGraph.updateFileLinks(entry.path, content))
-            .catch(() => {});
-        }
+        if (entry.is_directory || !(entry.path.endsWith(".md") || entry.path.endsWith(".canvas"))) return;
+        seen.add(entry.path);
+        const stamp = `${path}:${entry.modified_ms}:${entry.size_bytes}`;
+        if (indexed.get(entry.path) === stamp) return;
+        indexed.set(entry.path, stamp);
+        NoeticBridge.readFileContent(`${path}/${entry.path}`)
+          .then((content) => backlinksGraph.updateFileLinks(entry.path, content))
+          .catch(() => {
+            // Not read: try again on the next refresh.
+            if (indexed.get(entry.path) === stamp) indexed.delete(entry.path);
+          });
       });
+      for (const known of indexed.keys()) {
+        if (!seen.has(known)) indexed.delete(known);
+      }
 
       // If currently active file no longer exists or is a directory, reset to dashboard
       // Read through the ref: a rename updates it right away, while this callback's own
@@ -159,12 +193,20 @@ export default function App() {
     initVault();
   }, []);
 
-  // Periodic background fetch (every 12 seconds)
+  // Periodic status check (every 12 seconds) while the app is on screen; it catches up as soon as
+  // the app is shown again.
   useEffect(() => {
     const interval = setInterval(() => {
-      refreshStatus();
+      if (!document.hidden) refreshStatus();
     }, 12000);
-    return () => clearInterval(interval);
+    const onVisible = () => {
+      if (!document.hidden) refreshStatus();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshStatus]);
 
   // 4. File selection and reading
@@ -491,205 +533,246 @@ export default function App() {
     await refreshStatus();
   };
 
+  const conflictsOpened = useOpenedOnce(isConflictModalOpen);
+  const onboardingOpened = useOpenedOnce(isOnboardingOpen);
+  const accountSettingsOpened = useOpenedOnce(isAccountSettingsOpen);
+  const assetsOpened = useOpenedOnce(isAssetsOpen);
+  const workspaceOpened = useOpenedOnce(isWorkspaceOpen);
+  const previewOpened = useOpenedOnce(!!previewImage);
+
   return (
     <div className="flex flex-col h-app w-screen overflow-hidden bg-[#0d1117] text-white select-none">
-      {isMobile ? (
-        // ================= ANDROID MOBILE LAYOUT (STITCH REDESIGN) =================
-        <>
-          <MobileShell
-            vaultPath={vaultPath}
-            files={files}
-            status={status}
-            activeFilePath={activeFilePath}
-            activeFileContent={activeFileContent}
-            isLoading={isLoading}
-            onSelectFile={handleSelectFile}
-            onDebouncedSave={handleDebouncedSave}
-            onCreateFile={handleCreateFile}
-            onCreateFolder={handleCreateFolder}
-            onDeleteFile={handleDeleteFile}
-            onRenameFile={handleRenameFile}
-            onSave={handleSaveAndPush}
-            onSync={handleSyncAndPull}
-            onFetch={handleFetchRemote}
-            onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
-            onOpenOnboarding={() => setIsOnboardingOpen(true)}
-            onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
-            onOpenAssets={() => setIsAssetsOpen(true)}
-            onSimulateState={handleSimulateState}
-            onRefreshFiles={async () => {
-              await refreshFiles(vaultPath);
-            }}
-            onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
-          />
-
-
-          {/* Android Conflict Resolution View */}
-          <MobileConflictView
-            conflicts={conflictedFiles}
-            isOpen={isConflictModalOpen}
-            onClose={() => setIsConflictModalOpen(false)}
-            onApplyResolutions={handleApplyResolutions}
-          />
-
-          {/* Android sign-in */}
-          <MobileOnboardingView
-            isOpen={isOnboardingOpen}
-            onAuthenticated={handleSignedIn}
-            onCancel={() => setIsOnboardingOpen(false)}
-          />
-        </>
-      ) : (
-        // ================= DESKTOP WORKSPACE LAYOUT =================
-        <>
-          {/* Top Bar with live sync status and Save/Sync actions */}
-          <TopBar
-            status={status}
-            isLoading={isLoading}
-            onSave={handleSaveAndPush}
-            onSync={handleSyncAndPull}
-            onFetch={handleFetchRemote}
-            onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
-            onOpenOnboarding={() => setIsOnboardingOpen(true)}
-            onSimulateState={handleSimulateState}
-            onGoToDashboard={() => {
-              setActiveFilePath(null);
-              setActiveFileContent("");
-            }}
-          />
-
-          {/* Main Workspace (Sidebar + CodeMirror Editor / Dashboard) */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* Sidebar file tree with sync status badges */}
-            <Sidebar
+      <Suspense fallback={null}>
+        {isMobile ? (
+          // ================= ANDROID MOBILE LAYOUT (STITCH REDESIGN) =================
+          <>
+            <MobileShell
               vaultPath={vaultPath}
               files={files}
-              fileStatuses={status?.files || []}
+              status={status}
               activeFilePath={activeFilePath}
+              activeFileContent={activeFileContent}
+              isLoading={isLoading}
               onSelectFile={handleSelectFile}
+              onDebouncedSave={handleDebouncedSave}
               onCreateFile={handleCreateFile}
               onCreateFolder={handleCreateFolder}
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
-              onOpenSettings={() => setIsAccountSettingsOpen(true)}
-              isConnected={!!status?.remote_url}
+              onSave={handleSaveAndPush}
+              onSync={handleSyncAndPull}
+              onFetch={handleFetchRemote}
+              onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
+              onOpenOnboarding={() => setIsOnboardingOpen(true)}
+              onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+              onOpenAssets={() => setIsAssetsOpen(true)}
+              onSimulateState={handleSimulateState}
+              onRefreshFiles={async () => {
+                await refreshFiles(vaultPath);
+              }}
+              onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
             />
 
-            {/* CodeMirror 6 Markdown Editor OR Dashboard when no note is opened */}
-            <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
-              <NoteTabs
-                tabs={openTabs}
-                activePath={activeFilePath}
-                onSelect={(path) => handleSelectFile(path)}
-                onClose={handleCloseTab}
-              />
-              {activeFilePath ? (
-                activeFilePath.endsWith(".canvas") ? (
-                  <CanvasView
-                    key={activeFilePath}
-                    filePath={activeFilePath}
-                    initialContent={activeFileContent}
-                    vaultPath={vaultPath}
-                    vaultFiles={files}
-                    onDebouncedSave={handleDebouncedSave}
-                    onOpenFile={handleSelectFile}
-                    onRefreshFiles={async () => {
-                      await refreshFiles(vaultPath);
-                    }}
-                    onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
-                    onClose={() => {
-                      setActiveFilePath(null);
-                      setActiveFileContent("");
-                    }}
-                  />
-                ) : (
-                  <Editor
-                    filePath={activeFilePath}
-                    initialContent={activeFileContent}
-                    onDebouncedSave={handleDebouncedSave}
-                    onRenameFile={handleRenameFile}
-                    onOpenFile={handleSelectFile}
-                    onCreateFile={handleCreateFile}
-                    vaultPath={vaultPath}
-                    vaultFiles={files}
-                    onRefreshFiles={async () => {
-                      await refreshFiles(vaultPath);
-                    }}
-                    onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
-                    onClose={() => {
-                      setActiveFilePath(null);
-                      setActiveFileContent("");
-                    }}
-                    debounceMs={500}
-                  />
-                )
-              ) : (
-                <Dashboard
-                  vaultPath={vaultPath}
-                  files={notesOnly}
-                  fileStatuses={status?.files || []}
-                  onSelectFile={handleSelectFile}
-                  onCreateFile={handleCreateFile}
-                  onCreateFolder={handleCreateFolder}
-                  status={status}
+
+            {/* Android Conflict Resolution View */}
+            {conflictsOpened ? (
+              <Suspense fallback={null}>
+                <MobileConflictView
+                  conflicts={conflictedFiles}
+                  isOpen={isConflictModalOpen}
+                  onClose={() => setIsConflictModalOpen(false)}
+                  onApplyResolutions={handleApplyResolutions}
                 />
-              )}
-            </main>
-          </div>
+              </Suspense>
+            ) : null}
 
-          {/* Visual 3-Way Conflict Resolver Modal */}
-          <ConflictResolverModal
-            conflicts={conflictedFiles}
-            isOpen={isConflictModalOpen}
-            onClose={() => setIsConflictModalOpen(false)}
-            onApplyResolutions={handleApplyResolutions}
-          />
+            {/* Android sign-in */}
+            {onboardingOpened ? (
+              <Suspense fallback={null}>
+                <MobileOnboardingView
+                  isOpen={isOnboardingOpen}
+                  onAuthenticated={handleSignedIn}
+                  onCancel={() => setIsOnboardingOpen(false)}
+                />
+              </Suspense>
+            ) : null}
+          </>
+        ) : (
+          // ================= DESKTOP WORKSPACE LAYOUT =================
+          <>
+            {/* Top Bar with live sync status and Save/Sync actions */}
+            <TopBar
+              status={status}
+              isLoading={isLoading}
+              onSave={handleSaveAndPush}
+              onSync={handleSyncAndPull}
+              onFetch={handleFetchRemote}
+              onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
+              onOpenOnboarding={() => setIsOnboardingOpen(true)}
+              onSimulateState={handleSimulateState}
+              onGoToDashboard={() => {
+                setActiveFilePath(null);
+                setActiveFileContent("");
+              }}
+            />
 
-          {/* Sign-in (desktop) */}
-          <OnboardingModal
-            isOpen={isOnboardingOpen}
-            onAuthenticated={handleSignedIn}
-            onCancel={() => setIsOnboardingOpen(false)}
-          />
-        </>
-      )}
+            {/* Main Workspace (Sidebar + CodeMirror Editor / Dashboard) */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Sidebar file tree with sync status badges */}
+              <Sidebar
+                vaultPath={vaultPath}
+                files={files}
+                fileStatuses={status?.files || []}
+                activeFilePath={activeFilePath}
+                onSelectFile={handleSelectFile}
+                onCreateFile={handleCreateFile}
+                onCreateFolder={handleCreateFolder}
+                onDeleteFile={handleDeleteFile}
+                onRenameFile={handleRenameFile}
+                onOpenSettings={() => setIsAccountSettingsOpen(true)}
+                isConnected={!!status?.remote_url}
+              />
 
-      {/* Shared Modals for both layouts */}
-      <AccountSettingsModal
-        isOpen={isAccountSettingsOpen}
-        onClose={() => setIsAccountSettingsOpen(false)}
-        vaultPath={vaultPath}
-        onAccountChanged={handleAccountChanged}
-        assetCount={files.filter((f) => !f.is_directory && isAssetPath(f.path)).length}
-        onOpenAssets={() => setIsAssetsOpen(true)}
-      />
+              {/* CodeMirror 6 Markdown Editor OR Dashboard when no note is opened */}
+              <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
+                <NoteTabs
+                  tabs={openTabs}
+                  activePath={activeFilePath}
+                  onSelect={(path) => handleSelectFile(path)}
+                  onClose={handleCloseTab}
+                />
+                {activeFilePath ? (
+                  activeFilePath.endsWith(".canvas") ? (
+                    <CanvasView
+                      key={activeFilePath}
+                      filePath={activeFilePath}
+                      initialContent={activeFileContent}
+                      vaultPath={vaultPath}
+                      vaultFiles={files}
+                      onDebouncedSave={handleDebouncedSave}
+                      onOpenFile={handleSelectFile}
+                      onRefreshFiles={async () => {
+                        await refreshFiles(vaultPath);
+                      }}
+                      onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
+                      onClose={() => {
+                        setActiveFilePath(null);
+                        setActiveFileContent("");
+                      }}
+                    />
+                  ) : (
+                    <Editor
+                      filePath={activeFilePath}
+                      initialContent={activeFileContent}
+                      onDebouncedSave={handleDebouncedSave}
+                      onRenameFile={handleRenameFile}
+                      onOpenFile={handleSelectFile}
+                      onCreateFile={handleCreateFile}
+                      vaultPath={vaultPath}
+                      vaultFiles={files}
+                      onRefreshFiles={async () => {
+                        await refreshFiles(vaultPath);
+                      }}
+                      onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
+                      onClose={() => {
+                        setActiveFilePath(null);
+                        setActiveFileContent("");
+                      }}
+                      debounceMs={500}
+                    />
+                  )
+                ) : (
+                  <Dashboard
+                    vaultPath={vaultPath}
+                    files={notesOnly}
+                    fileStatuses={status?.files || []}
+                    onSelectFile={handleSelectFile}
+                    onCreateFile={handleCreateFile}
+                    onCreateFolder={handleCreateFolder}
+                    status={status}
+                  />
+                )}
+              </main>
+            </div>
 
-      {/* Uploaded images (the assets folder), opened from Settings */}
-      <AssetsModal
-        isOpen={isAssetsOpen}
-        onClose={() => setIsAssetsOpen(false)}
-        vaultPath={vaultPath}
-        files={files}
-        onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
-        onDeleteFile={handleDeleteFile}
-      />
+            {/* Visual 3-Way Conflict Resolver Modal */}
+            {conflictsOpened ? (
+              <Suspense fallback={null}>
+                <ConflictResolverModal
+                  conflicts={conflictedFiles}
+                  isOpen={isConflictModalOpen}
+                  onClose={() => setIsConflictModalOpen(false)}
+                  onApplyResolutions={handleApplyResolutions}
+                />
+              </Suspense>
+            ) : null}
 
-      <WorkspaceModal
-        isOpen={isWorkspaceOpen}
-        onClose={() => setIsWorkspaceOpen(false)}
-        vaultPath={vaultPath}
-        isConnected={!!status?.remote_url}
-        onSwitched={handleWorkspaceSwitched}
-      />
+            {/* Sign-in (desktop) */}
+            {onboardingOpened ? (
+              <Suspense fallback={null}>
+                <OnboardingModal
+                  isOpen={isOnboardingOpen}
+                  onAuthenticated={handleSignedIn}
+                  onCancel={() => setIsOnboardingOpen(false)}
+                />
+              </Suspense>
+            ) : null}
+          </>
+        )}
 
-      {/* Lightbox Image Preview Modal */}
-      <ImagePreviewModal
-        isOpen={!!previewImage}
-        src={previewImage?.src || ""}
-        alt={previewImage?.alt}
-        title={previewImage?.title}
-        onClose={() => setPreviewImage(null)}
-      />
+        {/* Shared Modals for both layouts */}
+        {accountSettingsOpened ? (
+          <Suspense fallback={null}>
+            <AccountSettingsModal
+              isOpen={isAccountSettingsOpen}
+              onClose={() => setIsAccountSettingsOpen(false)}
+              vaultPath={vaultPath}
+              onAccountChanged={handleAccountChanged}
+              assetCount={files.filter((f) => !f.is_directory && isAssetPath(f.path)).length}
+              onOpenAssets={() => setIsAssetsOpen(true)}
+            />
+          </Suspense>
+        ) : null}
+
+        {/* Uploaded images (the assets folder), opened from Settings */}
+        {assetsOpened ? (
+          <Suspense fallback={null}>
+            <AssetsModal
+              isOpen={isAssetsOpen}
+              onClose={() => setIsAssetsOpen(false)}
+              vaultPath={vaultPath}
+              files={files}
+              onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
+              onDeleteFile={handleDeleteFile}
+            />
+          </Suspense>
+        ) : null}
+
+        {workspaceOpened ? (
+          <Suspense fallback={null}>
+            <WorkspaceModal
+              isOpen={isWorkspaceOpen}
+              onClose={() => setIsWorkspaceOpen(false)}
+              vaultPath={vaultPath}
+              isConnected={!!status?.remote_url}
+              onSwitched={handleWorkspaceSwitched}
+            />
+          </Suspense>
+        ) : null}
+
+        {/* Lightbox Image Preview Modal */}
+        {previewOpened ? (
+          <Suspense fallback={null}>
+            <ImagePreviewModal
+              isOpen={!!previewImage}
+              src={previewImage?.src || ""}
+              alt={previewImage?.alt}
+              title={previewImage?.title}
+              onClose={() => setPreviewImage(null)}
+            />
+          </Suspense>
+        ) : null}
+      </Suspense>
 
       {/* Toast Notification Pill */}
       {toastMessage && (

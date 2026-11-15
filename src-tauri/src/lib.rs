@@ -12,103 +12,136 @@ use models::{
     ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo, WorkspaceList,
 };
 
-#[tauri::command(rename_all = "snake_case")]
-fn get_repo_status(repo_path: String) -> Result<RepoStatusPayload, String> {
-    git_engine::get_repo_status(&repo_path)
+/// The notes folder this run of the app opened (`init_or_open_vault`). Every command names the
+/// folder it works on; the name has to be this one. The page can't point a command at another
+/// folder, so nothing it does (or is tricked into doing) reaches files outside the notes.
+#[derive(Default)]
+struct OpenVault(std::sync::Mutex<Option<String>>);
+
+type Vault<'a> = tauri::State<'a, OpenVault>;
+
+/// Checks `path` is the open notes folder and hands it back.
+fn opened<'p>(vault: &Vault, path: &'p str) -> Result<&'p str, String> {
+    let open = vault.0.lock().map_err(|_| "The notes folder isn't available.".to_string())?;
+    match open.as_deref() {
+        Some(root) if std::path::Path::new(root) == std::path::Path::new(path) => Ok(path),
+        _ => Err("That isn't the open notes folder.".to_string()),
+    }
+}
+
+/// The open notes folder.
+fn open_vault(vault: &Vault) -> Result<String, String> {
+    vault
+        .0
+        .lock()
+        .ok()
+        .and_then(|open| open.clone())
+        .ok_or_else(|| "The notes folder isn't open yet.".to_string())
+}
+
+// Commands that scan the folder or read whole files are `async` too: they run off the main thread
+// so a large folder can't stall the window. The small writes stay on the main thread, which runs
+// them one at a time in the order the page sent them.
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn get_repo_status(vault: Vault, repo_path: String) -> Result<RepoStatusPayload, String> {
+    git_engine::get_repo_status(opened(&vault, &repo_path)?)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn fetch_remote(repo_path: String) -> Result<RepoStatusPayload, String> {
-    git_engine::fetch_remote(&repo_path)
+fn fetch_remote(vault: Vault, repo_path: String) -> Result<RepoStatusPayload, String> {
+    git_engine::fetch_remote(opened(&vault, &repo_path)?)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn save_and_push(repo_path: String, commit_message: Option<String>) -> Result<RepoStatusPayload, String> {
-    git_engine::save_and_push(&repo_path, commit_message)
+fn save_and_push(vault: Vault, repo_path: String, commit_message: Option<String>) -> Result<RepoStatusPayload, String> {
+    git_engine::save_and_push(opened(&vault, &repo_path)?, commit_message)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn sync_and_pull(repo_path: String) -> Result<SyncResult, String> {
-    git_engine::sync_and_pull(&repo_path)
+fn sync_and_pull(vault: Vault, repo_path: String) -> Result<SyncResult, String> {
+    git_engine::sync_and_pull(opened(&vault, &repo_path)?)
 }
 
-#[tauri::command(rename_all = "snake_case")]
+#[tauri::command(async, rename_all = "snake_case")]
 fn resolve_conflicts(
+    vault: Vault,
     repo_path: String,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<RepoStatusPayload, String> {
-    git_engine::resolve_conflicts(&repo_path, resolutions)
+    git_engine::resolve_conflicts(opened(&vault, &repo_path)?, resolutions)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn get_vault_config(repo_path: String) -> Result<VaultConfig, String> {
-    git_engine::get_vault_config(&repo_path)
+fn get_vault_config(vault: Vault, repo_path: String) -> Result<VaultConfig, String> {
+    git_engine::get_vault_config(opened(&vault, &repo_path)?)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn set_vault_config(repo_path: String, config: VaultConfigInput) -> Result<VaultConfig, String> {
-    git_engine::set_vault_config(&repo_path, config)
+fn set_vault_config(vault: Vault, repo_path: String, config: VaultConfigInput) -> Result<VaultConfig, String> {
+    git_engine::set_vault_config(opened(&vault, &repo_path)?, config)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
 fn connect_vault(
+    vault: Vault,
     vault_path: String,
     remote_url: String,
     github_token: Option<String>,
     user_name: Option<String>,
     user_email: Option<String>,
 ) -> Result<WorkspaceList, String> {
-    git_engine::connect_vault(&vault_path, &remote_url, github_token, user_name, user_email)
+    git_engine::connect_vault(opened(&vault, &vault_path)?, &remote_url, github_token, user_name, user_email)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn list_workspaces(repo_path: String, refresh: Option<bool>) -> Result<WorkspaceList, String> {
-    git_engine::list_workspaces(&repo_path, refresh.unwrap_or(false))
+fn list_workspaces(vault: Vault, repo_path: String, refresh: Option<bool>) -> Result<WorkspaceList, String> {
+    git_engine::list_workspaces(opened(&vault, &repo_path)?, refresh.unwrap_or(false))
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn create_workspace(repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
-    git_engine::create_workspace(&repo_path, &name)
+fn create_workspace(vault: Vault, repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
+    git_engine::create_workspace(opened(&vault, &repo_path)?, &name)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn switch_workspace(repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
-    git_engine::switch_workspace(&repo_path, &name)
+fn switch_workspace(vault: Vault, repo_path: String, name: String) -> Result<RepoStatusPayload, String> {
+    git_engine::switch_workspace(opened(&vault, &repo_path)?, &name)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn list_vault_files(vault: Vault, vault_path: String) -> Result<Vec<VaultEntry>, String> {
+    fs_engine::list_vault_files(opened(&vault, &vault_path)?)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn read_file_content(vault: Vault, full_path: String) -> Result<String, String> {
+    fs_engine::read_file_content(&open_vault(&vault)?, &full_path)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn list_vault_files(vault_path: String) -> Result<Vec<VaultEntry>, String> {
-    fs_engine::list_vault_files(&vault_path)
+fn write_file_content(vault: Vault, full_path: String, content: String) -> Result<(), String> {
+    fs_engine::write_file_content(&open_vault(&vault)?, &full_path, &content)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn read_file_content(full_path: String) -> Result<String, String> {
-    fs_engine::read_file_content(&full_path)
+fn create_file(vault: Vault, vault_path: String, rel_path: String) -> Result<(), String> {
+    fs_engine::create_file(opened(&vault, &vault_path)?, &rel_path)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn write_file_content(full_path: String, content: String) -> Result<(), String> {
-    fs_engine::write_file_content(&full_path, &content)
+fn create_folder(vault: Vault, vault_path: String, rel_path: String) -> Result<(), String> {
+    fs_engine::create_folder(opened(&vault, &vault_path)?, &rel_path)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn create_file(vault_path: String, rel_path: String) -> Result<(), String> {
-    fs_engine::create_file(&vault_path, &rel_path)
+fn delete_file(vault: Vault, vault_path: String, rel_path: String) -> Result<(), String> {
+    fs_engine::delete_file(opened(&vault, &vault_path)?, &rel_path)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn create_folder(vault_path: String, rel_path: String) -> Result<(), String> {
-    fs_engine::create_folder(&vault_path, &rel_path)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-fn delete_file(vault_path: String, rel_path: String) -> Result<(), String> {
-    fs_engine::delete_file(&vault_path, &rel_path)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-fn rename_file(vault_path: String, old_path: String, new_path: String) -> Result<(), String> {
-    fs_engine::rename_file(&vault_path, &old_path, &new_path)
+fn rename_file(vault: Vault, vault_path: String, old_path: String, new_path: String) -> Result<(), String> {
+    fs_engine::rename_file(opened(&vault, &vault_path)?, &old_path, &new_path)
 }
 
 /// Where the notes folder lives when the user hasn't chosen a place. On phones that is the app's own
@@ -129,17 +162,25 @@ fn default_vault_dir(_app: &tauri::AppHandle) -> Option<String> {
     None
 }
 
+/// Opens the notes folder, creating it on first run. Where it lives is decided here, not by the
+/// page: this is what every other command is then held to (see `OpenVault`).
 #[tauri::command(rename_all = "snake_case")]
-fn init_or_open_vault(app: tauri::AppHandle, vault_path: Option<String>) -> Result<VaultInfo, String> {
+fn init_or_open_vault(app: tauri::AppHandle, vault: Vault) -> Result<VaultInfo, String> {
     use tauri::Manager;
-    let info = fs_engine::init_or_open_vault(vault_path.or_else(|| default_vault_dir(&app)))?;
+    let info = fs_engine::init_or_open_vault(default_vault_dir(&app))?;
     // Let the webview load files from the notes folder (and only there) through the asset
     // protocol, so images saved as `assets/x.png` are shown from this device's copy. The folder
-    // isn't known until now (it can be anywhere on desktop, and is inside the app's storage on
-    // phones), so the static scope in tauri.conf.json is empty and access is granted here.
-    app.asset_protocol_scope()
+    // isn't known until now (it is inside the app's storage on phones), so the static scope in
+    // tauri.conf.json is empty and access is granted here. Git's own folder is kept out of it:
+    // it holds the saved sign-in.
+    let scope = app.asset_protocol_scope();
+    scope
         .allow_directory(&info.path, true)
+        .and_then(|_| scope.forbid_directory(std::path::Path::new(&info.path).join(".git"), true))
         .map_err(|e| format!("Failed to allow image access to the notes folder: {}", e))?;
+    if let Ok(mut open) = vault.0.lock() {
+        *open = Some(info.path.clone());
+    }
     Ok(info)
 }
 
@@ -164,9 +205,9 @@ fn github_refresh_token(
     github_auth::refresh_access_token(client_id, refresh_token)
 }
 
-#[tauri::command(rename_all = "snake_case")]
-fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
-    fs_engine::save_image_file(&vault_path, &rel_path, data)
+#[tauri::command(async, rename_all = "snake_case")]
+fn save_image_file(vault: Vault, vault_path: String, rel_path: String, data_base64: String) -> Result<(), String> {
+    fs_engine::save_image_file(opened(&vault, &vault_path)?, &rel_path, &data_base64)
 }
 
 #[cfg(target_os = "android")]
@@ -257,6 +298,7 @@ fn trust_android_system_certificates() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(OpenVault::default())
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             #[cfg(target_os = "android")]

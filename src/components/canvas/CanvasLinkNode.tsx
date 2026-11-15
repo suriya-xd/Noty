@@ -3,6 +3,7 @@ import type { FC } from "react";
 import { CanvasLinkNode as ICanvasLinkNode } from "../../types/canvas";
 import { Globe, ExternalLink } from "lucide-react";
 import { calculateCanvasNodeFontSize } from "../../utils/canvas/math";
+import { openExternal } from "../../services/noeticBridge";
 
 interface CanvasLinkNodeProps {
   node: ICanvasLinkNode;
@@ -24,7 +25,7 @@ export const CanvasLinkNode: FC<CanvasLinkNodeProps> = ({ node }) => {
   const handleOpen = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (node.url) {
-      window.open(node.url, "_blank", "noopener,noreferrer");
+      void openExternal(node.url);
     }
   };
 

@@ -11,6 +11,10 @@ on:
       - master
   workflow_dispatch:
 
+# The builds only read the repository.
+permissions:
+  contents: read
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -56,19 +60,22 @@ jobs:
           workspaces: "./src-tauri -> target"
 
       - name: Install npm dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
-
-      - name: Build frontend bundle
-        run: npm run build
 
       - name: Build Android APK (Debug / Installable)
         run: npx tauri android build --apk --debug --target aarch64
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
           NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
+          # A debug build is used here because it comes out signed and installable. Its native
+          # library is otherwise unoptimised and carries full debug information (libgit2 and
+          # OpenSSL included), which makes the APK many times larger than it needs to be.
+          CARGO_PROFILE_DEV_OPT_LEVEL: "s"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_DEV_STRIP: "symbols"
 
       # Gradle names its output app-<abi>-<type>.apk; publish it under the app's own name.
       - name: Name the APK

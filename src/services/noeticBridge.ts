@@ -19,22 +19,33 @@ export const isTauriEnvironment = (): boolean => {
   return typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 };
 
+/** Links the app hands to the system: web pages and email. Anything else in a note is ignored. */
+const EXTERNAL_LINK = /^(https?:\/\/|mailto:)/i;
+
 /**
  * Opens a web page in the system browser. In the apps this goes through the opener plugin; a
  * target="_blank" link or window.open() isn't reliably handed to the browser by a Tauri webview
  * (on Android it can do nothing), and the sign-in screens depend on it.
+ *
+ * Links come from notes, which can arrive from another device, so only web and email addresses
+ * are opened: a `javascript:` or `file:` link does nothing.
  */
 export async function openExternal(url: string): Promise<void> {
+  const target = url.trim();
+  if (!EXTERNAL_LINK.test(target)) {
+    console.warn("[Noetic] not opening a link that isn't a web or email address");
+    return;
+  }
   if (isTauriEnvironment()) {
     try {
       const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(url);
+      await openUrl(target);
       return;
     } catch (err) {
       console.warn("[Noetic] opener failed, falling back to window.open:", err);
     }
   }
-  window.open(url, "_blank", "noopener,noreferrer");
+  window.open(target, "_blank", "noopener,noreferrer");
 }
 
 /**
@@ -535,22 +546,17 @@ export const NoeticBridge = {
     });
   },
 
-  initOrOpenVault: (vaultPath?: string): Promise<VaultInfo> => {
-    return invokeTauri<VaultInfo>("init_or_open_vault", { vault_path: vaultPath });
+  /** Opens the notes folder. The app decides where it is; the page is told, not asked. */
+  initOrOpenVault: (): Promise<VaultInfo> => {
+    return invokeTauri<VaultInfo>("init_or_open_vault");
   },
 
-  saveImageFile: async (
-    vaultPath: string,
-    relPath: string,
-    dataBase64: string,
-    rawBytes?: Uint8Array
-  ): Promise<void> => {
-    const bytesArray = rawBytes ? Array.from(rawBytes) : undefined;
-    await invokeTauri<void>("save_image_file", {
+  /** `dataBase64` is the image as base64, with or without a `data:` URL prefix. */
+  saveImageFile: (vaultPath: string, relPath: string, dataBase64: string): Promise<void> => {
+    return invokeTauri<void>("save_image_file", {
       vault_path: vaultPath,
       rel_path: relPath,
       data_base64: dataBase64,
-      data: bytesArray,
     });
   },
 

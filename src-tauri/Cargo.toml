@@ -19,9 +19,9 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-similar = "2.6"
-chrono = "0.4"
+base64 = "0.22"
+# Only the local clock is used (save messages carry the time).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 walkdir = "2.5"
 # HTTPS for the GitHub sign-in calls (src/github_auth.rs). The "tls" feature is rustls with bundled
 # root certificates, so it works the same on every platform, including Android, which has no
@@ -30,21 +30,25 @@ walkdir = "2.5"
 # done, so every request failed with "no TLS backend is configured".
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
-# Windows and Linux: libgit2's HTTPS uses Schannel (Windows) or the system OpenSSL (Linux).
-[target.'cfg(not(any(target_os = "android", target_os = "macos")))'.dependencies]
-git2 = "0.19"
+# git2 is used over HTTPS only (GitHub with the saved sign-in), so its default SSH support is left
+# out: that drops libssh2, and the OpenSSL code it needs, from every platform's binary.
 
-# macOS: libgit2's HTTPS uses SecureTransport, but its SSH support (libssh2) still needs OpenSSL.
-# Build OpenSSL into the app: linking it dynamically tied the release binary to the build
-# machine's Homebrew copy (/opt/homebrew/opt/openssl@4), so it crashed at launch on other Macs
-# ("Library not loaded: libssl.4.dylib"), and even on Macs with Homebrew, since macOS refuses to
-# load a library signed by a different team into the app.
+# Windows and Linux: libgit2's HTTPS uses WinHTTP (Windows) or the system OpenSSL (Linux).
+[target.'cfg(not(any(target_os = "android", target_os = "macos")))'.dependencies]
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+
+# macOS: libgit2's HTTPS uses SecureTransport and nothing in the app calls OpenSSL, but libgit2-sys
+# still depends on openssl-sys on every Unix. Keep that a static build: linked dynamically it tied
+# the release binary to the build machine's Homebrew copy (/opt/homebrew/opt/openssl@4), so it
+# crashed at launch on other Macs ("Library not loaded: libssl.4.dylib"), and even on Macs with
+# Homebrew, since macOS refuses to load a library signed by a different team into the app. The
+# unused static code is dropped at link time.
 [target.'cfg(target_os = "macos")'.dependencies]
-git2 = { version = "0.19", features = ["vendored-openssl"] }
+git2 = { version = "0.19", default-features = false, features = ["https", "vendored-openssl"] }
 
 # Android: use vendored OpenSSL compiled via Android NDK clang
 [target.'cfg(target_os = "android")'.dependencies]
-git2 = { version = "0.19", features = ["vendored-openssl"] }
+git2 = { version = "0.19", default-features = false, features = ["https", "vendored-openssl"] }
 # The same libgit2 and OpenSSL that git2 builds (Cargo shares them), used directly to give git's
 # OpenSSL the system's trusted certificates (trust_android_system_certificates in src/lib.rs).
 libgit2-sys = "0.17"
@@ -53,6 +57,8 @@ openssl-sys = "0.9"
 [profile.release]
 codegen-units = 1
 lto = true
-opt-level = 3
+# Optimise for size: the app's time goes to the webview and to libgit2's disk and network work,
+# not to hot Rust loops.
+opt-level = "s"
 panic = "abort"
 strip = true
