@@ -1,7 +1,12 @@
 package com.noetic.app
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.util.Base64
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
 import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
@@ -15,6 +20,48 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     makeRoomForKeyboard()
+  }
+
+  /**
+   * The web clipboard API can't read the clipboard inside an Android WebView (the permission is
+   * never granted), so the page asks the app instead: `window.NoeticAndroid.readClipboardImage()`.
+   */
+  override fun onWebViewCreate(webView: WebView) {
+    webView.addJavascriptInterface(ClipboardBridge(applicationContext), "NoeticAndroid")
+  }
+
+  private class ClipboardBridge(private val context: Context) {
+    /**
+     * The image at the top of the clipboard as "mime/type;base64data", or "" when there is none.
+     * Copied images are on the clipboard as a link to the image (a content:// address), which is
+     * read here.
+     */
+    @JavascriptInterface
+    fun readClipboardImage(): String {
+      return try {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = clipboard.primaryClip ?: return ""
+        for (i in 0 until clip.itemCount) {
+          val uri = clip.getItemAt(i).uri ?: continue
+          val type = context.contentResolver.getType(uri)
+            ?: (0 until clip.description.mimeTypeCount)
+              .map { clip.description.getMimeType(it) }
+              .firstOrNull { it.startsWith("image/") }
+            ?: continue
+          if (!type.startsWith("image/")) continue
+          val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: continue
+          if (bytes.size > MAX_BYTES) continue
+          return type + ";" + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        }
+        ""
+      } catch (e: Exception) {
+        ""
+      }
+    }
+
+    companion object {
+      private const val MAX_BYTES = 40 * 1024 * 1024
+    }
   }
 
   /**

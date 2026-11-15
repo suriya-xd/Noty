@@ -36,6 +36,8 @@ export function imageFromDataTransfer(dt: DataTransfer | null | undefined): File
  * read (no permission, or the platform doesn't allow it). Call it from a tap or click.
  */
 export async function readClipboardImage(): Promise<File | null> {
+  const fromApp = readAndroidClipboardImage();
+  if (fromApp !== undefined) return fromApp;
   try {
     if (!navigator.clipboard?.read) return null;
     const items = await navigator.clipboard.read();
@@ -52,11 +54,40 @@ export async function readClipboardImage(): Promise<File | null> {
   return null;
 }
 
+interface AndroidBridge {
+  readClipboardImage(): string;
+}
+
+/**
+ * In the Android app the web clipboard API is blocked, so the app reads the clipboard itself
+ * (MainActivity.kt). Undefined when not running in the Android app.
+ */
+export function readAndroidClipboardImage(
+  bridge = (globalThis as { NoeticAndroid?: AndroidBridge }).NoeticAndroid
+): File | null | undefined {
+  if (!bridge?.readClipboardImage) return undefined;
+  try {
+    const raw = bridge.readClipboardImage();
+    const sep = raw.indexOf(";");
+    if (sep <= 0) return null;
+    const type = raw.slice(0, sep);
+    const bin = atob(raw.slice(sep + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], `image.${EXT_BY_MIME[type] ?? "png"}`, { type });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reads the clipboard only if that won't prompt the user, e.g. when a dialog opens. Null when it
  * would need asking first.
  */
 export async function peekClipboardImage(): Promise<File | null> {
+  // The Android app can read it without asking.
+  const fromApp = readAndroidClipboardImage();
+  if (fromApp !== undefined) return fromApp;
   try {
     const status = await navigator.permissions?.query({ name: "clipboard-read" as PermissionName });
     if (status?.state !== "granted") return null;

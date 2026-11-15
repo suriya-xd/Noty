@@ -1,4 +1,4 @@
-import { assetPathFor, altTextFor, imageFromDataTransfer } from "../src/utils/imageUpload";
+import { assetPathFor, altTextFor, imageFromDataTransfer, readAndroidClipboardImage } from "../src/utils/imageUpload";
 
 let failures = 0;
 function eq(name: string, actual: unknown, expected: unknown) {
@@ -29,6 +29,15 @@ const fakeDt = (items: any[], files: File[] = []) => ({ items, files }) as unkno
 eq("finds an image item", imageFromDataTransfer(fakeDt([{ kind: "file", type: "image/png", getAsFile: () => png }]))?.name, "x.png");
 eq("falls back to files", imageFromDataTransfer(fakeDt([], [png]))?.name, "x.png");
 eq("ignores text", imageFromDataTransfer(fakeDt([{ kind: "string", type: "text/plain", getAsFile: () => null }])), null);
+
+console.log("\nreadAndroidClipboardImage");
+eq("not in the Android app", readAndroidClipboardImage(undefined), undefined);
+eq("empty clipboard", readAndroidClipboardImage({ readClipboardImage: () => "" }), null);
+const fromApp = readAndroidClipboardImage({ readClipboardImage: () => "image/jpeg;" + btoa("abc") });
+eq("decodes type", fromApp?.type, "image/jpeg");
+eq("names it as pasted", fromApp?.name, "image.jpg");
+eq("decodes bytes", fromApp?.size, 3);
+eq("bridge error", readAndroidClipboardImage({ readClipboardImage: () => { throw new Error("x"); } }), null);
 
 if (failures) {
   console.log(`\n${failures} test(s) failed\n`);
