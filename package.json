@@ -19,6 +19,8 @@
     "test:canvas": "npx tsx ./scripts/test-canvas.ts",
     "test:canvas:e2e": "npx tsx ./scripts/test-canvas-integration.ts",
     "test:blocks": "npx tsx ./scripts/test-block-move.ts",
+    "test:lists": "npx tsx ./scripts/test-list-numbering.ts",
+    "test:links": "npx tsx ./scripts/test-links.ts",
     "test:auth": "npx tsx ./scripts/test-device-flow.ts",
     "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"
   },

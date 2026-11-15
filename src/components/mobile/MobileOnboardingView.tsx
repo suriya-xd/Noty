@@ -4,7 +4,7 @@ import { ArrowLeft, Check, Copy, ExternalLink, FileText, RefreshCw } from "lucid
 import { GitHubService, pollDeviceFlow } from "../../services/githubService";
 import type { PendingSignIn } from "../../services/githubService";
 import { openExternal } from "../../services/noeticBridge";
-import type { DeviceCodeResponse } from "../../types/noetic";
+import type { DeviceCodeResponse, DeviceTokenResponse } from "../../types/noetic";
 import { useBackLayer } from "../../utils/backNavigation";
 
 interface MobileOnboardingViewProps {
@@ -63,10 +63,10 @@ export const MobileOnboardingView: FC<MobileOnboardingViewProps> = ({ isOpen, on
     onAuthenticatedRef.current = onAuthenticated;
   });
 
-  const finish = useCallback(async (token: string) => {
+  const finish = useCallback(async (token: string, grant?: DeviceTokenResponse) => {
     GitHubService.clearPendingSignIn();
     const user = await GitHubService.validateToken(token);
-    GitHubService.saveGitHubAuth(token, user);
+    GitHubService.saveGitHubAuth(token, user, grant);
     onAuthenticatedRef.current();
   }, []);
 

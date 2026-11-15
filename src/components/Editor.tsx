@@ -6,6 +6,8 @@ import {
   keymap,
   highlightActiveLine,
 } from "@codemirror/view";
+import { nativeTyping } from "./nativeTyping";
+import { orderedListRenumbering } from "./listNumbering";
 import { defaultKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
@@ -38,7 +40,9 @@ import {
   obsidianTheme,
   livePreviewConfigFacet,
 } from "./obsidianLivePreview";
-import { applyFormat } from "./editorCommands";
+import { applyFormat, findLinkAt, setLinkPrompt } from "./editorCommands";
+import { LinkPopover } from "./LinkPopover";
+import type { LinkPopoverState } from "./LinkPopover";
 import { MAX_UNDO_STEPS, historyStatus, limitedHistory, limitedRedo, limitedUndo } from "./editorHistory";
 import type { HistoryStatus } from "./editorHistory";
 import { keepCursorClear } from "./cursorVisibility";
@@ -49,7 +53,7 @@ import { blockDragHandle } from "./blockDrag";
 import type { FormatKind } from "./editorCommands";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { InsertImageModal } from "./InsertImageModal";
-import { NoeticBridge } from "../services/noeticBridge";
+import { NoeticBridge, openExternal } from "../services/noeticBridge";
 import { VaultEntry } from "../types/noetic";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
@@ -160,6 +164,7 @@ export const Editor: FC<EditorProps> = ({
 
   const [showBacklinks, setShowBacklinks] = useState(false);
   const [isInsertImageOpen, setIsInsertImageOpen] = useState(false);
+  const [linkPopover, setLinkPopover] = useState<LinkPopoverState | null>(null);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
   const [saveStatus, setSaveStatus] = useState<"synced" | "saving">("synced");
@@ -505,14 +510,31 @@ export const Editor: FC<EditorProps> = ({
           ...defaultKeymap,
         ]),
         EditorView.lineWrapping,
+        nativeTyping,
+        orderedListRenumbering,
         EditorView.domEventHandlers({
           // Links are followed on mousedown, before the editor moves the cursor. Letting the press
           // through put the cursor on the link's line, which reveals that line's raw Markdown and
           // shifts the text under the pointer, so the click never landed on the link (and a slight
           // drag turned into a multi-line selection that revealed every line it touched).
           // Shift+click opens the note in a new tab.
-          mousedown(event) {
+          mousedown(event, v) {
             if (event.button !== 0) return false;
+            // Web links act as hyperlinks: a click opens them. On a phone a tap shows a small
+            // menu instead (Open / Edit / Remove), since there's no other way to edit a link
+            // whose Markdown is hidden.
+            const linkEl = (event.target as HTMLElement)?.closest("[data-href]") as HTMLElement | null;
+            if (linkEl?.dataset.href) {
+              event.preventDefault();
+              if (chrome === "minimal") {
+                const pos = v.posAtDOM(linkEl);
+                const link = findLinkAt(v, pos, pos);
+                if (link) setLinkPopover({ mode: "actions", link });
+              } else {
+                void openExternal(linkEl.dataset.href);
+              }
+              return true;
+            }
             const targetEl = (event.target as HTMLElement)?.closest("[data-wikilink-target]") as HTMLElement | null;
             if (!targetEl?.dataset.wikilinkTarget) return false;
             event.preventDefault();
@@ -592,6 +614,9 @@ export const Editor: FC<EditorProps> = ({
     });
 
     editorViewRef.current = view;
+    // The link button and Ctrl/Cmd+K open the link popup for this note.
+    setLinkPrompt(view, (request) => setLinkPopover({ mode: "edit", request }));
+    setLinkPopover(null);
     // A newly opened note has no history.
     setUndoState({ canUndo: false, canRedo: false });
 
@@ -605,6 +630,7 @@ export const Editor: FC<EditorProps> = ({
         if (leavingPath) onDebouncedSaveRef.current(leavingPath, latestContentRef.current);
         setSaveStatus("synced");
       }
+      setLinkPrompt(view, null);
       view.destroy();
     };
     // Rebuild only when a different note (or vault) is opened (`sessionKey`, not the path itself). The callbacks are read through refs:
@@ -828,6 +854,9 @@ export const Editor: FC<EditorProps> = ({
           onCreateFile={onCreateFile}
         />
       )}
+
+      {/* Add / edit link popup */}
+      <LinkPopover view={editorViewRef.current} state={linkPopover} onChange={setLinkPopover} />
 
       {/* Insert Image Modal */}
       <InsertImageModal

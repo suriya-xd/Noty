@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { Editor } from "./components/Editor";
@@ -11,6 +11,7 @@ import { OnboardingModal } from "./components/OnboardingModal";
 import { AccountSettingsModal } from "./components/AccountSettingsModal";
 import { WorkspaceModal } from "./components/WorkspaceModal";
 import { ImagePreviewModal } from "./components/ImagePreviewModal";
+import { AssetsModal } from "./components/AssetsModal";
 import { MobileShell } from "./components/mobile/MobileShell";
 import { MobileConflictView } from "./components/mobile/MobileConflictView";
 import { MobileOnboardingView } from "./components/mobile/MobileOnboardingView";
@@ -25,10 +26,13 @@ import {
 import { vaultIndex } from "./utils/wikilinks/vaultIndex";
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
+import { isAssetPath, withoutAssets } from "./utils/assets";
 
 export default function App() {
   const [vaultPath, setVaultPath] = useState<string>("/vault");
   const [files, setFiles] = useState<VaultEntry[]>([]);
+  // The notes list leaves out the assets folder; uploaded files are browsed from Settings.
+  const notesOnly = useMemo(() => withoutAssets(files), [files]);
   const [status, setStatus] = useState<RepoStatusPayload | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [activeFileContent, setActiveFileContent] = useState<string>("");
@@ -52,7 +56,10 @@ export default function App() {
 
   // Onboarding wizard state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
+  /** The sign-in screen was opened because the saved sign-in lapsed, not for a new account. */
+  const reSigningInRef = useRef(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState<boolean>(false);
+  const [isAssetsOpen, setIsAssetsOpen] = useState<boolean>(false);
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState<boolean>(false);
 
   // Toast helper
@@ -132,6 +139,14 @@ export default function App() {
           // Signed in before, but setup stopped before a workspace was created or chosen.
           const current = await NoeticBridge.getRepoStatus(info.path).catch(() => null);
           if (current && !current.branch) setIsWorkspaceOpen(true);
+          // A sign-in from before automatic renewal can't renew itself; if GitHub has already
+          // let it lapse, ask once for a fresh sign-in (which then never expires) instead of
+          // letting saves and syncs fail.
+          else if ((await GitHubService.checkSignIn()) === "needs-sign-in") {
+            reSigningInRef.current = true;
+            setIsOnboardingOpen(true);
+            showToast("Sign in to GitHub once more to keep syncing. You won't be asked again.", "info");
+          }
         }
       } catch (err) {
         console.error("Startup failed:", err);
@@ -427,6 +442,13 @@ export default function App() {
 
   const handleSignedIn = () => {
     setIsOnboardingOpen(false);
+    if (reSigningInRef.current) {
+      // Same account, same storage: just carry on with the renewed sign-in.
+      reSigningInRef.current = false;
+      showToast("Signed in. Saving and syncing are back on.", "success");
+      void refreshStatus();
+      return;
+    }
     setIsWorkspaceOpen(true);
   };
 
@@ -493,6 +515,7 @@ export default function App() {
             onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
             onOpenOnboarding={() => setIsOnboardingOpen(true)}
             onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
+            onOpenAssets={() => setIsAssetsOpen(true)}
             onSimulateState={handleSimulateState}
             onRefreshFiles={async () => {
               await refreshFiles(vaultPath);
@@ -603,7 +626,7 @@ export default function App() {
               ) : (
                 <Dashboard
                   vaultPath={vaultPath}
-                  files={files}
+                  files={notesOnly}
                   fileStatuses={status?.files || []}
                   onSelectFile={handleSelectFile}
                   onCreateFile={handleCreateFile}
@@ -637,6 +660,18 @@ export default function App() {
         onClose={() => setIsAccountSettingsOpen(false)}
         vaultPath={vaultPath}
         onAccountChanged={handleAccountChanged}
+        assetCount={files.filter((f) => !f.is_directory && isAssetPath(f.path)).length}
+        onOpenAssets={() => setIsAssetsOpen(true)}
+      />
+
+      {/* Uploaded images (the assets folder), opened from Settings */}
+      <AssetsModal
+        isOpen={isAssetsOpen}
+        onClose={() => setIsAssetsOpen(false)}
+        vaultPath={vaultPath}
+        files={files}
+        onPreviewImage={(src, alt, title) => setPreviewImage({ src, alt, title })}
+        onDeleteFile={handleDeleteFile}
       />
 
       <WorkspaceModal

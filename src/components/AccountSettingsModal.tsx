@@ -15,6 +15,8 @@ import {
   Sparkles,
   X,
   HardDrive,
+  Image as ImageIcon,
+  ChevronRight,
 } from "lucide-react";
 import { GitHubService, pollDeviceFlow } from "../services/githubService";
 import { NoeticBridge, openExternal } from "../services/noeticBridge";
@@ -36,6 +38,10 @@ interface AccountSettingsModalProps {
   onClose: () => void;
   vaultPath: string;
   onAccountChanged?: () => void;
+  /** Number of uploaded files in the assets folder. */
+  assetCount?: number;
+  /** Opens the uploaded files, which are kept out of the notes list. */
+  onOpenAssets?: () => void;
 }
 
 export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
@@ -43,6 +49,8 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
   onClose,
   vaultPath,
   onAccountChanged,
+  assetCount = 0,
+  onOpenAssets,
 }) => {
   // On phones, Back closes this.
   useBackLayer(isOpen, onClose);
@@ -116,9 +124,9 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
       deviceCode: data.device_code,
       interval: data.interval,
       expiresIn: data.expires_in,
-      onApproved: async (accessToken) => {
+      onApproved: async (accessToken, grant) => {
         const newUser = await GitHubService.validateToken(accessToken);
-        GitHubService.saveGitHubAuth(accessToken, newUser);
+        GitHubService.saveGitHubAuth(accessToken, newUser, grant);
         await setVaultToken(accessToken);
         setIsPolling(false);
         setCurrentUser(newUser);
@@ -345,6 +353,27 @@ export const AccountSettingsModal: FC<AccountSettingsModalProps> = ({
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
+              </button>
+            </div>
+          )}
+
+          {/* Section: Uploaded files (the assets folder, kept out of the notes list) */}
+          {onOpenAssets && (
+            <div className="pt-4 border-t border-[#30363d] space-y-2">
+              <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block">
+                Uploaded files
+              </span>
+              <button
+                type="button"
+                onClick={onOpenAssets}
+                className="w-full p-3 bg-[#161b22] hover:bg-[#1c2128] border border-[#30363d] rounded-xl flex items-center gap-2.5 text-xs text-zinc-300 transition-colors cursor-pointer"
+              >
+                <ImageIcon className="w-4 h-4 text-zinc-500 shrink-0" />
+                <span className="flex-1 text-left">Images you've added to notes</span>
+                <span className="text-zinc-500">
+                  {assetCount === 0 ? "None yet" : `${assetCount} ${assetCount === 1 ? "file" : "files"}`}
+                </span>
+                <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
               </button>
             </div>
           )}

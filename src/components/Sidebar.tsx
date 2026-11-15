@@ -22,6 +22,7 @@ import {
   LayoutGrid,
 } from "lucide-react";
 import { FileStatus, VaultEntry } from "../types/noetic";
+import { withoutAssets } from "../utils/assets";
 import { ConfirmDialog } from "./dialogs";
 import {
   CustomOrderMap,
@@ -155,7 +156,9 @@ export const Sidebar: FC<SidebarProps> = ({
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
 
-  const rawTree = useMemo(() => buildFileTree(files), [files]);
+  // The assets folder (uploaded images) is browsed from Settings, not the notes list.
+  const noteEntries = useMemo(() => withoutAssets(files), [files]);
+  const rawTree = useMemo(() => buildFileTree(noteEntries), [noteEntries]);
   const tree = useMemo(
     () => sortTreeNodes(rawTree, "", sortMode, customOrder),
     [rawTree, sortMode, customOrder]
@@ -785,7 +788,7 @@ export const Sidebar: FC<SidebarProps> = ({
             className="bg-[#21262d] text-zinc-400 font-mono text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
             title="Notes and canvases in this workspace"
           >
-            {files.filter((f) => !f.is_directory).length}
+            {noteEntries.filter((f) => !f.is_directory).length}
           </span>
         </div>
 

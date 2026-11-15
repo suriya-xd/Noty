@@ -9,6 +9,7 @@ import {
 } from "@codemirror/view";
 import { vaultIndex } from "../utils/wikilinks/vaultIndex";
 import { resolveImageUrl } from "../services/noeticBridge";
+import { findLinksInLine } from "./editorCommands";
 
 export interface LivePreviewConfig {
   vaultPath: string;
@@ -300,6 +301,14 @@ const boldDeco = Decoration.mark({ class: "cm-md-bold" });
 const italicDeco = Decoration.mark({ class: "cm-md-italic" });
 const inlineCodeDeco = Decoration.mark({ class: "cm-md-inline-code" });
 const strikeDeco = Decoration.mark({ class: "cm-md-strikethrough" });
+/** A link's Markdown while the cursor is inside it (being edited). */
+const linkSourceDeco = Decoration.mark({ class: "cm-md-link-source" });
+/** A web link shown as a hyperlink; clicking it opens `data-href` (see Editor.tsx). */
+const linkDeco = (url: string, clickable = true) =>
+  Decoration.mark({
+    class: "cm-md-link",
+    attributes: clickable ? { "data-href": url, title: url } : { title: url },
+  });
 
 interface InlineSpan {
   from: number;
@@ -434,6 +443,50 @@ function collectInlineSpans(
       spans.push({ from: lineFrom + start, to: lineFrom + start + 2, deco: hideDeco });
       spans.push({ from: lineFrom + start + 2, to: lineFrom + end - 2, deco });
       spans.push({ from: lineFrom + end - 2, to: lineFrom + end, deco: hideDeco });
+    }
+  }
+
+  // 3b. Web links: `[text](url)`, `<url>` and bare addresses look and act like hyperlinks. The
+  // Markdown around a link's text is hidden until the cursor is inside the link.
+  const codeSpans = [...text.matchAll(/`[^`\n]+`/g)].map((m) => [m.index!, m.index! + m[0].length]);
+  for (const link of findLinksInLine(text)) {
+    const start = link.from;
+    const end = link.to;
+    // Addresses inside `inline code` stay code.
+    if (codeSpans.some(([a, b]) => start < b && end > a)) continue;
+    let hasClash = false;
+    for (let i = start; i < end; i++) {
+      if (occupied[i]) {
+        hasClash = true;
+        break;
+      }
+    }
+    if (hasClash) continue;
+    for (let i = start; i < end; i++) occupied[i] = true;
+
+    const deco = linkDeco(link.url);
+    const isCursorInside = selection.ranges.some(
+      (r) => r.from <= lineFrom + end && r.to >= lineFrom + start
+    );
+    const raw = text.slice(start, end);
+
+    if (raw.startsWith("[")) {
+      const labelEnd = raw.search(/(?<!\\)\]\(/);
+      if (isCursorInside || labelEnd <= 1) {
+        spans.push({ from: lineFrom + start, to: lineFrom + end, deco: linkSourceDeco });
+        continue;
+      }
+      spans.push({ from: lineFrom + start, to: lineFrom + start + 1, deco: hideDeco });
+      spans.push({ from: lineFrom + start + 1, to: lineFrom + start + labelEnd, deco });
+      spans.push({ from: lineFrom + start + labelEnd, to: lineFrom + end, deco: hideDeco });
+    } else if (raw.startsWith("<") && !isCursorInside) {
+      spans.push({ from: lineFrom + start, to: lineFrom + start + 1, deco: hideDeco });
+      spans.push({ from: lineFrom + start + 1, to: lineFrom + end - 1, deco });
+      spans.push({ from: lineFrom + end - 1, to: lineFrom + end, deco: hideDeco });
+    } else {
+      // A bare address is its own text, so while the cursor is in it a click must place the
+      // cursor (to edit it) rather than open it.
+      spans.push({ from: lineFrom + start, to: lineFrom + end, deco: isCursorInside ? linkDeco(link.url, false) : deco });
     }
   }
 
@@ -918,6 +971,25 @@ export const obsidianTheme = EditorView.theme({
       color: "#fcd34d !important",
       borderColor: "#f59e0b !important",
     },
+  },
+
+  // Web links: styled like a web page's hyperlinks, a little apart from note links.
+  ".cm-md-link": {
+    cursor: "pointer",
+    color: "#58a6ff !important",
+    textDecoration: "underline !important",
+    textDecorationColor: "rgba(88, 166, 255, 0.45) !important",
+    textUnderlineOffset: "3px !important",
+    textDecorationThickness: "1px !important",
+    overflowWrap: "anywhere",
+    "&:hover": {
+      color: "#79c0ff !important",
+      textDecorationColor: "#79c0ff !important",
+    },
+  },
+  ".cm-md-link-source": {
+    color: "#8b949e",
+    overflowWrap: "anywhere",
   },
 
   // Live Preview Image Cards

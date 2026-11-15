@@ -196,6 +196,8 @@ console.log("\nSigning in while the app is in the background");
     show(true);
     await advance(2_999);
     eq("...but never sooner than GitHub's interval", calls.length, 1);
+    await advance(1_000);
+    eq("...nor before the extra second that avoids a 'slow down'", calls.length, 1);
     await advance(1);
     eq("...then on time", calls.length, 2);
     stop();
@@ -256,6 +258,91 @@ console.log("\nBridge error handling");
   const msg = await rejection(NoeticBridge.startDeviceFlow());
   console.warn = origWarn;
   eq("browser-only: explains instead of 'Unknown command'", msg.startsWith("Signing in with GitHub works in the Noetic"), true);
+}
+
+console.log("\nSign-in renewal (expiring tokens)");
+{
+  const store = new Map<string, string>();
+  (globalThis as any).localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  };
+  const user = { login: "me", name: "Me", avatar_url: "", email: null, html_url: "" };
+  const refreshCalls: string[] = [];
+  const configWrites: string[] = [];
+  let refreshAnswer: () => Promise<DeviceTokenResponse> = async () => res({});
+  (NoeticBridge as any).refreshGitHubToken = async (rt: string) => {
+    refreshCalls.push(rt);
+    return refreshAnswer();
+  };
+  (NoeticBridge as any).setVaultConfig = async (_p: string, cfg: { github_token: string }) => {
+    configWrites.push(cfg.github_token);
+    return {};
+  };
+  const origWarn = console.warn;
+  console.warn = () => {};
+
+  GitHubService.saveGitHubAuth("tok1", user, res({
+    status: "approved", access_token: "tok1", refresh_token: "r1", expires_in: 8 * 3600, refresh_token_expires_in: 180 * 86400,
+  }));
+  eq("fresh token is used as is", await GitHubService.getValidToken(), "tok1");
+  eq("...without renewing", refreshCalls.length, 0);
+
+  now += 8 * 3600 * 1000 - 5 * 60 * 1000; // 5 minutes left
+  refreshAnswer = async () => res({ status: "approved", access_token: "tok2", refresh_token: "r2", expires_in: 8 * 3600 });
+  const [a, b] = await Promise.all([GitHubService.getValidToken(), GitHubService.getValidToken()]);
+  eq("near expiry the token is renewed", [a, b], ["tok2", "tok2"]);
+  eq("...once, even when asked twice at the same time", refreshCalls, ["r1"]);
+  eq("...and the new refresh token is kept", GitHubService.getStoredGitHubAuth()?.refreshToken, "r2");
+
+  now += 8 * 3600 * 1000;
+  refreshAnswer = async () => {
+    throw new Error("offline");
+  };
+  eq("offline: keeps the saved sign-in", await GitHubService.getValidToken(), "tok2");
+  eq("...and stays signed in", GitHubService.getStoredGitHubAuth()?.needsSignIn, undefined);
+
+  // A save turned down by GitHub renews and retries once.
+  refreshAnswer = async () => res({ status: "approved", access_token: "tok3", refresh_token: "r3", expires_in: 8 * 3600 });
+  let attempts = 0;
+  const out = await GitHubService.withFreshSignIn("/vault", async () => {
+    attempts++;
+    if (attempts === 1 && configWrites.at(-1) !== "tok3") throw new Error("Your sign-in was not accepted.");
+    return "saved";
+  });
+  eq("cloud operations run with the renewed token", [out, configWrites.at(-1)], ["saved", "tok3"]);
+
+  // A refused refresh token: kept signed in on this device but asked to sign in again.
+  GitHubService.saveGitHubAuth("old", user, res({ status: "approved", access_token: "old", refresh_token: "dead", expires_in: 1 }));
+  refreshAnswer = async () => res({ status: "expired" });
+  now += 10_000;
+  eq("refused refresh token: returns the old token", await GitHubService.getValidToken(), "old");
+  eq("...and marks that signing in again is needed", GitHubService.getStoredGitHubAuth()?.needsSignIn, true);
+
+  // Tokens that never expire are never renewed.
+  GitHubService.saveGitHubAuth("forever", user);
+  refreshCalls.length = 0;
+  eq("non-expiring token is used as is", await GitHubService.getValidToken(true), "forever");
+  eq("...with no renewal", refreshCalls.length, 0);
+
+  // Start-up check of a sign-in saved before renewal existed (no refresh token).
+  const origFetch = (globalThis as any).fetch;
+  (globalThis as any).fetch = async () => ({ ok: false, status: 401, json: async () => ({}) });
+  GitHubService.saveGitHubAuth("legacy", user);
+  eq("lapsed old sign-in: asks to sign in once more", await GitHubService.checkSignIn(), "needs-sign-in");
+  (globalThis as any).fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+  GitHubService.saveGitHubAuth("legacy-ok", user);
+  eq("working old sign-in: left alone", await GitHubService.checkSignIn(), "ok");
+  (globalThis as any).fetch = async () => {
+    throw new Error("offline");
+  };
+  eq("offline: never counts against the sign-in", await GitHubService.checkSignIn(), "unknown");
+  eq("...and nothing is marked", GitHubService.getStoredGitHubAuth()?.needsSignIn, undefined);
+  GitHubService.saveGitHubAuth("fresh", user, res({ status: "approved", access_token: "fresh", refresh_token: "rf", expires_in: 8 * 3600 }));
+  eq("signing in again clears the prompt", await GitHubService.checkSignIn(), "ok");
+  (globalThis as any).fetch = origFetch;
+  console.warn = origWarn;
 }
 
 if (failures) {

@@ -37,6 +37,20 @@ export async function openExternal(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
+/**
+ * Wraps every command that talks to the cloud. The GitHub service installs one that renews an
+ * expiring sign-in first (and retries once if GitHub turns the token down), so the user is never
+ * signed out by token expiry. Kept as a hook to avoid a circular import.
+ */
+type CloudGuard = <T>(repoPath: string, run: () => Promise<T>) => Promise<T>;
+let cloudGuard: CloudGuard | null = null;
+export function setCloudGuard(guard: CloudGuard): void {
+  cloudGuard = guard;
+}
+function viaCloud<T>(repoPath: string, run: () => Promise<T>): Promise<T> {
+  return cloudGuard ? cloudGuard(repoPath, run) : run();
+}
+
 /** Tauri rejects with a plain string (the Rust `Err(String)`); make that a normal Error. */
 function nativeError(err: unknown, cmd: string): Error {
   if (err instanceof Error) return err;
@@ -407,18 +421,20 @@ export const NoeticBridge = {
   },
 
   fetchRemote: (repoPath: string): Promise<RepoStatusPayload> => {
-    return invokeTauri<RepoStatusPayload>("fetch_remote", { repo_path: repoPath });
+    return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("fetch_remote", { repo_path: repoPath }));
   },
 
   saveAndPush: (repoPath: string, commitMessage?: string): Promise<RepoStatusPayload> => {
-    return invokeTauri<RepoStatusPayload>("save_and_push", {
-      repo_path: repoPath,
-      commit_message: commitMessage,
-    });
+    return viaCloud(repoPath, () =>
+      invokeTauri<RepoStatusPayload>("save_and_push", {
+        repo_path: repoPath,
+        commit_message: commitMessage,
+      })
+    );
   },
 
   syncAndPull: (repoPath: string): Promise<SyncResult> => {
-    return invokeTauri<SyncResult>("sync_and_pull", { repo_path: repoPath });
+    return viaCloud(repoPath, () => invokeTauri<SyncResult>("sync_and_pull", { repo_path: repoPath }));
   },
 
   resolveConflicts: (
@@ -455,15 +471,16 @@ export const NoeticBridge = {
 
   /** `refresh` checks the cloud for workspaces made on other devices first. */
   listWorkspaces: (repoPath: string, refresh = false): Promise<WorkspaceList> => {
-    return invokeTauri<WorkspaceList>("list_workspaces", { repo_path: repoPath, refresh });
+    const run = () => invokeTauri<WorkspaceList>("list_workspaces", { repo_path: repoPath, refresh });
+    return refresh ? viaCloud(repoPath, run) : run();
   },
 
   createWorkspace: (repoPath: string, name: string): Promise<RepoStatusPayload> => {
-    return invokeTauri<RepoStatusPayload>("create_workspace", { repo_path: repoPath, name });
+    return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("create_workspace", { repo_path: repoPath, name }));
   },
 
   switchWorkspace: (repoPath: string, name: string): Promise<RepoStatusPayload> => {
-    return invokeTauri<RepoStatusPayload>("switch_workspace", { repo_path: repoPath, name });
+    return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("switch_workspace", { repo_path: repoPath, name }));
   },
 
   startDeviceFlow: (clientId?: string): Promise<DeviceCodeResponse> => {
@@ -475,6 +492,13 @@ export const NoeticBridge = {
   pollDeviceToken: (deviceCode: string, clientId?: string): Promise<DeviceTokenResponse> => {
     return invokeTauri<DeviceTokenResponse>("github_poll_device_token", {
       device_code: deviceCode,
+      client_id: clientId,
+    });
+  },
+
+  refreshGitHubToken: (refreshToken: string, clientId?: string): Promise<DeviceTokenResponse> => {
+    return invokeTauri<DeviceTokenResponse>("github_refresh_token", {
+      refresh_token: refreshToken,
       client_id: clientId,
     });
   },

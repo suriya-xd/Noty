@@ -215,7 +215,8 @@ function insertWikilink(view: EditorView): void {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.format" }));
 }
 
-function insertLink(view: EditorView): void {
+/** Fallback when no link popup is attached to the editor (e.g. canvas cards): a Markdown template. */
+function insertLinkTemplate(view: EditorView): void {
   const { state } = view;
   const url = "https://";
   const tr = state.changeByRange((range) => {
@@ -239,12 +240,158 @@ function insertLink(view: EditorView): void {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.format" }));
 }
 
+// ---------------------------------------------------------------------------
+// Links: found, added and edited through a small popup (see LinkPopover.tsx)
+// ---------------------------------------------------------------------------
+
+/** A link in the note: `[text](url)`, `<url>` or a bare web address. Positions are absolute. */
+export interface FoundLink {
+  from: number;
+  to: number;
+  /** The text shown for it; empty when the address itself is shown. */
+  text: string;
+  url: string;
+}
+
+/** `[text](url "title")`, not preceded by `!` (that's an image). */
+export const MD_LINK = /(?<!!)\[((?:\\.|[^\]\\\n])+)\]\((<[^>\n]+>|[^)\s]+)(?:\s+"[^"\n]*")?\)/g;
+/** `<https://…>` and `<mailto:…>` autolinks. */
+export const AUTO_LINK = /<((?:https?|mailto|ftp):[^\s<>]+)>/g;
+/** Bare web addresses, without trailing punctuation. */
+export const BARE_URL = /\bhttps?:\/\/[^\s<>()\[\]]*[^\s<>()\[\].,;:!?'"*_~]/g;
+
+const unescapeLabel = (t: string) => t.replace(/\\([\[\]\\])/g, "$1");
+const unwrapUrl = (u: string) => (u.startsWith("<") && u.endsWith(">") ? u.slice(1, -1) : u);
+
+/** Every link on one line of text; `offset` is added to positions. */
+export function findLinksInLine(text: string, offset = 0): FoundLink[] {
+  const links: FoundLink[] = [];
+  const taken: Array<[number, number]> = [];
+  const free = (a: number, b: number) => taken.every(([x, y]) => b <= x || a >= y);
+  const scan = (re: RegExp, make: (m: RegExpExecArray) => { text: string; url: string }) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const a = m.index;
+      const b = a + m[0].length;
+      if (!free(a, b)) continue;
+      taken.push([a, b]);
+      links.push({ from: offset + a, to: offset + b, ...make(m) });
+    }
+  };
+  scan(MD_LINK, (m) => ({ text: unescapeLabel(m[1]), url: unwrapUrl(m[2]) }));
+  scan(AUTO_LINK, (m) => ({ text: "", url: m[1] }));
+  scan(BARE_URL, (m) => ({ text: "", url: m[0] }));
+  return links.sort((x, y) => x.from - y.from);
+}
+
+/** The link at (or touching) document position `pos`, if any. */
+export function findLinkAt(view: EditorView, pos: number, end = pos): FoundLink | null {
+  const line = view.state.doc.lineAt(pos);
+  return findLinksInLine(line.text, line.from).find((l) => l.from <= pos && l.to >= end) ?? null;
+}
+
+/** What the link popup starts with: the link under the cursor, or the selected text. */
+export interface LinkRequest {
+  from: number;
+  to: number;
+  text: string;
+  url: string;
+  /** An existing link is being changed. */
+  editing: boolean;
+}
+
+export function linkRequestAt(view: EditorView): LinkRequest {
+  const range = view.state.selection.main;
+  const existing = findLinkAt(view, range.from, range.to);
+  if (existing) return { ...existing, editing: true };
+  const selected = view.state.sliceDoc(range.from, range.to);
+  const singleLine = !selected.includes("\n");
+  if (singleLine && looksLikeUrl(selected)) {
+    return { from: range.from, to: range.to, text: "", url: selected.trim(), editing: false };
+  }
+  return {
+    from: range.from,
+    to: singleLine ? range.to : range.from,
+    text: singleLine ? selected : "",
+    url: "",
+    editing: false,
+  };
+}
+
+function looksLikeUrl(text: string): boolean {
+  const t = text.trim();
+  return /^(https?:\/\/|mailto:|www\.)\S+$/i.test(t) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t);
+}
+
+/** A typed address made usable: `example.com` → `https://example.com`, `a@b.co` → `mailto:a@b.co`. */
+export function normalizeUrl(input: string): string {
+  const t = input.trim();
+  if (!t) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(t)) return t;
+  if (/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(t)) return `mailto:${t}`;
+  if (t.startsWith("/") || t.startsWith("#")) return t;
+  return `https://${t}`;
+}
+
+/** The Markdown for a link: the bare address when it is shown as is, else `[text](url)`. */
+export function linkMarkdown(url: string, text: string | null): string {
+  const safeUrl = url.replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
+  const label = text?.trim() ?? "";
+  if (!label || label === url) {
+    return /^https?:\/\//i.test(safeUrl) ? safeUrl : `<${safeUrl}>`;
+  }
+  return `[${label.replace(/([\[\]\\])/g, "\\$1")}](${safeUrl})`;
+}
+
+/** Writes (or rewrites) the link the popup was opened for. `text` null shows the address itself. */
+export function applyLink(view: EditorView, req: LinkRequest, url: string, text: string | null): void {
+  const insert = linkMarkdown(url, text);
+  const end = req.from + insert.length;
+  view.dispatch({
+    changes: { from: req.from, to: req.to, insert },
+    selection: EditorSelection.cursor(end),
+    scrollIntoView: true,
+    userEvent: "input.format",
+  });
+}
+
+/** Turns a link back into plain text (its label, or its address when it had none). */
+export function removeLink(view: EditorView, link: FoundLink): void {
+  const insert = link.text || link.url;
+  view.dispatch({
+    changes: { from: link.from, to: link.to, insert },
+    selection: EditorSelection.cursor(link.from + insert.length),
+    userEvent: "input.format",
+  });
+}
+
+/** Editors that show the link popup register here; others fall back to the Markdown template. */
+const linkPrompts = new WeakMap<EditorView, (req: LinkRequest) => void>();
+
+export function setLinkPrompt(view: EditorView, prompt: ((req: LinkRequest) => void) | null): void {
+  if (prompt) linkPrompts.set(view, prompt);
+  else linkPrompts.delete(view);
+}
+
+function insertLink(view: EditorView): boolean {
+  const prompt = linkPrompts.get(view);
+  if (!prompt) {
+    insertLinkTemplate(view);
+    return true;
+  }
+  prompt(linkRequestAt(view));
+  return false;
+}
+
 export function applyFormat(view: EditorView, kind: FormatKind): boolean {
   const marker = INLINE_MARKERS[kind];
   if (marker) toggleInline(view, marker);
   else if (kind === "wikilink") insertWikilink(view);
-  else if (kind === "link") insertLink(view);
-  else toggleBlock(view, kind as BlockKind);
+  else if (kind === "link") {
+    // The link popup takes the focus; the editor gets it back when the popup closes.
+    if (!insertLink(view)) return true;
+  } else toggleBlock(view, kind as BlockKind);
   view.focus();
   return true;
 }

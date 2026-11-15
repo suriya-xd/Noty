@@ -19,6 +19,49 @@ pub struct DeviceTokenResponse {
     pub scope: Option<String>,
     pub interval: Option<u64>,
     pub error_description: Option<String>,
+    /// Present when GitHub issues expiring tokens (they last 8 hours). Exchanged for a new access
+    /// token (and a new refresh token) before the old one runs out, so the user stays signed in.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    /// Seconds until `access_token` expires.
+    #[serde(default)]
+    pub expires_in: Option<u64>,
+    /// Seconds until `refresh_token` expires (about six months, reset by every refresh).
+    #[serde(default)]
+    pub refresh_token_expires_in: Option<u64>,
+}
+
+impl DeviceTokenResponse {
+    fn status(status: &str, interval: Option<u64>, error_description: Option<String>) -> Self {
+        DeviceTokenResponse {
+            status: status.to_string(),
+            access_token: None,
+            token_type: None,
+            scope: None,
+            interval,
+            error_description,
+            refresh_token: None,
+            expires_in: None,
+            refresh_token_expires_in: None,
+        }
+    }
+
+    /// The approved answer, with everything GitHub sent about the token's lifetime.
+    fn approved(v: &serde_json::Value, token: &str) -> Self {
+        let text = |k: &str| v.get(k).and_then(|t| t.as_str()).map(|s| s.to_string());
+        let num = |k: &str| v.get(k).and_then(|t| t.as_u64());
+        DeviceTokenResponse {
+            status: "approved".to_string(),
+            access_token: Some(token.to_string()),
+            token_type: text("token_type"),
+            scope: text("scope"),
+            interval: None,
+            error_description: None,
+            refresh_token: text("refresh_token").filter(|t| !t.is_empty()),
+            expires_in: num("expires_in"),
+            refresh_token_expires_in: num("refresh_token_expires_in"),
+        }
+    }
 }
 
 /// One HTTP agent for GitHub calls. ureq has no timeouts unless asked, so without these a dead
@@ -98,20 +141,7 @@ pub fn poll_device_token(
     )?;
 
     if let Some(token) = v.get("access_token").and_then(|t| t.as_str()) {
-        return Ok(DeviceTokenResponse {
-            status: "approved".to_string(),
-            access_token: Some(token.to_string()),
-            token_type: v
-                .get("token_type")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string()),
-            scope: v
-                .get("scope")
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string()),
-            interval: None,
-            error_description: None,
-        });
+        return Ok(DeviceTokenResponse::approved(&v, token));
     }
 
     if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
@@ -121,60 +151,61 @@ pub fn poll_device_token(
             .map(|s| s.to_string());
         let interval = v.get("interval").and_then(|i| i.as_u64());
 
-        return match err {
-            "authorization_pending" => Ok(DeviceTokenResponse {
-                status: "pending".to_string(),
-                access_token: None,
-                token_type: None,
-                scope: None,
-                interval: interval.or(Some(5)),
-                error_description: error_desc,
-            }),
-            "slow_down" => Ok(DeviceTokenResponse {
-                status: "slow_down".to_string(),
-                access_token: None,
-                token_type: None,
-                scope: None,
-                interval: interval.or(Some(10)),
-                error_description: error_desc,
-            }),
-            "expired_token" => Ok(DeviceTokenResponse {
-                status: "expired".to_string(),
-                access_token: None,
-                token_type: None,
-                scope: None,
-                interval: None,
-                error_description: error_desc.or(Some(
-                    "Device code expired. Please restart login.".to_string(),
-                )),
-            }),
-            "access_denied" => Ok(DeviceTokenResponse {
-                status: "denied".to_string(),
-                access_token: None,
-                token_type: None,
-                scope: None,
-                interval: None,
-                error_description: error_desc.or(Some(
-                    "Authorization was denied by user.".to_string(),
-                )),
-            }),
-            other => Ok(DeviceTokenResponse {
-                status: "error".to_string(),
-                access_token: None,
-                token_type: None,
-                scope: None,
-                interval: None,
-                error_description: error_desc.or(Some(other.to_string())),
-            }),
-        };
+        return Ok(match err {
+            "authorization_pending" => DeviceTokenResponse::status("pending", interval.or(Some(5)), error_desc),
+            "slow_down" => DeviceTokenResponse::status("slow_down", interval.or(Some(10)), error_desc),
+            "expired_token" => DeviceTokenResponse::status(
+                "expired",
+                None,
+                error_desc.or(Some("Device code expired. Please restart login.".to_string())),
+            ),
+            "access_denied" => DeviceTokenResponse::status(
+                "denied",
+                None,
+                error_desc.or(Some("Authorization was denied by user.".to_string())),
+            ),
+            other => DeviceTokenResponse::status("error", None, error_desc.or(Some(other.to_string()))),
+        });
     }
 
-    Ok(DeviceTokenResponse {
-        status: "error".to_string(),
-        access_token: None,
-        token_type: None,
-        scope: None,
-        interval: None,
-        error_description: Some(format!("Unexpected response: {}", v)),
-    })
+    Ok(DeviceTokenResponse::status("error", None, Some(format!("Unexpected response: {}", v))))
+}
+
+/// Exchanges a refresh token for a new access token and refresh token. Tokens from the device
+/// flow can be refreshed without the app's client secret. Both the old access token and the old
+/// refresh token stop working once this succeeds, so the caller must keep the new pair.
+///
+/// `Ok` with status "approved" is a new pair; "expired" means the refresh token is no longer
+/// accepted (unused for six months, or revoked) and only signing in again helps. `Err` is a
+/// network or server problem: the saved sign-in is still good and should be kept.
+pub fn refresh_access_token(
+    client_id: Option<String>,
+    refresh_token: String,
+) -> Result<DeviceTokenResponse, String> {
+    let cid = client_id
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string());
+
+    let v = post_form(
+        "https://github.com/login/oauth/access_token",
+        &[
+            ("client_id", cid.as_str()),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.trim()),
+        ],
+    )?;
+
+    if let Some(token) = v.get("access_token").and_then(|t| t.as_str()) {
+        return Ok(DeviceTokenResponse::approved(&v, token));
+    }
+    let desc = v.get("error_description").and_then(|d| d.as_str()).map(String::from);
+    match v.get("error").and_then(|e| e.as_str()) {
+        Some("bad_refresh_token") | Some("unauthorized") => Ok(DeviceTokenResponse::status(
+            "expired",
+            None,
+            desc.or(Some("Your sign-in has expired. Sign in again to continue.".to_string())),
+        )),
+        Some(other) => Err(format!("GitHub couldn't renew the sign-in ({}). {}", other, desc.unwrap_or_default())),
+        None => Err(format!("GitHub sent an unexpected answer while renewing the sign-in: {}", v)),
+    }
 }

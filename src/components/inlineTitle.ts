@@ -62,6 +62,8 @@ class TitleWidget extends WidgetType {
     const initial = this.config.getTitle() ?? "";
     input.value = initial;
     input.spellcheck = false;
+    // Titles start with a capital, as the keyboard would do in any other text box.
+    input.setAttribute("autocapitalize", "sentences");
     input.placeholder = "Untitled";
     input.setAttribute("aria-label", "Note title");
     wrap.append(input);

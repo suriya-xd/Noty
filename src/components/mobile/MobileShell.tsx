@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { RepoStatusPayload, VaultEntry } from "../../types/noetic";
+import { assetFiles, withoutAssets } from "../../utils/assets";
 import { Editor, FORMAT_BUTTONS } from "../Editor";
 import type { EditorHandle, RenameHandler } from "../Editor";
 import { CanvasView } from "../canvas/CanvasView";
@@ -114,6 +115,8 @@ interface MobileShellProps {
   onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onOpenAccountSettings: () => void;
+  /** Opens the uploaded files (the assets folder), which is kept out of the notes list. */
+  onOpenAssets?: () => void;
   onSimulateState?: (state: string) => void;
   onRefreshFiles?: () => Promise<void>;
   onPreviewImage?: (src: string, alt?: string, title?: string) => void;
@@ -361,6 +364,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   onOpenWorkspaces,
   onOpenOnboarding,
   onOpenAccountSettings,
+  onOpenAssets,
   onSimulateState,
   onRefreshFiles,
   onPreviewImage,
@@ -459,29 +463,32 @@ export const MobileShell: FC<MobileShellProps> = ({
     return map;
   }, [status]);
 
-  const tree = useMemo(() => buildFileTree(files), [files]);
+  // The assets folder (uploaded images) is browsed from Settings, not the notes list.
+  const noteEntries = useMemo(() => withoutAssets(files), [files]);
+  const assetCount = useMemo(() => assetFiles(files).length, [files]);
+  const tree = useMemo(() => buildFileTree(noteEntries), [noteEntries]);
   const sorted = useCallback(
     (nodes: TreeNode[], parent: string) => sortTreeNodes(nodes, parent, sortMode, customOrder),
     [sortMode, customOrder]
   );
 
   const folders = useMemo(
-    () => files.filter((f) => f.is_directory).map((f) => f.path).sort((a, b) => a.localeCompare(b)),
-    [files]
+    () => noteEntries.filter((f) => f.is_directory).map((f) => f.path).sort((a, b) => a.localeCompare(b)),
+    [noteEntries]
   );
-  const noteCount = useMemo(() => files.filter((f) => !f.is_directory).length, [files]);
+  const noteCount = useMemo(() => noteEntries.filter((f) => !f.is_directory).length, [noteEntries]);
 
   const searchResults = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    return files
+    return noteEntries
       .filter((f) => !f.is_directory && f.path.toLowerCase().includes(q))
       .sort((a, b) => {
         const an = a.name.toLowerCase().includes(q) ? 0 : 1;
         const bn = b.name.toLowerCase().includes(q) ? 0 : 1;
         return an - bn || a.path.localeCompare(b.path);
       });
-  }, [files, query]);
+  }, [noteEntries, query]);
 
   // ---- actions -----------------------------------------------------------
   const setSortMode = (mode: SortMode) => {
@@ -1073,6 +1080,14 @@ export const MobileShell: FC<MobileShellProps> = ({
           <div className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
             <SettingsRow icon={Folder} label="Location on this device" value={vaultPath} mono />
             <SettingsRow icon={ArrowUpDown} label="Note order" value={sortLabel} onClick={() => setSortSheetOpen(true)} />
+            {onOpenAssets && (
+              <SettingsRow
+                icon={ImageIcon}
+                label="Uploaded files"
+                value={assetCount === 0 ? "None yet" : `${assetCount} ${assetCount === 1 ? "file" : "files"}`}
+                onClick={onOpenAssets}
+              />
+            )}
           </div>
         </section>
 

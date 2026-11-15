@@ -6,7 +6,7 @@ import { Copy, Check, Maximize2 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { WikiLink } from "./WikiLink";
 import { transformWikiLinksToMarkdown } from "../utils/wikilinks/wikilinkParser";
-import { resolveImageUrl } from "../services/noeticBridge";
+import { openExternal, resolveImageUrl } from "../services/noeticBridge";
 
 const REMARK_PLUGINS = [remarkGfm];
 
@@ -157,6 +157,12 @@ export const MarkdownViewer: FC<MarkdownViewerProps> = ({
                 href={href}
                 target="_blank"
                 rel="noreferrer"
+                // The apps' webview doesn't reliably hand target="_blank" to the browser.
+                onClick={(e) => {
+                  if (!href || href.startsWith("#")) return;
+                  e.preventDefault();
+                  void openExternal(href);
+                }}
                 className="text-sky-400 hover:text-sky-300 underline underline-offset-2 transition-colors"
               >
                 {children}

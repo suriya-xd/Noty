@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import type { FC } from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, placeholder as placeholderExt } from "@codemirror/view";
+import { nativeTyping } from "../nativeTyping";
+import { orderedListRenumbering } from "../listNumbering";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import {
@@ -81,6 +83,8 @@ export const CanvasMarkdownEditor: FC<CanvasMarkdownEditorProps> = ({
           canvasCardTheme,
           placeholderExt("Type here… (# heading, **bold**, *italic*, - list)"),
           EditorView.lineWrapping,
+          nativeTyping,
+          orderedListRenumbering,
           keymap.of([
             { key: "Mod-Enter", run: (v) => (finish(v), true) },
             { key: "Escape", run: () => (cancel(), true) },

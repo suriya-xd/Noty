@@ -123,4 +123,10 @@ export interface DeviceTokenResponse {
   scope?: string;
   interval?: number;
   error_description?: string;
+  /** Sent when GitHub issues expiring (8-hour) tokens; used to renew the sign-in silently. */
+  refresh_token?: string;
+  /** Seconds until access_token expires. */
+  expires_in?: number;
+  /** Seconds until refresh_token expires. */
+  refresh_token_expires_in?: number;
 }

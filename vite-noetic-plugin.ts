@@ -424,6 +424,45 @@ export function noeticPlugin(): Plugin {
               break;
             }
 
+            case "github_refresh_token": {
+              const clientId = body.client_id || "Ov23liegRfd4WTYsq3Cf";
+              if (!body.refresh_token) return sendError("refresh_token is required", 400);
+              try {
+                const res = await fetch("https://github.com/login/oauth/access_token", {
+                  method: "POST",
+                  headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                  },
+                  body: new URLSearchParams({
+                    client_id: clientId,
+                    grant_type: "refresh_token",
+                    refresh_token: String(body.refresh_token).trim(),
+                  }).toString(),
+                });
+                const data = await res.json();
+                if (data.access_token) {
+                  sendJson({
+                    status: "approved",
+                    access_token: data.access_token,
+                    token_type: data.token_type,
+                    scope: data.scope,
+                    refresh_token: data.refresh_token,
+                    expires_in: data.expires_in,
+                    refresh_token_expires_in: data.refresh_token_expires_in,
+                  });
+                } else if (data.error === "bad_refresh_token" || data.error === "unauthorized") {
+                  sendJson({ status: "expired", error_description: data.error_description });
+                } else {
+                  sendError(`GitHub couldn't renew the sign-in (${data.error || "unknown"}).`, 502);
+                }
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                sendError(`Couldn't connect to GitHub: ${msg}`, 502);
+              }
+              break;
+            }
+
             case "github_poll_device_token": {
               const clientId = body.client_id || "Ov23liegRfd4WTYsq3Cf";
               const deviceCode = body.device_code;
@@ -451,6 +490,9 @@ export function noeticPlugin(): Plugin {
                     access_token: data.access_token,
                     token_type: data.token_type,
                     scope: data.scope,
+                    refresh_token: data.refresh_token,
+                    expires_in: data.expires_in,
+                    refresh_token_expires_in: data.refresh_token_expires_in,
                   });
                 } else if (data.error === "authorization_pending") {
                   sendJson({

@@ -75,9 +75,9 @@ export const OnboardingModal: FC<OnboardingModalProps> = ({ isOpen, onAuthentica
         deviceCode: data.device_code,
         interval: data.interval,
         expiresIn: data.expires_in,
-        onApproved: async (accessToken) => {
+        onApproved: async (accessToken, grant) => {
           const user = await GitHubService.validateToken(accessToken);
-          GitHubService.saveGitHubAuth(accessToken, user);
+          GitHubService.saveGitHubAuth(accessToken, user, grant);
           setIsPollingDeviceToken(false);
           onAuthenticated();
         },

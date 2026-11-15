@@ -4,7 +4,7 @@ import {
   GitHubUser,
   WorkspaceList,
 } from "../types/noetic";
-import { NoeticBridge } from "./noeticBridge";
+import { NoeticBridge, setCloudGuard } from "./noeticBridge";
 
 export const GITHUB_CLIENT_ID = "Ov23liegRfd4WTYsq3Cf";
 /**
@@ -33,8 +33,11 @@ export interface DeviceFlowPollOptions {
   expiresAt?: number;
   /** Called when GitHub asks for more time between checks, with the new spacing in seconds. */
   onIntervalChange?: (seconds: number) => void;
-  /** Called once, with the access token, when the user approves. A throw is reported via onFailure. */
-  onApproved: (token: string) => Promise<void> | void;
+  /**
+   * Called once, with the access token and GitHub's full answer (which carries the refresh token
+   * for expiring tokens), when the user approves. A throw is reported via onFailure.
+   */
+  onApproved: (token: string, grant: DeviceTokenResponse) => Promise<void> | void;
   onFailure: (message: string) => void;
 }
 
@@ -104,7 +107,7 @@ export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
       if (r.status === "approved" && r.access_token) {
         stop();
         try {
-          await opts.onApproved(r.access_token);
+          await opts.onApproved(r.access_token, r);
         } catch (err) {
           opts.onFailure(err instanceof Error ? err.message : String(err));
         }
@@ -139,6 +142,52 @@ export function pollDeviceFlow(opts: DeviceFlowPollOptions): () => void {
 }
 
 const PENDING_SIGN_IN_STORAGE_KEY = "noetic_pending_sign_in";
+
+/**
+ * The saved sign-in. GitHub's user tokens can expire after 8 hours; when they do, GitHub also
+ * sends a refresh token (valid for six months, renewed by every use) that is swapped for a new
+ * pair before the access token runs out. That keeps the account signed in indefinitely as long
+ * as the app is opened at least once every six months.
+ */
+export interface StoredGitHubAuth {
+  token: string;
+  user: GitHubUser;
+  refreshToken?: string;
+  /** When `token` stops working (ms since epoch). Absent for tokens that don't expire. */
+  expiresAt?: number;
+  /** When `refreshToken` stops working (ms since epoch). */
+  refreshTokenExpiresAt?: number;
+  /** Set once GitHub has refused the refresh token: only signing in again helps. */
+  needsSignIn?: boolean;
+}
+
+/** Renew this long before the access token expires, so a slow sync never starts with a dying token. */
+const REFRESH_MARGIN_MS = 10 * 60 * 1000;
+
+/** The renewal in progress. A refresh token works once, so two renewals at once would sign out. */
+let refreshInFlight: Promise<string | null> | null = null;
+
+/** Notes folders whose saved copy of the token is known to match the current one. */
+const vaultsInStep = new Map<string, string>();
+
+/** Called after the token changes, e.g. to update the notes folder's saved copy. */
+const tokenListeners = new Set<(token: string) => void>();
+
+/** Message shown when the sign-in can't be renewed and the user must sign in again. */
+export const SIGN_IN_AGAIN_MESSAGE = "Your GitHub sign-in has ended. Sign in again from Settings to keep syncing.";
+
+/** True for errors that mean GitHub turned the saved sign-in down. */
+export function isAuthError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err ?? "")).toLowerCase();
+  return (
+    msg.includes("sign-in was not accepted") ||
+    msg.includes("authentication") ||
+    msg.includes("401") ||
+    msg.includes("unauthorized") ||
+    msg.includes("bad credentials") ||
+    msg.includes("too many redirects or authentication replays")
+  );
+}
 
 /** A sign-in the user has started but not yet approved, kept so it survives the app restarting. */
 export interface PendingSignIn {
@@ -265,7 +314,9 @@ export const GitHubService = {
   async setUpStorage(vaultPath: string): Promise<WorkspaceList> {
     const auth = GitHubService.getStoredGitHubAuth();
     if (!auth) throw new Error("Sign in first to sync your notes.");
-    const { token, user } = auth;
+    const { user } = auth;
+    const token = (await GitHubService.getValidToken()) ?? auth.token;
+    vaultsInStep.set(vaultPath, token);
     const remoteUrl = await GitHubService.ensureNotesRepository(token, user.login);
     return NoeticBridge.connectVault({
       vault_path: vaultPath,
@@ -323,14 +374,22 @@ export const GitHubService = {
   },
 
   /**
-   * Save authenticated session to localStorage
+   * Saves the signed-in account. `grant` is GitHub's answer when the token was issued; for
+   * expiring tokens it holds the refresh token and lifetimes.
    */
-  saveGitHubAuth(token: string, user: GitHubUser): void {
+  saveGitHubAuth(token: string, user: GitHubUser, grant?: DeviceTokenResponse): void {
+    const now = Date.now();
+    const auth: StoredGitHubAuth = { token: token.trim(), user };
+    if (grant?.refresh_token) auth.refreshToken = grant.refresh_token.trim();
+    if (grant?.expires_in) auth.expiresAt = now + grant.expires_in * 1000;
+    if (grant?.refresh_token_expires_in) auth.refreshTokenExpiresAt = now + grant.refresh_token_expires_in * 1000;
+    vaultsInStep.clear();
+    GitHubService.writeStoredAuth(auth);
+  },
+
+  writeStoredAuth(auth: StoredGitHubAuth): void {
     try {
-      localStorage.setItem(
-        GITHUB_AUTH_STORAGE_KEY,
-        JSON.stringify({ token: token.trim(), user })
-      );
+      localStorage.setItem(GITHUB_AUTH_STORAGE_KEY, JSON.stringify(auth));
     } catch (e) {
       console.warn("Failed to persist GitHub auth to localStorage:", e);
     }
@@ -339,13 +398,144 @@ export const GitHubService = {
   /**
    * Retrieve stored session from localStorage
    */
-  getStoredGitHubAuth(): { token: string; user: GitHubUser } | null {
+  getStoredGitHubAuth(): StoredGitHubAuth | null {
     try {
       const raw = localStorage.getItem(GITHUB_AUTH_STORAGE_KEY);
       if (!raw) return null;
-      return JSON.parse(raw);
+      const auth = JSON.parse(raw) as StoredGitHubAuth;
+      return auth?.token ? auth : null;
     } catch {
       return null;
+    }
+  },
+
+  /** Runs `listener` with the new token every time the sign-in is renewed. Returns an unsubscribe. */
+  onTokenChanged(listener: (token: string) => void): () => void {
+    tokenListeners.add(listener);
+    return () => tokenListeners.delete(listener);
+  },
+
+  /**
+   * The access token to use right now, renewed first when it is about to expire (or when `force`
+   * is set, after GitHub turned it down). Never signs the user out: if GitHub can't be reached
+   * the current token is returned and the next call tries again. Returns null when signed out.
+   */
+  async getValidToken(force = false): Promise<string | null> {
+    const auth = GitHubService.getStoredGitHubAuth();
+    if (!auth) return null;
+    if (!auth.refreshToken || auth.needsSignIn) return auth.token;
+    const fresh = auth.expiresAt === undefined || auth.expiresAt - Date.now() > REFRESH_MARGIN_MS;
+    if (fresh && !force) return auth.token;
+
+    if (!refreshInFlight) {
+      refreshInFlight = GitHubService.renewSignIn(auth).finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    return (await refreshInFlight) ?? auth.token;
+  },
+
+  /** Swaps the refresh token for a new pair and saves it. Null if it couldn't be renewed now. */
+  async renewSignIn(auth: StoredGitHubAuth): Promise<string | null> {
+    let r: DeviceTokenResponse;
+    try {
+      r = await NoeticBridge.refreshGitHubToken(auth.refreshToken!, GITHUB_CLIENT_ID);
+    } catch (err) {
+      // Offline or GitHub unavailable: the saved sign-in is still good, try again later.
+      console.warn("[Noetic] Couldn't renew the GitHub sign-in yet:", err);
+      return null;
+    }
+    // Another tab or window may have renewed in the meantime with the same refresh token.
+    const latest = GitHubService.getStoredGitHubAuth();
+    if (latest && latest.refreshToken !== auth.refreshToken) return latest.token;
+
+    if (r.status === "approved" && r.access_token) {
+      const now = Date.now();
+      const next: StoredGitHubAuth = {
+        token: r.access_token.trim(),
+        user: auth.user,
+        refreshToken: r.refresh_token?.trim() || auth.refreshToken,
+        expiresAt: r.expires_in ? now + r.expires_in * 1000 : undefined,
+        refreshTokenExpiresAt: r.refresh_token_expires_in
+          ? now + r.refresh_token_expires_in * 1000
+          : auth.refreshTokenExpiresAt,
+      };
+      GitHubService.writeStoredAuth(next);
+      for (const listener of tokenListeners) {
+        try {
+          listener(next.token);
+        } catch {}
+      }
+      return next.token;
+    }
+    if (r.status === "expired") {
+      GitHubService.writeStoredAuth({ ...auth, needsSignIn: true });
+    }
+    return null;
+  },
+
+  /**
+   * Checked at start-up. A sign-in that can be renewed is renewed if due. One saved before
+   * renewal was supported has no refresh token: if GitHub has already let it expire, the user is
+   * asked to sign in once more (after that it renews itself). Network trouble never counts
+   * against the sign-in.
+   */
+  async checkSignIn(): Promise<"signed-out" | "ok" | "needs-sign-in" | "unknown"> {
+    const auth = GitHubService.getStoredGitHubAuth();
+    if (!auth) return "signed-out";
+    if (auth.needsSignIn) return "needs-sign-in";
+    if (auth.refreshToken) {
+      await GitHubService.getValidToken();
+      return GitHubService.getStoredGitHubAuth()?.needsSignIn ? "needs-sign-in" : "ok";
+    }
+    const res = await githubFetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    }).catch(() => null);
+    if (!res) return "unknown";
+    if (res.status === 401) {
+      GitHubService.writeStoredAuth({ ...auth, needsSignIn: true });
+      return "needs-sign-in";
+    }
+    return res.ok ? "ok" : "unknown";
+  },
+
+  /**
+   * Makes sure the notes folder's saved copy of the token (which saving and syncing use) is the
+   * current, unexpired one. Call before anything that talks to the cloud.
+   */
+  async prepareVaultSignIn(vaultPath: string, force = false): Promise<void> {
+    if (!vaultPath) return;
+    const token = await GitHubService.getValidToken(force);
+    if (!token || vaultsInStep.get(vaultPath) === token) return;
+    try {
+      await NoeticBridge.setVaultConfig(vaultPath, { github_token: token });
+      vaultsInStep.set(vaultPath, token);
+    } catch (err) {
+      console.warn("[Noetic] Couldn't update the notes folder's sign-in:", err);
+    }
+  },
+
+  /**
+   * Runs a cloud operation with a current token. If GitHub turns the token down, the sign-in is
+   * renewed and the operation tried once more, so an expired token never surfaces as an error.
+   */
+  async withFreshSignIn<T>(vaultPath: string, run: () => Promise<T>): Promise<T> {
+    await GitHubService.prepareVaultSignIn(vaultPath);
+    try {
+      return await run();
+    } catch (err) {
+      const auth = GitHubService.getStoredGitHubAuth();
+      if (!isAuthError(err) || !auth?.refreshToken) throw err;
+      const before = auth.token;
+      await GitHubService.prepareVaultSignIn(vaultPath, true);
+      const after = GitHubService.getStoredGitHubAuth();
+      if (after?.needsSignIn) throw new Error(SIGN_IN_AGAIN_MESSAGE);
+      if (!after || after.token === before) throw err;
+      return run();
     }
   },
 
@@ -353,8 +543,12 @@ export const GitHubService = {
    * Clear session
    */
   clearGitHubAuth(): void {
+    vaultsInStep.clear();
     try {
       localStorage.removeItem(GITHUB_AUTH_STORAGE_KEY);
     } catch {}
   },
 };
+
+// Every save, sync and workspace change renews an expiring sign-in first.
+setCloudGuard((vaultPath, run) => GitHubService.withFreshSignIn(vaultPath, run));

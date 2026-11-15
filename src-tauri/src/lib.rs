@@ -156,6 +156,14 @@ fn github_poll_device_token(
     github_auth::poll_device_token(client_id, device_code)
 }
 
+#[tauri::command(async, rename_all = "snake_case")]
+fn github_refresh_token(
+    client_id: Option<String>,
+    refresh_token: String,
+) -> Result<DeviceTokenResponse, String> {
+    github_auth::refresh_access_token(client_id, refresh_token)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn save_image_file(vault_path: String, rel_path: String, data: Vec<u8>) -> Result<(), String> {
     fs_engine::save_image_file(&vault_path, &rel_path, data)
@@ -280,6 +288,7 @@ pub fn run() {
             init_or_open_vault,
             github_start_device_flow,
             github_poll_device_token,
+            github_refresh_token,
             save_image_file
         ])
         .run(tauri::generate_context!())
