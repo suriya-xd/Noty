@@ -12,7 +12,6 @@ import {
   CanvasData,
   CanvasEdge,
   CanvasNode,
-  CanvasSide,
   Point,
   Rect,
   ViewportState,
@@ -426,7 +425,6 @@ export const CanvasView: FC<CanvasViewProps> = ({
   // Draft edge connection
   const [draftEdge, setDraftEdge] = useState<{
     fromNodeId: string;
-    fromSide: CanvasSide;
     currentPoint: Point;
   } | null>(null);
 
@@ -852,7 +850,6 @@ export const CanvasView: FC<CanvasViewProps> = ({
           const newEdge: CanvasEdge = {
             id: `edge_${Math.random().toString(36).slice(2, 10)}`,
             fromNode: draftEdge.fromNodeId,
-            fromSide: draftEdge.fromSide,
             toNode: targetNode.id,
             toEnd: "arrow",
           };
@@ -876,7 +873,6 @@ export const CanvasView: FC<CanvasViewProps> = ({
           const newEdge: CanvasEdge = {
             id: `edge_${Math.random().toString(36).slice(2, 10)}`,
             fromNode: draftEdge.fromNodeId,
-            fromSide: draftEdge.fromSide,
             toNode: newCardId,
             toEnd: "arrow",
           };
@@ -1026,7 +1022,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
     });
   };
 
-  const handleStartEdgeConnect = (e: React.MouseEvent, nodeId: string, side: CanvasSide) => {
+  const handleStartEdgeConnect = (e: React.MouseEvent, nodeId: string) => {
     e.stopPropagation();
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -1037,7 +1033,6 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
     setDraftEdge({
       fromNodeId: nodeId,
-      fromSide: side,
       currentPoint: worldPt,
     });
   };

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { FC } from "react";
-import { CanvasNode, CanvasSide } from "../../types/canvas";
+import { CanvasNode } from "../../types/canvas";
 import { getCanvasColorStyles } from "../../utils/canvas/parser";
 import { calculateCanvasNodeFontSize, getTextNodeFontSize } from "../../utils/canvas/math";
 import { CanvasTextNode } from "./CanvasTextNode";
@@ -26,7 +26,7 @@ interface CanvasNodeItemProps {
   onSelect: (e: React.MouseEvent, nodeId: string) => void;
   onStartDrag: (e: React.MouseEvent, nodeId: string) => void;
   onStartResize: (e: React.MouseEvent, nodeId: string, handle: ResizeHandle) => void;
-  onStartEdgeConnect: (e: React.MouseEvent, nodeId: string, side: CanvasSide) => void;
+  onStartEdgeConnect: (e: React.MouseEvent, nodeId: string) => void;
   onUpdateNode: (updatedNode: CanvasNode) => void;
   onOpenFile?: (path: string) => void;
   onPreviewImage?: (src: string, alt?: string, title?: string) => void;
@@ -54,31 +54,26 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
   const colorStyles = getCanvasColorStyles(node.color);
   const dynamicFontSize = calculateCanvasNodeFontSize(node.width, node.height);
 
-  // Connection sides
-  const sides: CanvasSide[] = ["top", "right", "bottom", "left"];
-
-  // Connection ports float outside the card, clear of the edge (where resize handles sit).
-  // Touch screens get a wider gap, since each port's finger-sized hit area reaches 14px around it.
+  // A single connection port floats below the card, clear of the edge (where resize handles sit).
+  // Which side an edge leaves from is decided afterwards from where the other card is.
+  // Touch screens get a wider gap, since the port's finger-sized hit area reaches 14px around it.
   const portSize = touchMode ? 20 : 14;
   const portGap = touchMode ? 32 : 12;
   const portReach = portGap + portSize;
 
   /**
-   * The strip from the card edge out to a port. On desktop it is part of the port, so the pointer
-   * can cross the gap without leaving the card (which would hide the ports) and pressing anywhere
-   * on it starts a connection. Touch screens have no hover, so there only the dot is touchable.
+   * The strip from the card's bottom edge down to the port. On desktop it is part of the port, so
+   * the pointer can cross the gap without leaving the card (which would hide the port) and pressing
+   * anywhere on it starts a connection. Touch screens have no hover, so there only the dot is touchable.
    */
-  const getPortStripStyle = (side: CanvasSide): React.CSSProperties => {
-    switch (side) {
-      case "top":
-        return { bottom: "100%", left: "50%", transform: "translateX(-50%)", width: portSize, height: portReach, alignItems: "flex-start", justifyContent: "center" };
-      case "bottom":
-        return { top: "100%", left: "50%", transform: "translateX(-50%)", width: portSize, height: portReach, alignItems: "flex-end", justifyContent: "center" };
-      case "left":
-        return { right: "100%", top: "50%", transform: "translateY(-50%)", width: portReach, height: portSize, alignItems: "center", justifyContent: "flex-start" };
-      case "right":
-        return { left: "100%", top: "50%", transform: "translateY(-50%)", width: portReach, height: portSize, alignItems: "center", justifyContent: "flex-end" };
-    }
+  const portStripStyle: React.CSSProperties = {
+    top: "100%",
+    left: "50%",
+    transform: "translateX(-50%)",
+    width: portSize,
+    height: portReach,
+    alignItems: "flex-end",
+    justifyContent: "center",
   };
 
   return (
@@ -164,25 +159,23 @@ export const CanvasNodeItem: FC<CanvasNodeItemProps> = ({
         )}
       </div>
 
-      {/* 4-Side Connection Ports (Visible on hover or selection) */}
-      {(isHovered || isSelected) &&
-        sides.map((side) => (
+      {/* Connection Port (Visible on hover or selection) */}
+      {(isHovered || isSelected) && (
+        <div
+          title="Drag to connect"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            onStartEdgeConnect(e, node.id);
+          }}
+          style={portStripStyle}
+          className={`absolute z-30 flex group/port cursor-crosshair ${touchMode ? "pointer-events-none" : ""}`}
+        >
           <div
-            key={side}
-            title={`Connect from ${side}`}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              onStartEdgeConnect(e, node.id, side);
-            }}
-            style={getPortStripStyle(side)}
-            className={`absolute z-30 flex group/port cursor-crosshair ${touchMode ? "pointer-events-none" : ""}`}
-          >
-            <div
-              style={{ width: portSize, height: portSize }}
-              className="canvas-handle relative shrink-0 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md group-hover/port:scale-135 group-hover/port:bg-sky-300 transition-all pointer-events-auto"
-            />
-          </div>
-        ))}
+            style={{ width: portSize, height: portSize }}
+            className="canvas-handle relative shrink-0 rounded-full bg-sky-400 border-2 border-[#0d1117] shadow-md group-hover/port:scale-135 group-hover/port:bg-sky-300 transition-all pointer-events-auto"
+          />
+        </div>
+      )}
 
       {/* 8 Resize Handles (Visible when selected; not on touch screens, where pinching resizes) */}
       {isSelected && !touchMode && (

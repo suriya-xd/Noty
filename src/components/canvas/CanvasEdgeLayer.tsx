@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { FC } from "react";
-import { CanvasColor, CanvasEdge, CanvasNode, CanvasSide, Point } from "../../types/canvas";
+import { CanvasColor, CanvasEdge, CanvasNode, Point } from "../../types/canvas";
 import {
   computeBezierPath,
   getAutoSides,
@@ -16,7 +16,6 @@ interface CanvasEdgeLayerProps {
   selectedEdgeId: string | null;
   draftEdge: {
     fromNodeId: string;
-    fromSide: CanvasSide;
     currentPoint: Point;
   } | null;
   onSelectEdge: (e: React.MouseEvent, edgeId: string) => void;
@@ -128,13 +127,21 @@ export const CanvasEdgeLayer: FC<CanvasEdgeLayerProps> = ({
 
         return (
           <g key={edge.id} className="group">
-            {/* Generous invisible stroke for hit testing and hover/click */}
+            {/* Generous invisible stroke for hit testing and hover/click. The <svg> is
+                pointer-events: none, so this path must opt back in (Tailwind has no class for
+                "stroke", hence the inline style). */}
             <path
               d={curve.pathString}
               fill="none"
               stroke="transparent"
               strokeWidth={26}
-              className="pointer-events-stroke cursor-pointer"
+              style={{ pointerEvents: "stroke" }}
+              className="cursor-pointer"
+              onMouseDown={(e) => {
+                // A left press on a line is not a press on empty canvas: don't start a marquee.
+                // Other buttons (middle-drag pan) still reach the canvas.
+                if (e.button === 0) e.stopPropagation();
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectEdge(e, edge.id);
@@ -237,25 +244,17 @@ export const CanvasEdgeLayer: FC<CanvasEdgeLayerProps> = ({
         (() => {
           const fromNode = nodesMap.get(draftEdge.fromNodeId);
           if (!fromNode) return null;
-          const startPt = getNodeSidePoint(fromNode, draftEdge.fromSide);
-          // Auto choose opposite side based on target direction
-          const dx = draftEdge.currentPoint.x - startPt.x;
-          const dy = draftEdge.currentPoint.y - startPt.y;
-          const toSide: CanvasSide =
-            Math.abs(dx) > Math.abs(dy)
-              ? dx > 0
-                ? "left"
-                : "right"
-              : dy > 0
-              ? "top"
-              : "bottom";
-
-          const draftCurve = computeBezierPath(
-            startPt,
-            draftEdge.fromSide,
-            draftEdge.currentPoint,
-            toSide
-          );
+          // Pick both sides live, the same way a finished edge does, treating the cursor as a
+          // zero-size card so the preview matches the edge it will become.
+          const cursor = draftEdge.currentPoint;
+          const { fromSide, toSide } = getAutoSides(fromNode, {
+            x: cursor.x,
+            y: cursor.y,
+            width: 0,
+            height: 0,
+          });
+          const startPt = getNodeSidePoint(fromNode, fromSide);
+          const draftCurve = computeBezierPath(startPt, fromSide, cursor, toSide);
 
           return (
             <g className="pointer-events-none">
