@@ -56,9 +56,12 @@ import {
   saveSortMode,
   getParentPath,
   moveItemStep,
+  planDrop,
   renameInCustomOrder,
   sortTreeNodes,
 } from "../../utils/customOrder";
+import { useTreeDrag } from "./useTreeDrag";
+import type { DragItem, DropTarget } from "./useTreeDrag";
 import { ConfirmSheet, Sheet, SheetAction, TextPromptSheet } from "./mobileUi";
 import { goBack, pushBackEntry, useBackLayer, useBackNavigation } from "../../utils/backNavigation";
 import type { HistoryStatus } from "../editorHistory";
@@ -567,6 +570,81 @@ export const MobileShell: FC<MobileShellProps> = ({
     applyOrder(moveItemStep(base, parent, names, node.name, direction));
   };
 
+  // ---- drag to rearrange ---------------------------------------------------
+  const notesScrollRef = useRef<HTMLDivElement>(null);
+
+  /** The contents of a folder ("" = top level) in the order shown on screen. */
+  const childrenAt = (folder: string): TreeNode[] => {
+    if (!folder) return sorted(tree, "");
+    let nodes = tree;
+    let node: TreeNode | undefined;
+    let path = "";
+    for (const part of folder.split("/")) {
+      path = path ? `${path}/${part}` : part;
+      node = nodes.find((n) => n.isDirectory && n.path === path);
+      if (!node) return [];
+      nodes = node.children;
+    }
+    return node ? sorted(node.children, folder) : [];
+  };
+
+  const handleTreeDrop = async (item: DragItem, target: DropTarget) => {
+    const plan = planDrop(customOrder, {
+      source: item.path,
+      target: target.path,
+      position: target.position,
+      siblingNames: childrenAt(getParentPath(target.path)).map((n) => n.name),
+      childNames: target.position === "inside" ? childrenAt(target.path).map((n) => n.name) : [],
+      fromScreen: sortMode !== "custom",
+    });
+    if (plan.newPath !== item.path) {
+      // Moving a folder moves everything in it; a refused move (name taken) changes nothing.
+      const ok = await onRenameFile(item.path, plan.newPath);
+      if (ok === false) return;
+    }
+    if (sortMode !== "custom") setSortMode("custom");
+    applyOrder(plan.order);
+    if (target.position === "inside" && target.path) {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(target.path);
+        return next;
+      });
+    }
+  };
+
+  const { drag, bindRow } = useTreeDrag({
+    scrollRef: notesScrollRef,
+    isCollapsed: (path) => collapsed.has(path),
+    onOpenFolder: (path) =>
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      }),
+    onDrop: (item, target) => void handleTreeDrop(item, target),
+  });
+
+  /** The line showing where a dragged item will land, above or below a row. */
+  const dropLine = (path: string) => {
+    const t = drag?.target;
+    if (!t || t.path !== path || t.position === "inside") return null;
+    return (
+      <span
+        aria-hidden
+        className={`pointer-events-none absolute left-2 right-2 h-[3px] rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.8)] ${
+          t.position === "before" ? "-top-[2px]" : "-bottom-[2px]"
+        }`}
+      />
+    );
+  };
+  const rowDragClass = (path: string) =>
+    drag?.path === path
+      ? "opacity-40"
+      : drag?.target?.path === path && drag.target.position === "inside"
+      ? "bg-sky-500/15 ring-1 ring-inset ring-sky-400/60 rounded-xl"
+      : "";
+
   // ---- notes list --------------------------------------------------------
   const StatusDot: FC<{ path: string }> = ({ path }) => {
     const s = fileStatus.get(path);
@@ -588,7 +666,14 @@ export const MobileShell: FC<MobileShellProps> = ({
       const children = sorted(node.children, node.path);
       return (
         <li key={node.path}>
-          <div className="flex items-center" style={indent}>
+          <div
+            className={`relative flex items-center select-none [-webkit-touch-callout:none] transition-colors ${rowDragClass(node.path)}`}
+            style={indent}
+            data-drop-path={node.path}
+            data-drop-dir=""
+            {...bindRow({ path: node.path, name: node.name, isDir: true })}
+          >
+            {dropLine(node.path)}
             <button
               type="button"
               onClick={() => toggleFolder(node.path)}
@@ -629,7 +714,14 @@ export const MobileShell: FC<MobileShellProps> = ({
 
     const canvas = isCanvasPath(node.name);
     return (
-      <li key={node.path} className="flex items-center" style={indent}>
+      <li
+        key={node.path}
+        className={`relative flex items-center select-none [-webkit-touch-callout:none] transition-colors ${rowDragClass(node.path)}`}
+        style={indent}
+        data-drop-path={node.path}
+        {...bindRow({ path: node.path, name: node.name, isDir: false })}
+      >
+        {dropLine(node.path)}
         <button
           type="button"
           onClick={() => openFile(node.path)}
@@ -854,7 +946,7 @@ export const MobileShell: FC<MobileShellProps> = ({
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto overscroll-contain px-2 pb-28">
+      <div ref={notesScrollRef} className="flex-1 overflow-y-auto overscroll-contain px-2 pb-28">
         {query.trim() ? (
           searchResults.length === 0 ? (
             <div className="px-6 pt-16 text-center">
@@ -920,9 +1012,45 @@ export const MobileShell: FC<MobileShellProps> = ({
               </button>
             </div>
             <ul>{rootNodes.map((n) => renderNode(n, 0, rootNodes))}</ul>
+            {drag ? (
+              // Dropping here takes an item out of its folder, to the end of the top level.
+              <div
+                data-drop-path=""
+                data-drop-root=""
+                className={`mt-2 mx-1 h-14 rounded-xl border-2 border-dashed flex items-center justify-center text-[14px] transition-colors ${
+                  drag.target && drag.target.path === "" && drag.target.position === "inside"
+                    ? "border-sky-400 bg-sky-500/10 text-sky-300"
+                    : "border-[#30363d] text-[#8b949e]"
+                }`}
+              >
+                Move to top level
+              </div>
+            ) : (
+              rootNodes.length > 1 && (
+                <p className="px-3 pt-3 text-[13px] text-[#6e7681]">Press and hold an item to move it.</p>
+              )
+            )}
           </>
         )}
       </div>
+
+      {/* What's being dragged, under the finger. */}
+      {drag && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed z-[70] -translate-x-1/2 -translate-y-[130%] max-w-[70vw] h-11 px-3.5 rounded-xl bg-[#1c2128] border border-sky-500/50 shadow-2xl shadow-black/60 flex items-center gap-2.5"
+          style={{ left: drag.x, top: drag.y }}
+        >
+          {drag.isDir ? (
+            <Folder className="w-5 h-5 text-amber-400 shrink-0" />
+          ) : isCanvasPath(drag.name) ? (
+            <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
+          ) : (
+            <FileText className="w-5 h-5 text-[#8b949e] shrink-0" />
+          )}
+          <span className="truncate text-[15px] text-[#f0f6fc]">{drag.isDir ? drag.name : displayName(drag.name)}</span>
+        </div>
+      )}
 
       <button
         type="button"

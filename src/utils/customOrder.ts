@@ -153,7 +153,8 @@ export function moveItemStep(
 }
 
 /**
- * Handles path renaming inside the custom order map
+ * Handles path renaming inside the custom order map. A renamed or moved folder takes the saved
+ * order of everything inside it along, so its contents keep their arrangement.
  */
 export function renameInCustomOrder(
   currentOrder: CustomOrderMap,
@@ -165,7 +166,13 @@ export function renameInCustomOrder(
   const oldName = getItemName(oldPath);
   const newName = getItemName(newPath);
 
-  const updated: CustomOrderMap = { ...currentOrder };
+  const updated: CustomOrderMap = {};
+  // Re-key the folder's own order and that of every folder inside it.
+  for (const [key, list] of Object.entries(currentOrder)) {
+    if (key === oldPath) updated[newPath] = list;
+    else if (key.startsWith(oldPath + "/")) updated[newPath + key.slice(oldPath.length)] = list;
+    else updated[key] = list;
+  }
 
   if (oldParent === newParent) {
     if (updated[oldParent]) {
@@ -184,6 +191,64 @@ export function renameInCustomOrder(
   }
 
   return updated;
+}
+
+export type DropPosition = "before" | "after" | "inside";
+
+/**
+ * Whether `source` can be dropped at `target`. Nothing can be dropped on itself, and a folder
+ * can't go inside itself or anything it contains. Only folders take an "inside" drop.
+ */
+export function canDrop(source: string, target: string, position: DropPosition, targetIsDir: boolean): boolean {
+  if (!source || source === target) return false;
+  if (target.startsWith(source + "/")) return false;
+  if (position === "inside" && !targetIsDir) return false;
+  return true;
+}
+
+export interface DropPlan {
+  /** Where the dragged item ends up; equal to the source when it only changes order. */
+  newPath: string;
+  /** The custom order with the item in its new place. */
+  order: CustomOrderMap;
+}
+
+/**
+ * Works out a drag-and-drop in the notes tree. `target` is "" with "inside" for the top level.
+ *
+ * `siblingNames` is the on-screen order of the target's siblings (for before/after), and
+ * `childNames` the on-screen order of the folder's contents (for inside). When the list isn't in
+ * custom order (`fromScreen`), the arrangement on screen becomes the starting point, so dropping
+ * one item doesn't shuffle the rest.
+ */
+export function planDrop(
+  order: CustomOrderMap,
+  drop: {
+    source: string;
+    target: string;
+    position: DropPosition;
+    siblingNames: string[];
+    childNames: string[];
+    fromScreen: boolean;
+  }
+): DropPlan {
+  const { source, target, position, siblingNames, childNames, fromScreen } = drop;
+  const name = getItemName(source);
+  const dest = position === "inside" ? target : getParentPath(target);
+  const newPath = dest ? `${dest}/${name}` : name;
+
+  let next = newPath === source ? { ...order } : renameInCustomOrder(order, source, newPath);
+
+  if (position === "inside") {
+    const base = fromScreen || !next[dest] ? childNames : next[dest];
+    next[dest] = [...base.filter((n) => n !== name), name];
+    return { newPath, order: next };
+  }
+
+  const names = Array.from(new Set([...siblingNames, name]));
+  if (fromScreen || !next[dest]) next = { ...next, [dest]: siblingNames.filter((n) => n !== name) };
+  next = reorderItem(next, dest, names, name, getItemName(target), position);
+  return { newPath, order: next };
 }
 
 /**

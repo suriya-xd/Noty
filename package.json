@@ -21,6 +21,7 @@
     "test:blocks": "npx tsx ./scripts/test-block-move.ts",
     "test:lists": "npx tsx ./scripts/test-list-numbering.ts",
     "test:links": "npx tsx ./scripts/test-links.ts",
+    "test:tree": "npx tsx ./scripts/test-tree-drop.ts",
     "test:auth": "npx tsx ./scripts/test-device-flow.ts",
     "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"
   },
