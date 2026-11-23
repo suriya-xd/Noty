@@ -1,6 +1,7 @@
 import { EditorSelection } from "@codemirror/state";
 import type { ChangeSpec, SelectionRange } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
+import { insertTable } from "./markdownTables";
 
 /**
  * Markdown formatting commands shared by the desktop toolbar, the mobile toolbar and the
@@ -19,7 +20,8 @@ export type FormatKind =
   | "task"
   | "quote"
   | "wikilink"
-  | "link";
+  | "link"
+  | "table";
 
 const INLINE_MARKERS: Partial<Record<FormatKind, string>> = {
   bold: "**",
@@ -388,6 +390,8 @@ export function applyFormat(view: EditorView, kind: FormatKind): boolean {
   const marker = INLINE_MARKERS[kind];
   if (marker) toggleInline(view, marker);
   else if (kind === "wikilink") insertWikilink(view);
+  // The new table's first heading takes the focus, ready to be typed over.
+  else if (kind === "table") return insertTable(view);
   else if (kind === "link") {
     // The link popup takes the focus; the editor gets it back when the popup closes.
     if (!insertLink(view)) return true;

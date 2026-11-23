@@ -32,6 +32,7 @@ import {
   ListChecks,
   Quote,
   Link2,
+  Table2,
   Undo2,
   Redo2,
 } from "lucide-react";
@@ -124,6 +125,8 @@ export const FORMAT_BUTTONS: FormatButton[] = [
   "divider",
   { kind: "wikilink", label: "Link to a note", text: "[[ ]]" },
   { kind: "link", label: "Web link", shortcut: "Ctrl/Cmd+K", icon: Link2 },
+  "divider",
+  { kind: "table", label: "Insert table", icon: Table2 },
 ];
 
 const markdownHighlightStyle = HighlightStyle.define([
