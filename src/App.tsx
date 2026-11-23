@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback, useLayoutEffect } from "react";
 import { Editor } from "./components/Editor";
 import type { OpenFileOptions } from "./components/Editor";
 import { CanvasView } from "./components/canvas/LazyCanvasView";
@@ -11,6 +11,7 @@ import {
   VaultEntry,
 } from "./types/noetic";
 import { vaultIndex } from "./utils/wikilinks/vaultIndex";
+import { recordOpened, removeFromQuickAccess, renameInQuickAccess, setQuickAccessScope } from "./utils/quickAccess";
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
 import { isAssetPath, withoutAssets } from "./utils/assets";
@@ -94,6 +95,11 @@ export default function App() {
   const [isMobile, setIsMobile] = useState<boolean>(
     () => typeof window !== "undefined" && window.innerWidth < 768
   );
+
+  // Pins and recently opened items belong to the open workspace. A layout effect, so the
+  // dashboard never paints the previous workspace's items.
+  const quickAccessWorkspace = status?.branch ?? "";
+  useLayoutEffect(() => setQuickAccessScope(vaultPath, quickAccessWorkspace), [vaultPath, quickAccessWorkspace]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -239,6 +245,7 @@ export default function App() {
         return tabs.map((t, i) => (i === slot ? relPath : t));
       });
       backlinksGraph.updateFileLinks(relPath, content);
+      recordOpened(relPath, false);
     } catch (err) {
       console.error("Failed to read file:", err);
       showToast(`Error reading file: ${err}`, "error");
@@ -393,6 +400,7 @@ export default function App() {
       await NoeticBridge.deleteFile(vaultPath, relPath);
       vaultIndex.remove(relPath);
       backlinksGraph.removeFileLinks(relPath);
+      removeFromQuickAccess(relPath);
 
       const isGone = (p: string) => p === relPath || p.startsWith(relPath + "/");
       setOpenTabs((tabs) => tabs.filter((t) => !isGone(t)));
@@ -436,6 +444,7 @@ export default function App() {
       const renamed = (p: string) =>
         p === oldPath ? newPath : p.startsWith(oldPath + "/") ? newPath + p.slice(oldPath.length) : p;
       setOpenTabs((tabs) => tabs.map(renamed));
+      renameInQuickAccess(oldPath, newPath);
       if (activeFilePath) activeFilePathRef.current = renamed(activeFilePath);
       if (activeFilePath === oldPath) {
         setActiveFilePath(newPath);

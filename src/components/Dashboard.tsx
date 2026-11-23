@@ -12,10 +12,26 @@ import {
   Plus,
   X,
   LayoutGrid,
+  Pin,
+  Clock,
+  FolderOpen,
 } from "lucide-react";
 import { FileStatus, RepoStatusPayload, VaultEntry } from "../types/noetic";
 import { buildFileTree, countNotes } from "./Sidebar";
 import { backlinksGraph } from "../utils/wikilinks/backlinksGraph";
+import { dashboardItems, revealInSidebar, togglePin, useQuickAccess } from "../utils/quickAccess";
+
+/** "just now", "5 min ago", "3 h ago", "2 days ago", then the date. */
+function timeAgo(at: number, now = Date.now()): string {
+  const min = Math.round((now - at) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d} day${d === 1 ? "" : "s"} ago`;
+  return new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
 
 interface DashboardProps {
   vaultPath?: string;
@@ -81,6 +97,15 @@ export const Dashboard: FC<DashboardProps> = ({
   const totalFoldersCount = useMemo(() => {
     return rootNodes.filter((n) => n.isDirectory).length;
   }, [rootNodes]);
+
+  // Pinned items, or the recently opened ones when nothing is pinned.
+  const quickAccess = useQuickAccess();
+  const quick = useMemo(() => {
+    const existing = new Map(files.map((f) => [f.path, f.is_directory] as const));
+    return dashboardItems(quickAccess, existing);
+  }, [quickAccess, files]);
+  const openQuickItem = (path: string, isFolder: boolean) =>
+    isFolder ? revealInSidebar(path) : onSelectFile(path);
 
   const handleStartCreate = (type: "file" | "folder", parent = "") => {
     setCreatingType(type);
@@ -241,6 +266,84 @@ export const Dashboard: FC<DashboardProps> = ({
 
       {/* Main Content Area: Top Hierarchy Sections */}
       <div className="flex-1 max-w-6xl w-full mx-auto p-8 space-y-10">
+        {/* Section 0: Pinned, or recently opened when nothing is pinned */}
+        {quick.items.length > 0 && (
+          <section aria-label={quick.kind === "pinned" ? "Pinned" : "Recently opened"}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                {quick.kind === "pinned" ? (
+                  <Pin className="w-4 h-4 text-sky-400 fill-current" />
+                ) : (
+                  <Clock className="w-4 h-4 text-zinc-400" />
+                )}
+                <h2 className="text-sm font-semibold text-white tracking-wide uppercase">
+                  {quick.kind === "pinned" ? "Pinned" : "Recently opened"}
+                </h2>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[#161b22] border border-[#30363d] text-zinc-400 font-mono">
+                  {quick.items.length}
+                </span>
+              </div>
+              {quick.kind === "recent" && (
+                <span className="text-[11px] text-zinc-500">Pin notes, canvases or folders from the sidebar to keep them here.</span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {quick.items.map((item) => {
+                const name = item.path.split("/").pop() || item.path;
+                const parent = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+                const canvas = !item.isFolder && name.endsWith(".canvas");
+                const Icon = item.isFolder ? FolderOpen : canvas ? LayoutGrid : FileText;
+                const tone = item.isFolder
+                  ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                  : canvas
+                  ? "bg-purple-500/10 border-purple-500/20 text-purple-400"
+                  : "bg-sky-500/10 border-sky-500/20 text-sky-400";
+                const label = name.replace(/\.(md|canvas)$/, "");
+                return (
+                  <div
+                    key={item.path}
+                    className="group relative bg-[#161b22]/70 hover:bg-[#1c2128] border border-[#30363d]/80 hover:border-sky-500/40 rounded-xl transition-colors"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => openQuickItem(item.path, item.isFolder)}
+                      title={item.isFolder ? `Show ${item.path} in the sidebar` : `Open ${item.path}`}
+                      className="w-full flex items-center gap-3 p-3 pr-9 text-left cursor-pointer"
+                    >
+                      <span className={`w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center ${tone}`}>
+                        <Icon className="w-4 h-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-white truncate group-hover:text-sky-300 transition-colors">
+                          {label}
+                        </span>
+                        <span className="block text-[11px] text-zinc-500 truncate">
+                          {item.isFolder ? "Folder" : canvas ? "Canvas" : "Note"}
+                          {parent ? ` · ${parent}` : ""}
+                          {quick.kind === "recent" && item.at ? ` · ${timeAgo(item.at)}` : ""}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => togglePin(item.path, item.isFolder)}
+                      title={quick.kind === "pinned" ? `Unpin ${label}` : `Pin ${label}`}
+                      aria-label={quick.kind === "pinned" ? `Unpin ${label}` : `Pin ${label}`}
+                      className={`absolute top-2 right-2 p-1.5 rounded-md transition-all cursor-pointer hover:bg-[#30363d] ${
+                        quick.kind === "pinned"
+                          ? "text-sky-400 opacity-60 group-hover:opacity-100"
+                          : "text-zinc-500 hover:text-white opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                      }`}
+                    >
+                      <Pin className={`w-3.5 h-3.5 ${quick.kind === "pinned" ? "fill-current" : ""}`} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Section 1: Top-Level Folders */}
         <section>
           <div className="flex items-center justify-between mb-4">

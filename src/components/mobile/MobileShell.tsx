@@ -38,6 +38,9 @@ import {
   UploadCloud,
   User,
   X,
+  Pin,
+  PinOff,
+  Clock,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { RepoStatusPayload, VaultEntry } from "../../types/noetic";
@@ -61,6 +64,9 @@ import {
   sortTreeNodes,
 } from "../../utils/customOrder";
 import { useTreeDrag } from "./useTreeDrag";
+import { childrenOnBranch } from "../../utils/noteHierarchy";
+import { useNoteHierarchy } from "../../utils/useNoteHierarchy";
+import { dashboardItems, recordOpened, togglePin, useQuickAccess } from "../../utils/quickAccess";
 import type { DragItem, DropTarget } from "./useTreeDrag";
 import { ConfirmSheet, Sheet, SheetAction, TextPromptSheet } from "./mobileUi";
 import { goBack, pushBackEntry, useBackLayer, useBackNavigation } from "../../utils/backNavigation";
@@ -483,6 +489,25 @@ export const MobileShell: FC<MobileShellProps> = ({
   const noteEntries = useMemo(() => withoutAssets(files), [files]);
   const assetCount = useMemo(() => assetFiles(files).length, [files]);
   const tree = useMemo(() => buildFileTree(noteEntries), [noteEntries]);
+  // Notes that link to other notes show them nested underneath (see utils/noteHierarchy).
+  const hierarchy = useNoteHierarchy(noteEntries);
+  // Pinned items, or the recently opened ones when nothing is pinned, head the dashboard.
+  const quickAccess = useQuickAccess();
+  const pinnedPaths = useMemo(() => new Set(quickAccess.pins.map((p) => p.path)), [quickAccess.pins]);
+  const quick = useMemo(
+    () => dashboardItems(quickAccess, new Map(noteEntries.map((f) => [f.path, f.is_directory] as const)), 6),
+    [quickAccess, noteEntries]
+  );
+  const listed = (nodes: TreeNode[]) => nodes.filter((n) => n.isDirectory || !hierarchy.nested.has(n.path));
+  // Like folders, a note's linked notes start closed; this holds the notes the user has opened.
+  const [openNotes, setOpenNotes] = useState<Set<string>>(new Set());
+  const toggleNote = (path: string) =>
+    setOpenNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
   const sorted = useCallback(
     (nodes: TreeNode[], parent: string) => sortTreeNodes(nodes, parent, sortMode, customOrder),
     [sortMode, customOrder]
@@ -653,7 +678,16 @@ export const MobileShell: FC<MobileShellProps> = ({
     return <span role="img" aria-label={cfg.label} className={`w-2 h-2 rounded-full shrink-0 ${cfg.cls}`} />;
   };
 
-  const renderNode = (node: TreeNode, depth: number, siblings: TreeNode[]): ReactNode => {
+  /**
+   * @param ancestors notes above this row when it's drawn under a note linking to it; such a row
+   *   isn't a place in the folder, so nothing can be dropped next to it.
+   */
+  const renderNode = (
+    node: TreeNode,
+    depth: number,
+    siblings: TreeNode[],
+    ancestors: ReadonlySet<string> | null = null
+  ): ReactNode => {
     const indent = { paddingLeft: 4 + depth * 20 };
     const openMenu = () => setItemSheet({ node, siblings });
 
@@ -672,7 +706,10 @@ export const MobileShell: FC<MobileShellProps> = ({
             {dropLine(node.path)}
             <button
               type="button"
-              onClick={() => toggleFolder(node.path)}
+              onClick={() => {
+                if (isCollapsed) recordOpened(node.path, true);
+                toggleFolder(node.path);
+              }}
               aria-expanded={!isCollapsed}
               className="flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pl-2 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors"
             >
@@ -702,37 +739,71 @@ export const MobileShell: FC<MobileShellProps> = ({
                 </button>
               </div>
             ) : (
-              <ul>{children.map((c) => renderNode(c, depth + 1, children))}</ul>
+              <ul>{listed(children).map((c) => renderNode(c, depth + 1, children))}</ul>
             ))}
         </li>
       );
     }
 
     const canvas = isCanvasPath(node.name);
+    const linked = ancestors !== null;
+    const linkedChildren = childrenOnBranch(hierarchy, node.path, ancestors ?? new Set());
+    const notesOpen = openNotes.has(node.path);
+    const parentPath = linked ? [...ancestors].pop() : undefined;
+    const folderOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+    // A linked note from another folder says where it lives.
+    const elsewhere =
+      parentPath !== undefined && folderOf(parentPath) !== folderOf(node.path) ? folderOf(node.path) || "Top level" : null;
+    const childAncestors = new Set([...(ancestors ?? []), node.path]);
     return (
-      <li
-        key={node.path}
-        className={`relative flex items-center select-none [-webkit-touch-callout:none] transition-colors ${rowDragClass(node.path)}`}
-        style={indent}
-        data-drop-path={node.path}
-        {...bindRow({ path: node.path, name: node.name, isDir: false })}
-      >
-        {dropLine(node.path)}
-        <button
-          type="button"
-          onClick={() => openFile(node.path)}
-          className="flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pl-2 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors"
+      <li key={node.path}>
+        <div
+          className={`relative flex items-center select-none [-webkit-touch-callout:none] transition-colors ${
+            linked && drag?.path !== node.path ? "" : rowDragClass(node.path)
+          }`}
+          style={indent}
+          data-drop-path={linked ? undefined : node.path}
+          {...bindRow({ path: node.path, name: node.name, isDir: false })}
         >
-          <span className="w-4 shrink-0" />
-          {canvas ? (
+          {!linked && dropLine(node.path)}
+          {linkedChildren.length > 0 && (
+            <button
+              type="button"
+              onClick={() => toggleNote(node.path)}
+              aria-expanded={notesOpen}
+              aria-label={`${notesOpen ? "Hide" : "Show"} ${plural(linkedChildren.length, "linked note")}`}
+              className="w-[34px] min-h-[52px] pl-2 flex items-center shrink-0 rounded-xl active:bg-[#161b22]"
+            >
+              <ChevronRight className={`w-4 h-4 text-[#6e7681] transition-transform ${notesOpen ? "rotate-90" : ""}`} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => openFile(node.path)}
+            className={`flex-1 min-w-0 min-h-[52px] flex items-center gap-2.5 pr-1 rounded-xl text-left active:bg-[#161b22] transition-colors ${
+              linkedChildren.length > 0 ? "" : "pl-2"
+            }`}
+          >
+            {linkedChildren.length === 0 && <span className="w-4 shrink-0" />}
+            {canvas ? (
             <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
           ) : (
             <FileText className="w-5 h-5 text-[#8b949e] shrink-0" />
           )}
-          <span className="flex-1 min-w-0 truncate text-[16px] text-[#e6edf3]">{displayName(node.name)}</span>
-          <StatusDot path={node.path} />
-        </button>
-        <IconButton icon={MoreHorizontal} label={`Actions for ${displayName(node.name)}`} onClick={openMenu} />
+            <span className="min-w-0 truncate text-[16px] text-[#e6edf3]">{displayName(node.name)}</span>
+            {elsewhere && <span className="min-w-0 truncate text-[13px] text-[#6e7681]">{elsewhere}</span>}
+            <span className="flex-1" />
+            <StatusDot path={node.path} />
+          </button>
+          <IconButton icon={MoreHorizontal} label={`Actions for ${displayName(node.name)}`} onClick={openMenu} />
+        </div>
+        {notesOpen && linkedChildren.length > 0 && (
+          <ul>
+            {linkedChildren.map((c) =>
+              renderNode({ path: c, name: c.split("/").pop() || c, isDirectory: false, children: [] }, depth + 1, [], childAncestors)
+            )}
+          </ul>
+        )}
       </li>
     );
   };
@@ -760,6 +831,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   const hasTopCanvas = topFiles.some((n) => isCanvasPath(n.name));
 
   const openFolder = (path: string) => {
+    recordOpened(path, true);
     expandFolder(path);
     setQuery("");
     setTab("notes");
@@ -830,6 +902,51 @@ export const MobileShell: FC<MobileShellProps> = ({
           </p>
         ) : (
           <>
+            {quick.items.length > 0 && (
+              <section aria-label={quick.kind === "pinned" ? "Pinned" : "Recently opened"}>
+                <SectionLabel>{quick.kind === "pinned" ? "Pinned" : "Recently opened"}</SectionLabel>
+                <ul className="rounded-2xl bg-[#161b22] border border-[#21262d] divide-y divide-[#21262d] overflow-hidden">
+                  {quick.items.map((item) => {
+                    const name = item.path.split("/").pop() || item.path;
+                    const parent = item.path.includes("/") ? item.path.slice(0, item.path.lastIndexOf("/")) : "";
+                    const canvas = !item.isFolder && isCanvasPath(name);
+                    return (
+                      <li key={item.path}>
+                        <button
+                          type="button"
+                          onClick={() => (item.isFolder ? openFolder(item.path) : openFile(item.path))}
+                          className="w-full min-h-[60px] px-4 py-2 flex items-center gap-3 text-left active:bg-[#1c2128]"
+                        >
+                          {item.isFolder ? (
+                            <Folder className="w-5 h-5 text-amber-400 shrink-0" />
+                          ) : canvas ? (
+                            <LayoutGrid className="w-5 h-5 text-purple-400 shrink-0" />
+                          ) : (
+                            <FileText className="w-5 h-5 text-sky-400 shrink-0" />
+                          )}
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate text-[16px] text-[#f0f6fc]">{displayName(name)}</span>
+                            <span className="block truncate text-[13px] text-[#8b949e]">
+                              {item.isFolder ? "Folder" : canvas ? "Canvas" : "Note"}
+                              {parent ? ` · ${parent}` : ""}
+                            </span>
+                          </span>
+                          {quick.kind === "pinned" ? (
+                            <Pin aria-label="Pinned" className="w-4 h-4 text-sky-400 fill-current shrink-0" />
+                          ) : (
+                            <Clock aria-hidden className="w-4 h-4 text-[#6e7681] shrink-0" />
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {quick.kind === "recent" && (
+                  <p className="mt-2 px-1 text-[13px] text-[#6e7681]">Pin a note or folder from its ⋯ menu to keep it here.</p>
+                )}
+              </section>
+            )}
+
             {topFolders.length > 0 && (
               <section>
                 <SectionLabel>Folders</SectionLabel>
@@ -1003,7 +1120,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                 <span>{sortLabel}</span>
               </button>
             </div>
-            <ul>{rootNodes.map((n) => renderNode(n, 0, rootNodes))}</ul>
+            <ul>{listed(rootNodes).map((n) => renderNode(n, 0, rootNodes))}</ul>
             {drag ? (
               // Dropping here takes an item out of its folder, to the end of the top level.
               <div
@@ -1461,6 +1578,14 @@ export const MobileShell: FC<MobileShellProps> = ({
       >
         {sheetNode && itemSheet && (
           <>
+            <SheetAction
+              icon={pinnedPaths.has(sheetNode.path) ? PinOff : Pin}
+              label={pinnedPaths.has(sheetNode.path) ? "Unpin from dashboard" : "Pin to dashboard"}
+              onClick={() => {
+                togglePin(sheetNode.path, sheetNode.isDirectory);
+                closeItemSheet();
+              }}
+            />
             {sheetNode.isDirectory && (
               <>
                 <SheetAction
@@ -1551,6 +1676,14 @@ export const MobileShell: FC<MobileShellProps> = ({
             />
           </>
         )}
+        <SheetAction
+          icon={activeFilePath && pinnedPaths.has(activeFilePath) ? PinOff : Pin}
+          label={activeFilePath && pinnedPaths.has(activeFilePath) ? "Unpin from dashboard" : "Pin to dashboard"}
+          onClick={() => {
+            setEditorMenuOpen(false);
+            if (activeFilePath) togglePin(activeFilePath, false);
+          }}
+        />
         <SheetAction
           icon={Pencil}
           label="Rename"

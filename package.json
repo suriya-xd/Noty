@@ -23,6 +23,8 @@
     "test:tables": "npx tsx ./scripts/test-tables.ts",
     "test:links": "npx tsx ./scripts/test-links.ts",
     "test:tree": "npx tsx ./scripts/test-tree-drop.ts",
+    "test:hierarchy": "npx tsx ./scripts/test-note-hierarchy.ts",
+    "test:quick": "npx tsx ./scripts/test-quick-access.ts",
     "test:images": "npx tsx ./scripts/test-image-upload.ts",
     "test:auth": "npx tsx ./scripts/test-device-flow.ts",
     "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"

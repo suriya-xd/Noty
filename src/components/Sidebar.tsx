@@ -20,6 +20,7 @@ import {
   RotateCcw,
   LayoutDashboard,
   LayoutGrid,
+  Pin,
 } from "lucide-react";
 import { FileStatus, VaultEntry } from "../types/noetic";
 import { withoutAssets } from "../utils/assets";
@@ -38,6 +39,9 @@ import {
   renameInCustomOrder,
   sortTreeNodes,
 } from "../utils/customOrder";
+import { childrenOnBranch } from "../utils/noteHierarchy";
+import { useNoteHierarchy } from "../utils/useNoteHierarchy";
+import { onRevealInSidebar, recordOpened, togglePin, useQuickAccess } from "../utils/quickAccess";
 
 interface SidebarProps {
   vaultPath?: string;
@@ -65,6 +69,17 @@ interface CreatingState {
   type: "file" | "folder" | "canvas";
   parentPath: string; // "" for root, or "folder/subfolder"
 }
+
+/** Where a note row sits: in its folder, or under a note that links to it. */
+interface NoteBranch {
+  /** Notes above this row on its branch, so a circle of links isn't drawn forever. */
+  ancestors: ReadonlySet<string>;
+  /** Shown under a linking note rather than at its own place in the folder. */
+  linked: boolean;
+}
+
+const fileNode = (path: string): TreeNode => ({ path, name: path.split("/").pop() || path, isDirectory: false, children: [] });
+const folderOfPath = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 interface DropIndicator {
   targetPath: string;
@@ -136,6 +151,8 @@ export const Sidebar: FC<SidebarProps> = ({
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // A note can appear in several rows (under each note linking to it); rename only in the one clicked.
+  const [renamingRow, setRenamingRow] = useState<string | null>(null);
 
   // Custom ordering and sort mode state
   const [customOrder, setCustomOrder] = useState<CustomOrderMap>(() =>
@@ -163,8 +180,22 @@ export const Sidebar: FC<SidebarProps> = ({
     () => sortTreeNodes(rawTree, "", sortMode, customOrder),
     [rawTree, sortMode, customOrder]
   );
+  // Notes that link to other notes show them nested underneath (see utils/noteHierarchy).
+  const hierarchy = useNoteHierarchy(noteEntries);
+  const listed = (nodes: TreeNode[]) => nodes.filter((n) => n.isDirectory || !hierarchy.nested.has(n.path));
+  // Linked notes start open, like folders; this holds the ones the user has closed.
+  const [collapsedNotes, setCollapsedNotes] = useState<Set<string>>(new Set());
+  const toggleNoteCollapse = (path: string) =>
+    setCollapsedNotes((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   const toggleFolderCollapse = (folderPath: string) => {
+    // Opening a folder counts as visiting it (for "Recently opened" on the dashboard).
+    if (collapsedFolders.has(folderPath)) recordOpened(folderPath, true);
     setCollapsedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(folderPath)) {
@@ -175,6 +206,49 @@ export const Sidebar: FC<SidebarProps> = ({
       return next;
     });
   };
+
+  // Pins (shown on the dashboard).
+  const quickAccess = useQuickAccess();
+  const pinned = useMemo(() => new Set(quickAccess.pins.map((p) => p.path)), [quickAccess.pins]);
+  const pinButton = (path: string, isFolder: boolean, label: string) => {
+    const on = pinned.has(path);
+    return (
+      <button
+        type="button"
+        title={on ? `Unpin ${label} from the dashboard` : `Pin ${label} to the dashboard`}
+        aria-label={on ? `Unpin ${label} from the dashboard` : `Pin ${label} to the dashboard`}
+        aria-pressed={on}
+        onClick={(e) => {
+          e.stopPropagation();
+          togglePin(path, isFolder);
+        }}
+        className={`p-1 transition-colors ${on ? "text-sky-400 hover:text-sky-300" : "text-zinc-500 hover:text-white"}`}
+      >
+        <Pin className={`w-3 h-3 ${on ? "fill-current" : ""}`} />
+      </button>
+    );
+  };
+
+  // The dashboard can ask to show a folder here: open it and everything above it, then scroll to it.
+  const [flashPath, setFlashPath] = useState<string | null>(null);
+  useEffect(
+    () =>
+      onRevealInSidebar((path) => {
+        setCollapsedFolders((prev) => {
+          const next = new Set(prev);
+          for (let p = path; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") next.delete(p);
+          return next;
+        });
+        setFlashPath(path);
+        requestAnimationFrame(() =>
+          document
+            .querySelector(`[data-tree-path="${CSS.escape(path)}"]`)
+            ?.scrollIntoView({ block: "center", behavior: "smooth" })
+        );
+        setTimeout(() => setFlashPath((p) => (p === path ? null : p)), 1600);
+      }),
+    []
+  );
 
   const handleStartCreate = (type: "file" | "folder" | "canvas", parentPath = "") => {
     setCreating({ type, parentPath });
@@ -491,11 +565,18 @@ export const Sidebar: FC<SidebarProps> = ({
   };
 
   // Recursive tree node renderer
-  const renderTreeNode = (node: TreeNode, depth = 0, siblingNodes: TreeNode[] = tree) => {
-    const isRenaming = renamingPath === node.path;
+  const renderTreeNode = (
+    node: TreeNode,
+    depth = 0,
+    siblingNodes: TreeNode[] = tree,
+    branch: NoteBranch = { ancestors: new Set(), linked: false }
+  ) => {
+    const rowKey = [...branch.ancestors, node.path].join("\n");
+    const isRenaming = renamingPath === node.path && (node.isDirectory || renamingRow === rowKey);
     const isBeingDragged = draggedPath === node.path;
-    const showDropBefore = dropIndicator?.targetPath === node.path && dropIndicator.position === "before";
-    const showDropAfter = dropIndicator?.targetPath === node.path && dropIndicator.position === "after";
+    // A linked copy of a note isn't a place in the folder, so nothing is dropped next to it.
+    const showDropBefore = !branch.linked && dropIndicator?.targetPath === node.path && dropIndicator.position === "before";
+    const showDropAfter = !branch.linked && dropIndicator?.targetPath === node.path && dropIndicator.position === "after";
     const isDragInside = dropIndicator?.targetPath === node.path && dropIndicator.position === "inside";
 
     if (node.isDirectory) {
@@ -530,7 +611,10 @@ export const Sidebar: FC<SidebarProps> = ({
             onDragLeave={(e: DragEvent<HTMLDivElement>) => handleNodeDragLeave(e, node)}
             onDrop={(e: DragEvent<HTMLDivElement>) => handleNodeDrop(e, node, siblingNodes)}
             onClick={() => toggleFolderCollapse(node.path)}
+            data-tree-path={node.path}
             className={`group flex items-center justify-between px-2 py-1.5 rounded-md text-xs cursor-pointer transition-all ${
+              flashPath === node.path ? "ring-2 ring-sky-400/70 bg-sky-500/10 " : ""
+            }${
               isDragInside || isDragTarget
                 ? "bg-sky-500/25 ring-2 ring-sky-400 text-white shadow-md"
                 : isBeingDragged
@@ -587,12 +671,14 @@ export const Sidebar: FC<SidebarProps> = ({
 
             {/* Folder Actions & Item Count */}
             <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+              {pinned.has(node.path) && <span className="group-hover:hidden">{pinButton(node.path, true, `folder ${node.name}`)}</span>}
               <span className="group-hover:hidden font-mono text-[10px] text-zinc-500 bg-[#21262d] px-1.5 py-0.2 rounded">
                 {noteCount}
               </span>
 
               {/* Quick actions on hover */}
               <div className="hidden group-hover:flex items-center gap-0.5">
+                {pinButton(node.path, true, `folder ${node.name}`)}
                 <button
                   title="New Note inside folder"
                   onClick={() => handleStartCreate("file", node.path)}
@@ -648,7 +734,7 @@ export const Sidebar: FC<SidebarProps> = ({
                   </div>
                 </div>
               ) : (
-                node.children.map((child) => renderTreeNode(child, depth + 1, node.children))
+                listed(node.children).map((child) => renderTreeNode(child, depth + 1, node.children))
               )}
             </div>
           )}
@@ -666,6 +752,15 @@ export const Sidebar: FC<SidebarProps> = ({
     // File Node (Draggable & Reorderable)
     const isActive = activeFilePath === node.path;
     const badge = getFileBadge(node.path);
+    const linkedChildren = childrenOnBranch(hierarchy, node.path, branch.ancestors);
+    const notesCollapsed = collapsedNotes.has(node.path);
+    const childBranch: NoteBranch = { ancestors: new Set([...branch.ancestors, node.path]), linked: true };
+    // A linked note from another folder says where it lives.
+    const parentPath = [...branch.ancestors].pop();
+    const elsewhere =
+      branch.linked && parentPath !== undefined && folderOfPath(parentPath) !== folderOfPath(node.path)
+        ? folderOfPath(node.path) || "Top level"
+        : null;
 
     return (
       <div key={node.path} className="relative select-none">
@@ -689,9 +784,12 @@ export const Sidebar: FC<SidebarProps> = ({
             setDragOverTarget(null);
             setDropIndicator(null);
           }}
-          onDragOver={(e: DragEvent<HTMLDivElement>) => handleNodeDragOver(e, node)}
+          onDragOver={(e: DragEvent<HTMLDivElement>) =>
+            // Not a drop target, and not the list behind it either.
+            branch.linked ? e.stopPropagation() : handleNodeDragOver(e, node)
+          }
           onDragLeave={(e: DragEvent<HTMLDivElement>) => handleNodeDragLeave(e, node)}
-          onDrop={(e: DragEvent<HTMLDivElement>) => handleNodeDrop(e, node, siblingNodes)}
+          onDrop={(e: DragEvent<HTMLDivElement>) => !branch.linked && handleNodeDrop(e, node, siblingNodes)}
           onClick={() => !isRenaming && onSelectFile(node.path)}
           className={`group flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs cursor-pointer transition-all ${
             isBeingDragged
@@ -704,6 +802,23 @@ export const Sidebar: FC<SidebarProps> = ({
           <div className="flex items-center gap-1.5 overflow-hidden flex-1 mr-2">
             {/* Drag handle */}
             <GripVertical className="w-3 h-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+
+            {/* Open / close the notes this one links to */}
+            {linkedChildren.length > 0 && (
+              <button
+                type="button"
+                title={notesCollapsed ? "Show linked notes" : "Hide linked notes"}
+                aria-label={notesCollapsed ? "Show linked notes" : "Hide linked notes"}
+                aria-expanded={!notesCollapsed}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleNoteCollapse(node.path);
+                }}
+                className="text-zinc-500 hover:text-zinc-200 p-0.5 -ml-1"
+              >
+                {notesCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            )}
 
             {node.name.endsWith(".canvas") ? (
               <LayoutGrid
@@ -736,6 +851,11 @@ export const Sidebar: FC<SidebarProps> = ({
             ) : (
               <span className="truncate">{node.name}</span>
             )}
+            {elsewhere && (
+              <span className="truncate shrink-[2] text-[10px] text-zinc-600" title={`In ${elsewhere}`}>
+                {elsewhere}
+              </span>
+            )}
           </div>
 
           {/* Badges & Actions */}
@@ -743,12 +863,16 @@ export const Sidebar: FC<SidebarProps> = ({
             {/* Sync status badge */}
             {badge}
 
+            {pinned.has(node.path) && <span className="group-hover:hidden">{pinButton(node.path, false, node.name)}</span>}
+
             {/* Quick action buttons on hover */}
             <div className="hidden group-hover:flex items-center gap-0.5">
+              {pinButton(node.path, false, node.name)}
               <button
                 title="Rename note"
                 onClick={() => {
                   setRenamingPath(node.path);
+                  setRenamingRow(rowKey);
                   setRenameValue(node.name);
                 }}
                 className="p-1 hover:text-white text-zinc-500 transition-colors"
@@ -765,6 +889,13 @@ export const Sidebar: FC<SidebarProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Notes this one links to */}
+        {linkedChildren.length > 0 && !notesCollapsed && (
+          <div className="pl-3 border-l border-[#21262d] border-dashed ml-3.5 my-0.5 space-y-0.5">
+            {linkedChildren.map((child) => renderTreeNode(fileNode(child), depth + 1, [], childBranch))}
+          </div>
+        )}
 
         {/* Drop indicator line BELOW */}
         {showDropAfter && (
@@ -973,7 +1104,7 @@ export const Sidebar: FC<SidebarProps> = ({
             No notes yet. Click + Note or + Folder to get started.
           </div>
         ) : (
-          tree.map((node) => renderTreeNode(node, 0, tree))
+          listed(tree).map((node) => renderTreeNode(node, 0, tree))
         )}
 
         {/* Visual drop indicator to move item to root when dragging a nested item */}
