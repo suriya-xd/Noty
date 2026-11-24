@@ -82,7 +82,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           dot: "bg-orange-400 shadow-[0_0_8px_#fb923c] animate-pulse",
           icon: <AlertTriangle className="w-3.5 h-3.5" />,
           label: "Sync needed",
-          desc: "There are updates waiting and you have unsaved edits. Click Sync to combine them.",
+          desc: "There are updates waiting and you have unsaved edits. Save or Sync combines them; if the same note changed in both places you choose which version to keep.",
         };
       case "AheadOffline":
         return {
@@ -98,7 +98,11 @@ export const TopBar: React.FC<TopBarProps> = ({
   const badge = getStatusBadge();
 
   // Button active / disabled states per SPEC.md
-  const canSave = syncState === "DirtySynced" || syncState === "AheadOffline";
+  const canSave =
+    syncState === "DirtySynced" ||
+    syncState === "AheadOffline" ||
+    syncState === "DirtyBehind" ||
+    (syncState === "CleanBehind" && (status?.ahead_count ?? 0) > 0);
   const canSync = syncState === "CleanBehind" || syncState === "DirtyBehind";
 
   return (
@@ -176,8 +180,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           title={
             canSave
               ? "Save: back up your changes and send them to your other devices"
-              : syncState === "DirtyBehind"
-              ? "Sync first: there are updates waiting"
               : "Nothing to save"
           }
         >

@@ -39,6 +39,8 @@ export interface ConflictFile {
   base_content: string;
   local_content: string;
   remote_content: string;
+  local_deleted?: boolean;
+  remote_deleted?: boolean;
   hunks: ConflictHunk[];
 }
 

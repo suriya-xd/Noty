@@ -111,6 +111,7 @@ interface MobileShellProps {
   status: RepoStatusPayload | null;
   activeFilePath: string | null;
   activeFileContent: string;
+  editorVersion: number;
   isLoading: boolean;
   onSelectFile: (path: string) => void;
   onDebouncedSave: (path: string, content: string) => void | Promise<void>;
@@ -214,14 +215,14 @@ function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
       icon: CloudOff,
     };
   }
-  if (behind > 0 && dirty > 0) {
+  if (behind > 0 && (dirty > 0 || ahead > 0)) {
     return {
       tone: "warn",
       chip: `${behind} incoming`,
-      headline: "Sync before you save",
-      detail: `There ${behind === 1 ? "is" : "are"} ${plural(behind, "update")} from your other devices and you have ${plural(dirty, "unsaved change")}. Sync first; if the same note changed in both places you choose which version to keep.`,
-      action: "pull",
-      actionLabel: "Sync now",
+      headline: "Changes here and elsewhere",
+      detail: `There ${behind === 1 ? "is" : "are"} ${plural(behind, "update")} from your other devices and you have changes to upload. Saving keeps both; if the same note changed in both places you choose which version to keep.`,
+      action: "save",
+      actionLabel: "Save and sync",
       icon: AlertTriangle,
     };
   }
@@ -360,6 +361,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   status,
   activeFilePath,
   activeFileContent,
+  editorVersion,
   isLoading,
   onSelectFile,
   onDebouncedSave,
@@ -1399,7 +1401,7 @@ export const MobileShell: FC<MobileShellProps> = ({
       <div className="flex-1 min-h-0 relative overflow-hidden">
         {activeIsCanvas ? (
           <CanvasView
-            key={activeFilePath}
+            key={`${activeFilePath}:${editorVersion}`}
             filePath={activeFilePath}
             initialContent={activeFileContent}
             vaultPath={vaultPath}
@@ -1412,6 +1414,7 @@ export const MobileShell: FC<MobileShellProps> = ({
           />
         ) : (
           <Editor
+            key={editorVersion}
             chrome="minimal"
             apiRef={editorApi}
             onSaveStatusChange={handleSaveStatus}

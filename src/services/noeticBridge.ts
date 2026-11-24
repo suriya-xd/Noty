@@ -291,12 +291,22 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
     }
 
     case "save_and_push": {
-      if (mockRemoteAhead > 0) {
-        throw new Error("There are updates waiting from your other devices. Sync first, then save.");
+      if (mockRemoteAhead > 0 && mockDirtySet.has("ConflictTest.md")) {
+        return mockInvoke<T>("sync_and_pull", args);
       }
+      const combined = mockRemoteAhead > 0;
+      mockRemoteAhead = 0;
       mockDirtySet.clear();
       mockAheadOffline = 0;
-      return computeMockStatus() as unknown as T;
+      const saved: SyncResult = {
+        success: true,
+        message: combined
+          ? "Saved, and combined with the updates from your other devices."
+          : "Saved. Your changes are backed up.",
+        state: "CleanSynced",
+        conflicts: [],
+      };
+      return saved as unknown as T;
     }
 
     case "sync_and_pull": {
@@ -435,9 +445,9 @@ export const NoeticBridge = {
     return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("fetch_remote", { repo_path: repoPath }));
   },
 
-  saveAndPush: (repoPath: string, commitMessage?: string): Promise<RepoStatusPayload> => {
+  saveAndPush: (repoPath: string, commitMessage?: string): Promise<SyncResult> => {
     return viaCloud(repoPath, () =>
-      invokeTauri<RepoStatusPayload>("save_and_push", {
+      invokeTauri<SyncResult>("save_and_push", {
         repo_path: repoPath,
         commit_message: commitMessage,
       })

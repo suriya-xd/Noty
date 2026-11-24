@@ -1,3 +1,4 @@
+import { registerPendingEdits } from "../../utils/pendingEdits";
 import { PromptDialog } from "../dialogs";
 import React, {
   useState,
@@ -366,6 +367,19 @@ export const CanvasView: FC<CanvasViewProps> = ({
     }
   }, [initialContent]);
 
+  const onDebouncedSaveRef = useRef(onDebouncedSave);
+  onDebouncedSaveRef.current = onDebouncedSave;
+  useEffect(
+    () =>
+      registerPendingEdits(async () => {
+        if (!saveTimerRef.current) return;
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        await onDebouncedSaveRef.current(filePath, lastSavedContentRef.current);
+      }),
+    [filePath]
+  );
+
   // Push state to history & debounce save
   const commitCanvasChange = useCallback(
     (updater: (prev: CanvasData) => CanvasData, pushToHistory = true) => {
@@ -380,6 +394,7 @@ export const CanvasView: FC<CanvasViewProps> = ({
 
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = setTimeout(() => {
+          saveTimerRef.current = null;
           onDebouncedSave(filePath, serialized);
         }, 500);
 

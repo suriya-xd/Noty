@@ -25,7 +25,7 @@ The Rust backend periodically runs a read-only `git fetch origin` and computes t
 3. **`CLEAN_BEHIND`**: Worktree clean, `HEAD < origin/main`
    - UI: 🔵 "Out of sync (N incoming)" | Save: Disabled | Sync: Active
 4. **`DIRTY_BEHIND`**: Worktree dirty, `HEAD < origin/main`
-   - UI: 🟠 "Out of sync + Unsaved edits" | Save: Blocked (Prompts Sync first) | Sync: Active
+   - UI: 🟠 "Out of sync + Unsaved edits" | Save: Active (combines first; asks if the same note changed in both places) | Sync: Active
 5. **`AHEAD_OFFLINE`**: Worktree clean/dirty, `HEAD > origin/main` (Committed while offline)
    - UI: 🟣 "Saved locally (Offline)" | Save/Push: Active when online
 

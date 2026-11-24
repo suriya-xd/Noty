@@ -14,6 +14,7 @@ import { vaultIndex } from "./utils/wikilinks/vaultIndex";
 import { recordOpened, removeFromQuickAccess, renameInQuickAccess, setQuickAccessScope } from "./utils/quickAccess";
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
+import { flushPendingEdits } from "./utils/pendingEdits";
 import { isAssetPath, withoutAssets } from "./utils/assets";
 
 // Only what every start needs is in the first script. A device uses one of the two layouts, and
@@ -63,6 +64,8 @@ export default function App() {
   // Latest values for callbacks that outlive a render (late autosaves, tab bookkeeping).
   const activeFilePathRef = useRef<string | null>(null);
   activeFilePathRef.current = activeFilePath;
+  const activeFileContentRef = useRef("");
+  activeFileContentRef.current = activeFileContent;
   const filesRef = useRef<VaultEntry[]>([]);
   filesRef.current = files;
   /** What each note looked like on disk when its links were last read: `<path>` to `<modified>:<size>`. */
@@ -76,6 +79,10 @@ export default function App() {
   // Conflict modal state
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
   const [conflictedFiles, setConflictedFiles] = useState<ConflictFile[]>([]);
+  /** The resolver was opened by Save, so the upload continues once the versions are chosen. */
+  const saveAfterResolvingRef = useRef(false);
+  /** Advances when a sync changed the open note on disk, so its editor is rebuilt from the file. */
+  const [editorVersion, setEditorVersion] = useState(0);
 
   // Onboarding wizard state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
@@ -283,6 +290,7 @@ export default function App() {
       const isActive = activeFilePathRef.current === relPath;
       if (!isActive && !filesRef.current.some((f) => f.path === relPath)) return;
       const fullPath = `${vaultPath}/${relPath}`;
+      if (isActive) activeFileContentRef.current = newContent;
       await NoeticBridge.writeFileContent(fullPath, newContent);
       if (activeFilePathRef.current === relPath) setActiveFileContent(newContent);
       backlinksGraph.updateFileLinks(relPath, newContent);
@@ -294,43 +302,68 @@ export default function App() {
     }
   };
 
-  // 6. Manual Save (uploads the workspace)
-  const handleSaveAndPush = async () => {
-    setIsLoading(true);
+  /** Shows the open note as it is on disk now. Without this its editor would keep the text from
+   * before the sync and write that back over the synced note with the next autosave. */
+  const reloadActiveNote = async () => {
+    const path = activeFilePathRef.current;
+    if (!path) return;
+    const content = await NoeticBridge.readFileContent(`${vaultPath}/${path}`).catch(() => null);
+    // Deleted by the sync: refreshFiles closes it.
+    // Same as what the editor opened or last wrote: leave it, the user may be typing.
+    if (content === null || content === activeFileContentRef.current || activeFilePathRef.current !== path) return;
+    setActiveFileContent(content);
+    setEditorVersion((v) => v + 1);
+    backlinksGraph.updateFileLinks(path, content);
+  };
+
+  /** Runs something that may change notes on disk: pending typing is written first, and typing is
+   * paused while `lock` is set so an autosave can't land in the middle of it. */
+  const withNotesOnDisk = async <T,>(lock: boolean, run: () => Promise<T>): Promise<T> => {
+    const root = document.getElementById("root");
+    if (lock) root?.setAttribute("inert", "");
     try {
-      const updatedStatus = await NoeticBridge.saveAndPush(vaultPath);
-      setStatus(updatedStatus);
-      showToast("Saved. Your changes are backed up.", "success");
-      await refreshFiles();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      showToast(msg, "error");
+      await flushPendingEdits();
+      try {
+        return await run();
+      } finally {
+        await reloadActiveNote();
+        await Promise.all([refreshStatus(), refreshFiles()]);
+      }
     } finally {
-      setIsLoading(false);
+      if (lock) root?.removeAttribute("inert");
     }
   };
 
-  // 7. Manual Sync (brings in changes from other devices)
-  const handleSyncAndPull = async () => {
+  const runSync = async (kind: "save" | "sync") => {
     setIsLoading(true);
     try {
-      const result = await NoeticBridge.syncAndPull(vaultPath);
-      if (result.conflicts && result.conflicts.length > 0) {
-        // Line-level collisions detected! Open Visual Conflict Resolver Modal
+      // Checked first so typing is only paused when there is something to bring in.
+      const current = await NoeticBridge.fetchRemote(vaultPath).catch(() => null);
+      const incoming = (current?.behind_count ?? 0) > 0;
+      const result = await withNotesOnDisk(incoming, () =>
+        kind === "save" ? NoeticBridge.saveAndPush(vaultPath) : NoeticBridge.syncAndPull(vaultPath)
+      );
+      if (result.conflicts.length > 0) {
+        saveAfterResolvingRef.current = kind === "save";
         setConflictedFiles(result.conflicts);
         setIsConflictModalOpen(true);
         // No toast here: the resolver that just opened is its own announcement.
       } else {
         showToast(result.message, "success");
       }
-      await Promise.all([refreshStatus(), refreshFiles()]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      showToast(`Sync failed: ${msg}`, "error");
+      showToast(kind === "save" ? msg : `Sync failed: ${msg}`, "error");
     } finally {
       setIsLoading(false);
     }
   };
+
+  // 6. Manual Save (brings in updates if there are any, then uploads the workspace)
+  const handleSaveAndPush = () => runSync("save");
+
+  // 7. Manual Sync (brings in changes from other devices)
+  const handleSyncAndPull = () => runSync("sync");
 
   // 8. Check for updates
   const handleFetchRemote = async () => {
@@ -353,19 +386,15 @@ export default function App() {
   const handleApplyResolutions = async (resolutions: ConflictResolution[]) => {
     setIsLoading(true);
     try {
-      const postStatus = await NoeticBridge.resolveConflicts(vaultPath, resolutions);
-      setStatus(postStatus);
+      await withNotesOnDisk(true, () => NoeticBridge.resolveConflicts(vaultPath, resolutions));
       setIsConflictModalOpen(false);
       setConflictedFiles([]);
-      showToast("Conflicts resolved. Your notes are up to date.", "success");
-
-      // Reload active note if it was resolved
-      if (activeFilePath) {
-        const fullPath = `${vaultPath}/${activeFilePath}`;
-        const updated = await NoeticBridge.readFileContent(fullPath);
-        setActiveFileContent(updated);
+      if (saveAfterResolvingRef.current) {
+        saveAfterResolvingRef.current = false;
+        await runSync("save");
+      } else {
+        showToast("Conflicts resolved. Save to upload the result.", "success");
       }
-      await refreshFiles();
     } catch (err) {
       showToast(`Failed to resolve conflicts: ${err}`, "error");
     } finally {
@@ -561,6 +590,7 @@ export default function App() {
               status={status}
               activeFilePath={activeFilePath}
               activeFileContent={activeFileContent}
+              editorVersion={editorVersion}
               isLoading={isLoading}
               onSelectFile={handleSelectFile}
               onDebouncedSave={handleDebouncedSave}
@@ -653,7 +683,7 @@ export default function App() {
                 {activeFilePath ? (
                   activeFilePath.endsWith(".canvas") ? (
                     <CanvasView
-                      key={activeFilePath}
+                      key={`${activeFilePath}:${editorVersion}`}
                       filePath={activeFilePath}
                       initialContent={activeFileContent}
                       vaultPath={vaultPath}
@@ -671,6 +701,7 @@ export default function App() {
                     />
                   ) : (
                     <Editor
+                      key={editorVersion}
                       filePath={activeFilePath}
                       initialContent={activeFileContent}
                       onDebouncedSave={handleDebouncedSave}

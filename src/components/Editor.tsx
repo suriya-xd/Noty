@@ -48,6 +48,7 @@ import type { LinkPopoverState } from "./LinkPopover";
 import { MAX_UNDO_STEPS, historyStatus, limitedHistory, limitedRedo, limitedUndo } from "./editorHistory";
 import type { HistoryStatus } from "./editorHistory";
 import { keepCursorClear } from "./cursorVisibility";
+import { registerPendingEdits } from "../utils/pendingEdits";
 import { useBackLayer } from "../utils/backNavigation";
 import { inlineTitle } from "./inlineTitle";
 import { baseNameOf, fileNameFromTitle, pathForName } from "../utils/noteTitle";
@@ -412,6 +413,7 @@ export const Editor: FC<EditorProps> = ({
           debounceTimerRef.current = setTimeout(save, 150);
           return;
         }
+        debounceTimerRef.current = null;
         if (latestPathRef.current) {
           onDebouncedSave(latestPathRef.current, latestContentRef.current);
           setSaveStatus("synced");
@@ -457,6 +459,18 @@ export const Editor: FC<EditorProps> = ({
   };
   const renameFromTitleRef = useRef(renameFromTitle);
   renameFromTitleRef.current = renameFromTitle;
+
+  useEffect(
+    () =>
+      registerPendingEdits(async () => {
+        if (!debounceTimerRef.current || renamingRef.current) return;
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+        if (latestPathRef.current) await onDebouncedSaveRef.current(latestPathRef.current, latestContentRef.current);
+        setSaveStatus("synced");
+      }),
+    []
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;

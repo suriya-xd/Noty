@@ -54,7 +54,7 @@ fn fetch_remote(vault: Vault, repo_path: String) -> Result<RepoStatusPayload, St
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn save_and_push(vault: Vault, repo_path: String, commit_message: Option<String>) -> Result<RepoStatusPayload, String> {
+fn save_and_push(vault: Vault, repo_path: String, commit_message: Option<String>) -> Result<SyncResult, String> {
     git_engine::save_and_push(opened(&vault, &repo_path)?, commit_message)
 }
 

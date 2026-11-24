@@ -5,6 +5,7 @@ import { AlertCircle, Check, Layers, Loader2, Plus, RefreshCw, X } from "lucide-
 import { GitHubService } from "../services/githubService";
 import { NoeticBridge } from "../services/noeticBridge";
 import type { RepoStatusPayload } from "../types/noetic";
+import { flushPendingEdits } from "../utils/pendingEdits";
 import { useBackLayer } from "../utils/backNavigation";
 
 interface WorkspaceModalProps {
@@ -21,6 +22,21 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 
 /** What the name will be saved as: spaces become dashes. Mirrors the backend. */
 const tidyName = (name: string) => name.trim().split(/\s+/).filter(Boolean).join("-");
+
+/**
+ * Changing workspace saves the one being left. Typing not yet on disk is written first, and typing
+ * is paused until the change is done so nothing from the old workspace is written into the new one.
+ */
+async function leavingWorkspace<T>(run: () => Promise<T>): Promise<T> {
+  const root = document.getElementById("root");
+  root?.setAttribute("inert", "");
+  try {
+    await flushPendingEdits();
+    return await run();
+  } finally {
+    root?.removeAttribute("inert");
+  }
+}
 
 /**
  * Lists the user's workspaces and lets them open one or add a new one. Right after sign-in it
@@ -92,8 +108,10 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
     setBusy(name);
     setError(null);
     try {
-      const status = await NoeticBridge.switchWorkspace(vaultPath, name);
-      onSwitched(name, status, false);
+      await leavingWorkspace(async () => {
+        const status = await NoeticBridge.switchWorkspace(vaultPath, name);
+        onSwitched(name, status, false);
+      });
       onClose();
     } catch (err) {
       setError(errorText(err));
@@ -108,8 +126,10 @@ export const WorkspaceModal: FC<WorkspaceModalProps> = ({ isOpen, onClose, vault
     setBusy("+");
     setError(null);
     try {
-      const status = await NoeticBridge.createWorkspace(vaultPath, newName);
-      onSwitched(status.branch, status, true);
+      await leavingWorkspace(async () => {
+        const status = await NoeticBridge.createWorkspace(vaultPath, newName);
+        onSwitched(status.branch, status, true);
+      });
       onClose();
     } catch (err) {
       setError(errorText(err));

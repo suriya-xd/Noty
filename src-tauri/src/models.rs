@@ -42,9 +42,11 @@ pub struct ConflictHunk {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ConflictFile {
     pub path: String,
-    pub base_content: String,   // Content at HEAD
-    pub local_content: String,  // Unsaved content on disk
+    pub base_content: String,   // Content before either change
+    pub local_content: String,  // Content on this device
     pub remote_content: String, // Content in the cloud copy
+    pub local_deleted: bool,    // Deleted on this device
+    pub remote_deleted: bool,   // Deleted on another device
     pub hunks: Vec<ConflictHunk>,
 }
 

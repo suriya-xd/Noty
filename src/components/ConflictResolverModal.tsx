@@ -39,22 +39,10 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
   // Per-file resolution state: maps file path to { type, customContent }
   const [resolutions, setResolutions] = useState<
     Record<string, { type: "local" | "remote" | "custom"; content: string }>
-  >(() => {
-    const initial: Record<string, { type: "local" | "remote" | "custom"; content: string }> = {};
-    for (const f of conflicts) {
-      initial[f.path] = {
-        type: "custom",
-        content: `# Merged Content: ${f.path}\n\n${f.local_content}\n\n// --- Changes from your other device below ---\n${f.remote_content}`,
-      };
-    }
-    return initial;
-  });
+  >({});
 
   const activeFile = conflicts[activeFileIndex] || conflicts[0];
-  const currentResolution = resolutions[activeFile.path] || {
-    type: "local",
-    content: activeFile.local_content,
-  };
+  const currentResolution = resolutions[activeFile.path] ?? { type: undefined, content: "" };
 
   const handleChooseLocal = (path: string) => {
     const file = conflicts.find((f) => f.path === path);
@@ -97,7 +85,8 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
     }));
   };
 
-  const resolvedCount = Object.values(resolutions).filter((r) => r.type === "local" || r.type === "remote").length;
+  // Nothing is chosen for the user: each note needs a version picked (or written) first.
+  const resolvedCount = conflicts.filter((f) => resolutions[f.path]).length;
   const progressPercent = Math.round((resolvedCount / Math.max(1, conflicts.length)) * 100);
 
   const handleFinalize = () => {
@@ -222,7 +211,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                         ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
                         : "bg-[#21262d] text-zinc-300"
                     }`}>
-                      {resType}
+                      {resType ?? "choose"}
                     </span>
                   </button>
                 );
@@ -268,11 +257,11 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
               {/* Column 1: Local / Disk Worktree */}
               <div className="flex flex-col h-full bg-[#0d1117] overflow-hidden">
                 <div className="p-2 border-b border-[#21262d] bg-amber-950/20 text-amber-300 text-xs font-semibold flex items-center justify-between">
-                  <span>This device (unsaved)</span>
+                  <span>This device</span>
                   <span className="text-[10px] text-amber-400/80 font-mono">YOUR EDITS</span>
                 </div>
                 <pre className="flex-1 p-3 text-xs font-mono text-zinc-300 overflow-auto whitespace-pre-wrap selection:bg-amber-500/30">
-                  {activeFile.local_content}
+                  {activeFile.local_deleted ? "(deleted on this device)" : activeFile.local_content}
                 </pre>
               </div>
 
@@ -294,7 +283,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                   <span className="text-[10px] text-sky-400/80 font-mono">INCOMING</span>
                 </div>
                 <pre className="flex-1 p-3 text-xs font-mono text-zinc-300 overflow-auto whitespace-pre-wrap selection:bg-sky-500/30">
-                  {activeFile.remote_content}
+                  {activeFile.remote_deleted ? "(deleted on the other device)" : activeFile.remote_content}
                 </pre>
               </div>
             </div>
@@ -314,7 +303,7 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
                 value={currentResolution.content}
                 onChange={(e) => handleCustomChange(activeFile.path, e.target.value)}
                 className="flex-1 p-3 text-xs font-mono bg-[#0d1117] text-white outline-none resize-none overflow-auto"
-                placeholder="Edit or combine content manually..."
+                placeholder="Choose a version above, or write the final version here."
               />
             </div>
           </div>
@@ -336,7 +325,8 @@ const ConflictResolverContent: FC<ConflictResolverModalProps> = ({
             <button
               id="btn-apply-resolutions"
               onClick={handleFinalize}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer active:scale-95 transition-all"
+              disabled={resolvedCount < conflicts.length}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 cursor-pointer active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <CheckCheck className="w-4 h-4" />
               <span>Apply and finish</span>
