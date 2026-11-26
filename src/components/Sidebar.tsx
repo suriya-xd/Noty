@@ -47,6 +47,8 @@ interface SidebarProps {
   vaultPath?: string;
   files: VaultEntry[];
   fileStatuses: FileStatus[];
+  /** Opens the resolver for a note changed in the same place on two devices. */
+  onOpenConflict?: (path: string) => void;
   activeFilePath: string | null;
   onSelectFile: (path: string) => void;
   onCreateFile: (name: string) => void;
@@ -136,6 +138,7 @@ export const Sidebar: FC<SidebarProps> = ({
   vaultPath = "",
   files,
   fileStatuses,
+  onOpenConflict,
   activeFilePath,
   onSelectFile,
   onCreateFile,
@@ -469,6 +472,39 @@ export const Sidebar: FC<SidebarProps> = ({
     );
     if (!status) return null;
 
+    if (status.conflict) {
+      return (
+        <span
+          role="button"
+          tabIndex={0}
+          title="Changed here and on another device. Click to choose a version."
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenConflict?.(status.path);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenConflict?.(status.path);
+            }
+          }}
+          className="cursor-pointer text-orange-400 font-semibold text-[10px] leading-tight bg-orange-500/15 border border-orange-500/40 px-1.5 py-0.5 rounded font-mono hover:bg-orange-500/25"
+        >
+          ! Conflict
+        </span>
+      );
+    }
+    if (status.update_waiting) {
+      return (
+        <span
+          title="Updated on another device. Open the note to see it."
+          className="text-sky-400 font-semibold text-[10px] leading-tight bg-sky-500/15 border border-sky-500/30 px-1.5 py-0.5 rounded font-mono"
+        >
+          ↓ Update
+        </span>
+      );
+    }
     if (status.is_modified) {
       return (
         <span

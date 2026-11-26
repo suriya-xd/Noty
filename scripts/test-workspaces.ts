@@ -125,14 +125,30 @@ eq("sync brought the note and kept the edit", files(a), ["Dirty.md", "FromB.md",
 
 console.log("same note on two devices");
 await call("sync_now", { repo_path: b });
+fs.writeFileSync(path.join(a, "Lines.md"), "one\ntwo\nthree\n");
+await call("sync_now", { repo_path: a });
+await call("sync_now", { repo_path: b });
+fs.writeFileSync(path.join(a, "Lines.md"), "ONE\ntwo\nthree\n");
+await call("sync_now", { repo_path: a });
+fs.writeFileSync(path.join(b, "Lines.md"), "one\ntwo\nTHREE\n");
+eq("edits to different lines are merged", (await call("sync_now", { repo_path: b })).conflicts, []);
+eq("both edits are kept", fs.readFileSync(path.join(b, "Lines.md"), "utf-8"), "ONE\ntwo\nTHREE\n");
+
 fs.writeFileSync(path.join(a, "P.md"), "from a");
 await call("sync_now", { repo_path: a });
 fs.writeFileSync(path.join(b, "P.md"), "from b");
+fs.writeFileSync(path.join(b, "Other.md"), "other");
 const asked = await call("sync_now", { repo_path: b });
-eq("asks for one note", asked.conflicts.map((c: any) => [c.path, c.local_content, c.remote_content]), [["P.md", "from b", "from a"]]);
-eq("nothing is changed while asking", fs.readFileSync(path.join(b, "P.md"), "utf-8"), "from b");
-eq("the conflict is reported", (await call("get_repo_status", { repo_path: b })).has_conflict, true);
-st = await call("resolve_conflicts", { repo_path: b, resolutions: [{ path: "P.md", resolution_type: "local" }] });
+eq("the rest syncs", asked.success, true);
+eq("one note waits for a choice", asked.conflicts.map((c: any) => [c.path, c.local_content, c.remote_content]), [["P.md", "from b", "from a"]]);
+eq("this device's version stays", fs.readFileSync(path.join(b, "P.md"), "utf-8"), "from b");
+st = await call("get_repo_status", { repo_path: b });
+eq("the conflict is reported", [st.has_conflict, st.files.find((f: any) => f.path === "P.md")?.conflict], [true, true]);
+await call("sync_now", { repo_path: a });
+eq("the other device keeps its version", fs.readFileSync(path.join(a, "P.md"), "utf-8"), "from a");
+eq("and gets the rest", fs.readFileSync(path.join(a, "Other.md"), "utf-8"), "other");
+const shown = (await call("get_conflicts", { repo_path: b }))[0];
+st = await call("resolve_conflicts", { repo_path: b, resolutions: [{ path: "P.md", resolution_type: "local", remote_id: shown.remote_id }] });
 eq("the conflict is over", st.has_conflict, false);
 eq("the choice is uploaded", (await call("sync_now", { repo_path: b })).state, "CleanSynced");
 await call("sync_now", { repo_path: a });

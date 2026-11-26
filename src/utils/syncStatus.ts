@@ -80,11 +80,12 @@ export function describeSync(
     };
   }
   if (status?.has_conflict) {
+    const n = (status.files ?? []).filter((f) => f.conflict).length;
     return {
       kind: "conflict",
-      label: "Conflict",
-      headline: "Choose which version to keep",
-      detail: `A note changed here and on another device. Sync to choose.${kept}`,
+      label: n > 1 ? `Conflict (${n})` : "Conflict",
+      headline: n > 1 ? `${n} notes need a version chosen` : "A note needs a version chosen",
+      detail: `Changed in the same place here and on another device. Open the marked note to choose; everything else keeps syncing.${kept}`,
     };
   }
   if (problem?.kind === "offline") {
@@ -95,14 +96,16 @@ export function describeSync(
       detail: `Check your connection, then sync.${kept}`,
     };
   }
-  if (waiting > 0 || (status?.ahead_count ?? 0) > 0) {
+  const others = status?.other_workspaces_not_uploaded ?? [];
+  if (waiting > 0 || (status?.ahead_count ?? 0) > 0 || others.length > 0) {
+    const elsewhere = others.length > 0 ? ` Changes in ${others.join(", ")} are waiting too.` : "";
     return {
       kind: "waiting",
       label: waiting > 0 ? `Not uploaded (${waiting})` : "Not uploaded",
       headline: waiting > 0 ? `${plural(waiting, "file")} not uploaded` : "Changes not uploaded",
       detail: problem
-        ? `The last sync failed: ${problem.message}${overdue}`
-        : "Changes are on this device. Sync to back them up and send them to your other devices.",
+        ? `The last sync failed: ${problem.message}${overdue}${elsewhere}`
+        : `Changes are on this device. They upload when you leave the note or the app, or when you sync now.${elsewhere}`,
     };
   }
   if ((status?.behind_count ?? 0) > 0) {
@@ -111,7 +114,7 @@ export function describeSync(
       kind: "updates",
       label: `Updates (${n})`,
       headline: `${plural(n, "update")} available`,
-      detail: "Changes from your other devices are waiting. Sync to get them.",
+      detail: "Changes from your other devices are waiting. They come in when you return to the app, or sync now.",
     };
   }
   return {
@@ -120,4 +123,36 @@ export function describeSync(
     headline: "Everything is up to date",
     detail: "Nothing on this device is waiting to upload.",
   };
+}
+
+/** What started a sync. Everything but "manual" is automatic (SPEC 4.1, 4.2). */
+export type SyncReason = "manual" | "launch" | "return" | "leave" | "reconnect" | "idle" | "note-closed";
+
+/** A note left open is committed and uploaded after this long without typing. */
+export const IDLE_SYNC_MS = 5 * 60 * 1000;
+/** Coming back within this long of the last sync doesn't check again (quick window switches). */
+export const RETURN_SYNC_GAP_MS = 15 * 1000;
+
+/** Leaving only needs a sync when something is waiting to upload. */
+export const LEAVING: ReadonlySet<SyncReason> = new Set(["leave", "idle", "note-closed"]);
+
+export const hasWaitingUploads = (s: RepoStatusPayload | null): boolean =>
+  !!s && (s.dirty_count > 0 || s.ahead_count > 0 || (s.other_workspaces_not_uploaded ?? []).length > 0);
+
+/**
+ * Whether an automatic sync may start: there is a workspace in the cloud to sync with, the
+ * sign-in isn't known to be refused (that fails every time; the pill asks to sign in again), and
+ * a return isn't just a quick switch back.
+ */
+export function mayAutoSync(
+  reason: SyncReason,
+  status: RepoStatusPayload | null,
+  problem: SyncProblem | null,
+  lastSyncAt: number,
+  now = Date.now()
+): boolean {
+  if (!status?.remote_url || !status.branch) return false;
+  if (problem?.kind === "sign-in") return false;
+  if (reason === "return" && now - lastSyncAt < RETURN_SYNC_GAP_MS) return false;
+  return true;
 }

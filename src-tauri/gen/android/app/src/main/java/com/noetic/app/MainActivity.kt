@@ -23,6 +23,16 @@ class MainActivity : TauriActivity() {
   }
 
   /**
+   * Leaving the screen: the page commits and uploads what is waiting, but Android may pause or
+   * close the app before that finishes, or there may be no connection. The background job then
+   * finishes it once the phone is online (it does nothing if everything got through).
+   */
+  override fun onStop() {
+    super.onStop()
+    SyncJobService.schedule(applicationContext)
+  }
+
+  /**
    * The web clipboard API can't read the clipboard inside an Android WebView (the permission is
    * never granted), so the page asks the app instead: `window.NoeticAndroid.readClipboardImage()`.
    */

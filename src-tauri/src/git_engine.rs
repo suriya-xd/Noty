@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use serde::{Deserialize, Serialize};
 use git2::{BranchType, Cred, CredentialType, FetchOptions, IndexAddOption, PushOptions, RemoteCallbacks, Repository, Status, StatusOptions};
 
 use crate::models::{
@@ -112,6 +113,10 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         .statuses(Some(&mut status_opts))
         .map_err(|e| format!("Failed to read git status: {}", e))?;
 
+    // Held notes differ from what is committed on purpose; they are marked, not counted as edits.
+    let held = load_held(&repo, &branch_name);
+    let merged_notes = load_merged(&repo, &branch_name);
+
     let mut dirty_map: HashMap<String, (bool, bool)> = HashMap::new();
     for entry in statuses.iter() {
         if let Some(path) = entry.path() {
@@ -127,7 +132,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
 
             let is_untracked = s.contains(Status::WT_NEW) || s.contains(Status::INDEX_NEW);
 
-            if (is_modified || is_untracked) && normalized != FORMAT_PATH {
+            if (is_modified || is_untracked) && normalized != FORMAT_PATH && !held.contains_key(&normalized) {
                 dirty_map.insert(normalized, (is_modified, is_untracked));
             }
         }
@@ -161,11 +166,12 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         not_uploaded = changed_paths(&repo, None, h_oid);
     }
 
+    not_uploaded.retain(|p| !held.contains_key(p));
+
     // 4. Combine all known files
-    let mut all_paths: HashSet<String> = HashSet::new();
-    for p in dirty_map.keys() {
-        all_paths.insert(p.clone());
-    }
+    let mut all_paths: HashSet<String> = held.keys().cloned().collect();
+    all_paths.extend(dirty_map.keys().cloned());
+    all_paths.extend(merged_notes.keys().cloned());
     all_paths.extend(remote_diff_files.iter().cloned());
     all_paths.extend(not_uploaded.iter().cloned());
     all_paths.remove(FORMAT_PATH);
@@ -174,8 +180,15 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     for path in all_paths {
         let (is_mod, is_untracked) = dirty_map.get(&path).copied().unwrap_or((false, false));
         let has_remote = remote_diff_files.contains(&path);
+        let waiting = held.get(&path).map(|n| n.waiting);
+        let merged = merged_notes
+            .get(&path)
+            .is_some_and(|m| read_disk(&repo, &path).as_deref() == Some(m.after.as_str()));
 
         file_statuses.push(FileStatus {
+            conflict: waiting == Some(Waiting::Conflict),
+            update_waiting: waiting == Some(Waiting::Update),
+            merged,
             not_uploaded: is_mod || is_untracked || not_uploaded.contains(&path),
             path,
             is_modified: is_mod,
@@ -214,6 +227,10 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         behind_count,
         ahead_count,
         has_conflict: conflict_waiting(&repo, &branch_name),
+        other_workspaces_not_uploaded: other_workspaces_waiting(&repo, &branch_name)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
         branch: branch_name,
         remote_name,
         remote_url,
@@ -280,6 +297,16 @@ fn commit_all(repo: &Repository, message: &str) -> Result<bool, String> {
     index
         .update_all(["*"].iter(), None)
         .map_err(|e| format!("Failed to update staged index: {}", e))?;
+    // Held notes keep their committed (cloud) version until they are brought together.
+    if let Some(workspace) = current_workspace(repo) {
+        for path in load_held(repo, &workspace).keys() {
+            let result = match head_entry(repo, path) {
+                Some((oid, mode)) => index.add(&index_entry(path, oid, mode)),
+                None => index.remove_path(Path::new(path)).or(Ok(())),
+            };
+            result.map_err(|e| format!("Failed to stage files: {}", e))?;
+        }
+    }
     index.write().map_err(|e| format!("Failed to write index: {}", e))?;
 
     let tree_oid = index
@@ -350,10 +377,12 @@ fn push_workspace(repo: &Repository, workspace: &str) -> Result<(), String> {
 
 /// Sync now:
 /// 1. Commits everything on this device, so nothing that follows can lose it.
-/// 2. Brings in changes from the other devices. Notes changed in only one place are combined;
-///    a note changed in both is returned for the user to choose a version.
+/// 2. Brings in changes from the other devices and combines them (see `integrate_commit`). A note
+///    changed in the same place on both is held for the user to choose, and the rest syncs.
 /// 3. Uploads the workspace (the commit stays on this device if that fails, e.g. offline).
-pub fn sync_now(repo_path: &str) -> Result<SyncResult, String> {
+///
+/// `open_note` is the note on screen: changes to it wait for the user to tap the banner.
+pub fn sync_now(repo_path: &str, open_note: Option<&str>) -> Result<SyncResult, String> {
     let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
@@ -363,7 +392,13 @@ pub fn sync_now(repo_path: &str) -> Result<SyncResult, String> {
     let Some(workspace) = current_workspace(&repo) else {
         return Err("Choose or create a workspace first.".to_string());
     };
+    // Left by builds that asked about conflicts straight away; held notes replaced it.
+    if let Ok(mut r) = repo.find_reference(&format!("refs/noetic/incoming/{}", workspace)) {
+        let _ = r.delete();
+    }
 
+    let mut notices = Vec::new();
+    settle_held(&repo, &workspace, open_note, &mut notices)?;
     commit_all(&repo, &format!("Notes update: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
 
     let not_uploaded = |e: String| format!("Kept on this device, not uploaded yet: {}", e);
@@ -374,11 +409,9 @@ pub fn sync_now(repo_path: &str) -> Result<SyncResult, String> {
         // Fetching first on every attempt also makes a retry safe when an earlier push got through
         // but its answer didn't: there is then nothing left to upload.
         fetch_origin(&repo).map_err(not_uploaded)?;
-        match integrate_remote(&repo, &workspace)? {
-            Integration::Conflicted(conflicts) => return conflict_result(repo_path, conflicts),
-            Integration::UpToDate => {}
-            Integration::Updated => combined = true,
-        }
+        let outcome = integrate_remote(&repo, &workspace, open_note)?;
+        combined |= outcome.changed;
+        notices.extend(outcome.notices);
         let head = repo.head().ok().and_then(|h| h.target());
         if head == find_remote_tracking_branch(&repo, &workspace).1 {
             break;
@@ -398,18 +431,82 @@ pub fn sync_now(repo_path: &str) -> Result<SyncResult, String> {
         }
     }
 
-    Ok(SyncResult {
-        success: true,
-        message: match (combined, uploaded) {
+    // Commits made in other workspaces (offline, before switching) go up too. Updates for them are
+    // only brought in when they are opened.
+    upload_other_workspaces(&repo, &workspace);
+
+    let conflicts = conflict_files(&repo, &workspace);
+    let message = if !conflicts.is_empty() {
+        format!(
+            "Synced, except {} note(s) changed in the same place here and on another device. Open the marked note to choose a version.",
+            conflicts.len()
+        )
+    } else {
+        match (combined, uploaded) {
             (true, true) => "Synced. Your edits were combined with the updates from your other devices.",
             (true, false) => "Synced. Updates from your other devices were added.",
             (false, true) => "Synced. Your changes are backed up.",
             (false, false) => "Everything is up to date.",
         }
-        .to_string(),
+        .to_string()
+    };
+    Ok(SyncResult {
+        success: true,
+        message,
         state: get_repo_status(repo_path)?.state,
-        conflicts: vec![],
+        conflicts,
+        notices,
     })
+}
+
+/// For the Android background job: syncs only when something on this device is waiting to upload,
+/// so a job run for nothing doesn't touch the network.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn upload_waiting(repo_path: &str, open_note: Option<&str>) -> Result<(), String> {
+    let status = get_repo_status(repo_path)?;
+    let waiting = status.dirty_count > 0 || status.ahead_count > 0 || !status.other_workspaces_not_uploaded.is_empty();
+    if status.branch.is_empty() || status.remote_url.is_none() || !waiting {
+        return Ok(());
+    }
+    sync_now(repo_path, open_note).map(|_| ())
+}
+
+/// Whether a failed sync may work later on its own (a connection problem), rather than needing the
+/// user (a refused sign-in, an app update).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn worth_retrying(error: &str) -> bool {
+    let needs_user = ["sign-in", "Sign in", "sign in", "newer version"];
+    !needs_user.iter().any(|s| error.contains(s))
+}
+
+/// Workspaces other than `current` whose commits the cloud doesn't have, and whether they can be
+/// uploaded as they are (the cloud has nothing newer).
+fn other_workspaces_waiting(repo: &Repository, current: &str) -> Vec<(String, bool)> {
+    let Ok(branches) = repo.branches(Some(BranchType::Local)) else { return vec![] };
+    let mut waiting = Vec::new();
+    for (branch, _) in branches.flatten() {
+        let Ok(Some(name)) = branch.name() else { continue };
+        if name == current || name == STORAGE_BRANCH {
+            continue;
+        }
+        let Some(local) = branch.get().target() else { continue };
+        let remote = find_remote_tracking_branch(repo, name).1;
+        match remote {
+            Some(r) if r == local || repo.graph_descendant_of(r, local).unwrap_or(false) => {}
+            Some(r) => waiting.push((name.to_string(), repo.graph_descendant_of(local, r).unwrap_or(false))),
+            None => waiting.push((name.to_string(), true)),
+        }
+    }
+    waiting
+}
+
+/// Uploads what can go up as it is. One that diverged waits until it is opened and combined.
+fn upload_other_workspaces(repo: &Repository, current: &str) {
+    for (name, ready) in other_workspaces_waiting(repo, current) {
+        if ready {
+            let _ = push_workspace(repo, &name);
+        }
+    }
 }
 
 fn retry_delay(attempt: u32) -> std::time::Duration {
@@ -420,7 +517,14 @@ fn retry_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(step / 2 + jitter)
 }
 
-/// Apply user resolutions from the Visual Conflict Resolver Modal
+/// The notes waiting for a version to be chosen, for the resolver.
+pub fn get_conflicts(repo_path: &str) -> Result<Vec<ConflictFile>, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    Ok(current_workspace(&repo).map(|w| conflict_files(&repo, &w)).unwrap_or_default())
+}
+
+/// Applies the versions chosen in the resolver and commits them; the caller then syncs to upload
+/// them. Nothing is applied if a note changed on another device since the resolver was opened.
 pub fn resolve_conflicts(
     repo_path: &str,
     resolutions: Vec<ConflictResolution>,
@@ -428,25 +532,76 @@ pub fn resolve_conflicts(
     let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
     let workspace = current_workspace(&repo).ok_or_else(|| "Choose or create a workspace first.".to_string())?;
+    let mut held = load_held(&repo, &workspace);
     for res in &resolutions {
         crate::fs_engine::resolve_in_vault(Path::new(repo_path), &res.path)?;
+        if !held.get(&res.path).is_some_and(|n| n.waiting == Waiting::Conflict) {
+            return Err(format!("\"{}\" no longer needs a choice. Sync again.", note_name(&res.path)));
+        }
+        if res.remote_id.as_ref().is_some_and(|id| *id != head_id(&repo, &res.path)) {
+            return Err(format!(
+                "\"{}\" changed again on another device. Open it again to see the newest version.",
+                note_name(&res.path)
+            ));
+        }
     }
-
-    commit_all(&repo, &format!("Saved before syncing: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
-
-    // The incoming version the user was shown. A background fetch may have brought a newer one
-    // since; that one is left for the next sync rather than being resolved unseen.
-    let incoming = repo
-        .refname_to_id(&incoming_ref(&workspace))
-        .map_err(|_| "There is nothing left to resolve. Sync again.".to_string())?;
-    let chosen: HashMap<String, ConflictResolution> =
-        resolutions.into_iter().map(|r| (r.path.clone(), r)).collect();
-    check_format(&repo, Some(incoming))?;
-    if let Integration::Conflicted(_) = integrate_commit(&repo, &workspace, incoming, &chosen)? {
-        return Err("Some notes changed in the meantime. Sync again to choose their versions.".to_string());
+    for res in &resolutions {
+        match (res.resolution_type.as_str(), &res.custom_content) {
+            // This device's version is already on disk.
+            ("local", _) => {}
+            ("remote", _) => write_disk(&repo, &res.path, head_text(&repo, &res.path).as_deref())?,
+            (_, Some(text)) => write_disk(&repo, &res.path, Some(text))?,
+            _ => return Err(format!("No version was chosen for {}.", note_name(&res.path))),
+        }
+        held.remove(&res.path);
     }
-    if let Ok(mut r) = repo.find_reference(&incoming_ref(&workspace)) {
-        let _ = r.delete();
+    save_held(&repo, &workspace, &held)?;
+    commit_all(&repo, &format!("Chose versions: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
+    get_repo_status(repo_path)
+}
+
+/// Brings the update waiting for an open note into it (the banner was tapped, or the note closed).
+/// If what was typed meanwhile changed the same lines, the note becomes a conflict instead.
+pub fn apply_update(repo_path: &str, path: &str) -> Result<SyncResult, String> {
+    let _queue = enter_queue(repo_path);
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let workspace = current_workspace(&repo).ok_or_else(|| "Choose or create a workspace first.".to_string())?;
+    let mut held = load_held(&repo, &workspace);
+    let mut notices = Vec::new();
+    if held.get(path).is_some_and(|n| n.waiting == Waiting::Update) {
+        release_update(&repo, &workspace, path, &mut held, &mut notices)?;
+        save_held(&repo, &workspace, &held)?;
+    }
+    let conflicts = conflict_files(&repo, &workspace);
+    let conflicted = conflicts.iter().any(|c| c.path == path);
+    Ok(SyncResult {
+        success: !conflicted,
+        message: if conflicted {
+            format!("\"{}\" was changed in the same place on another device. Choose a version.", note_name(path))
+        } else {
+            "Updated.".to_string()
+        },
+        state: get_repo_status(repo_path)?.state,
+        conflicts,
+        notices,
+    })
+}
+
+/// Puts back this device's version of a note from before it was combined automatically (`undo`),
+/// or keeps the combined one and forgets the earlier version.
+pub fn settle_merge(repo_path: &str, path: &str, undo: bool) -> Result<RepoStatusPayload, String> {
+    let _queue = enter_queue(repo_path);
+    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let workspace = current_workspace(&repo).ok_or_else(|| "Choose or create a workspace first.".to_string())?;
+    let mut merged = load_merged(&repo, &workspace);
+    if let Some(m) = merged.remove(path) {
+        save_merged(&repo, &workspace, &merged)?;
+        if undo {
+            if read_disk(&repo, path).as_deref() != Some(m.after.as_str()) {
+                return Err("The note has changed since it was combined, so it was left as it is.".to_string());
+            }
+            write_disk(&repo, path, m.before.as_deref())?;
+        }
     }
     get_repo_status(repo_path)
 }
@@ -455,46 +610,243 @@ pub fn resolve_conflicts(
 // Combining this device's notes with the cloud copy
 // ---------------------------------------------------------------------------
 
-enum Integration {
-    UpToDate,
-    Updated,
-    Conflicted(Vec<ConflictFile>),
+/// What bringing in the cloud copy did.
+#[derive(Default)]
+struct Integration {
+    changed: bool,
+    /// Notes newly held because they changed in the same place on both devices.
+    conflicts: Vec<String>,
+    notices: Vec<String>,
 }
 
-/// Remembers which incoming commit the open conflict resolver is about.
-fn incoming_ref(workspace: &str) -> String {
-    format!("refs/noetic/incoming/{}", workspace)
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+enum Waiting {
+    /// Both devices changed the same lines: the user chooses a version.
+    Conflict,
+    /// The note was open: the update is brought in when the banner is tapped or the note is closed.
+    Update,
+}
+
+/// A held note: the workspace's commits have the cloud version, while this device's version stays
+/// on disk and is left out of commits until the two are brought together. Uploading it would
+/// replace the other device's version unseen.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct HeldNote {
+    waiting: Waiting,
+    /// The version both started from (`None`: the note didn't exist).
+    base: Option<String>,
+    /// This device's version, kept here while another workspace is open (`None`: deleted).
+    #[serde(default)]
+    local: Option<String>,
+}
+
+type Held = BTreeMap<String, HeldNote>;
+
+/// This device's version of a note from before an automatic merge rewrote it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MergedNote {
+    /// `None`: the note didn't exist here.
+    before: Option<String>,
+    /// What the merge wrote. Once the note is changed again, the merge can't be undone.
+    after: String,
+}
+
+type Merged = BTreeMap<String, MergedNote>;
+
+/// Per-workspace records kept on this device only, inside `.git` so they never sync.
+fn state_file(repo: &Repository, kind: &str, workspace: &str) -> std::path::PathBuf {
+    repo.path().join("noetic").join(format!("{}-{}.json", kind, workspace))
+}
+
+fn load_state<T: serde::de::DeserializeOwned>(repo: &Repository, kind: &str, workspace: &str) -> BTreeMap<String, T> {
+    std::fs::read(state_file(repo, kind, workspace))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_state<T: Serialize>(repo: &Repository, kind: &str, workspace: &str, value: &BTreeMap<String, T>) -> Result<(), String> {
+    let file = state_file(repo, kind, workspace);
+    if value.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return Ok(());
+    }
+    let failed = |e: std::io::Error| format!("Failed to keep track of held notes: {}", e);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(failed)?;
+    }
+    let json = serde_json::to_vec_pretty(value).map_err(|e| format!("Failed to keep track of held notes: {}", e))?;
+    let tmp = file.with_extension("tmp");
+    std::fs::write(&tmp, json).map_err(failed)?;
+    std::fs::rename(&tmp, &file).map_err(failed)
+}
+
+fn load_held(repo: &Repository, workspace: &str) -> Held {
+    load_state(repo, "held", workspace)
+}
+
+fn save_held(repo: &Repository, workspace: &str, held: &Held) -> Result<(), String> {
+    save_state(repo, "held", workspace, held)
+}
+
+fn load_merged(repo: &Repository, workspace: &str) -> Merged {
+    load_state(repo, "merged", workspace)
+}
+
+fn save_merged(repo: &Repository, workspace: &str, merged: &Merged) -> Result<(), String> {
+    save_state(repo, "merged", workspace, merged)
 }
 
 fn conflict_waiting(repo: &Repository, workspace: &str) -> bool {
-    !workspace.is_empty() && repo.refname_to_id(&incoming_ref(workspace)).is_ok()
+    !workspace.is_empty() && load_held(repo, workspace).values().any(|n| n.waiting == Waiting::Conflict)
 }
 
-fn conflict_result(repo_path: &str, conflicts: Vec<ConflictFile>) -> Result<SyncResult, String> {
-    Ok(SyncResult {
-        success: false,
-        message: format!(
-            "{} note(s) changed both here and on another device. Choose which version to keep.",
-            conflicts.len()
-        ),
-        state: get_repo_status(repo_path)?.state,
-        conflicts,
-    })
+/// A note's name as the user sees it.
+fn note_name(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.strip_suffix(".md").unwrap_or(name)
 }
 
-fn integrate_remote(repo: &Repository, workspace: &str) -> Result<Integration, String> {
+fn disk_path(repo: &Repository, path: &str) -> Result<std::path::PathBuf, String> {
+    let root = repo.workdir().ok_or("The notes folder can't be found.")?;
+    crate::fs_engine::resolve_in_vault(root, path)
+}
+
+/// A note's text on disk; `None` when it is missing or isn't text.
+fn read_disk(repo: &Repository, path: &str) -> Option<String> {
+    disk_path(repo, path).ok().and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+/// Writes a note, or deletes it for `None`.
+fn write_disk(repo: &Repository, path: &str, text: Option<&str>) -> Result<(), String> {
+    let full = disk_path(repo, path)?;
+    let failed = |e: std::io::Error| format!("Failed to update {}: {}", note_name(path), e);
+    match text {
+        Some(text) => {
+            if let Some(dir) = full.parent() {
+                std::fs::create_dir_all(dir).map_err(failed)?;
+            }
+            std::fs::write(&full, text).map_err(failed)
+        }
+        None if full.exists() => std::fs::remove_file(&full).map_err(failed),
+        None => Ok(()),
+    }
+}
+
+fn head_entry(repo: &Repository, path: &str) -> Option<(git2::Oid, i32)> {
+    let tree = repo.head().ok()?.peel_to_tree().ok()?;
+    let entry = tree.get_path(Path::new(path)).ok()?;
+    Some((entry.id(), entry.filemode()))
+}
+
+/// The committed (cloud) version of a note; `None` when there is none or it isn't text.
+fn head_text(repo: &Repository, path: &str) -> Option<String> {
+    let (oid, _) = head_entry(repo, path)?;
+    file_text(repo, Some(&(oid, 0)))
+}
+
+/// Identifies the committed version shown in the resolver; empty when there is none.
+fn head_id(repo: &Repository, path: &str) -> String {
+    head_entry(repo, path).map(|(oid, _)| oid.to_string()).unwrap_or_default()
+}
+
+fn came_back(path: &str) -> String {
+    format!("\"{}\" was deleted on one device and changed on another, so it was kept.", note_name(path))
+}
+
+/// The notes waiting for the user to choose a version, as the resolver shows them.
+fn conflict_files(repo: &Repository, workspace: &str) -> Vec<ConflictFile> {
+    load_held(repo, workspace)
+        .into_iter()
+        .filter(|(_, note)| note.waiting == Waiting::Conflict)
+        .map(|(path, note)| {
+            let local = read_disk(repo, &path);
+            let remote = head_text(repo, &path);
+            let base = note.base.unwrap_or_default();
+            ConflictFile {
+                hunks: vec![ConflictHunk {
+                    id: format!("hunk_{}", path.replace(['/', '\\', '.'], "_")),
+                    base_lines: base.clone(),
+                    local_lines: local.clone().unwrap_or_default(),
+                    remote_lines: remote.clone().unwrap_or_default(),
+                }],
+                base_content: base,
+                local_deleted: local.is_none(),
+                remote_deleted: remote.is_none(),
+                local_content: local.unwrap_or_default(),
+                remote_content: remote.unwrap_or_default(),
+                remote_id: head_id(repo, &path),
+                path,
+            }
+        })
+        .collect()
+}
+
+/// Brings a held update into the note on disk: what was typed meanwhile is merged with it. If
+/// they changed the same lines, the note becomes a conflict for the user instead.
+fn release_update(repo: &Repository, workspace: &str, path: &str, held: &mut Held, notices: &mut Vec<String>) -> Result<(), String> {
+    let Some(note) = held.get(path).cloned() else { return Ok(()) };
+    let local = read_disk(repo, path);
+    let remote = head_text(repo, path);
+    let base = note.base.as_deref();
+    let result: Option<Option<String>> = match (&local, &remote) {
+        (None, None) => Some(None),
+        // Deleted on the other device meanwhile: gone, unless it was changed here.
+        (Some(l), None) if Some(l.as_str()) == base => Some(None),
+        // Edits beat deletes, whichever side made them.
+        (Some(_), None) | (None, Some(_)) => {
+            notices.push(came_back(path));
+            Some(local.clone().or_else(|| remote.clone()))
+        }
+        (Some(l), Some(r)) => crate::merge::merge_text(path, base.unwrap_or(""), l, r).map(Some),
+    };
+    match result {
+        Some(text) => {
+            write_disk(repo, path, text.as_deref())?;
+            let typed_meanwhile = local.as_deref() != base;
+            if let (true, Some(before), Some(after)) = (typed_meanwhile && text != remote, &local, &text) {
+                let mut merged = load_merged(repo, workspace);
+                merged.insert(path.to_string(), MergedNote { before: Some(before.clone()), after: after.clone() });
+                save_merged(repo, workspace, &merged)?;
+            }
+            held.remove(path);
+        }
+        None => {
+            if let Some(n) = held.get_mut(path) {
+                n.waiting = Waiting::Conflict;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lets go of held notes that no longer need waiting: updates to a note that isn't open any more,
+/// and conflicts where both versions have become the same.
+fn settle_held(repo: &Repository, workspace: &str, open_note: Option<&str>, notices: &mut Vec<String>) -> Result<(), String> {
+    let mut held = load_held(repo, workspace);
+    let paths: Vec<(String, Waiting)> = held.iter().map(|(p, n)| (p.clone(), n.waiting)).collect();
+    for (path, waiting) in paths {
+        if read_disk(repo, &path) == head_text(repo, &path) {
+            held.remove(&path);
+        } else if waiting == Waiting::Update && Some(path.as_str()) != open_note {
+            release_update(repo, workspace, &path, &mut held, notices)?;
+        }
+    }
+    save_held(repo, workspace, &held)?;
+
+    // A merge can only be undone while the note is as the merge left it.
+    let mut merged = load_merged(repo, workspace);
+    merged.retain(|path, m| read_disk(repo, path).as_deref() == Some(m.after.as_str()));
+    save_merged(repo, workspace, &merged)
+}
+
+fn integrate_remote(repo: &Repository, workspace: &str, open_note: Option<&str>) -> Result<Integration, String> {
     let (_, Some(remote)) = find_remote_tracking_branch(repo, workspace) else {
-        return Ok(Integration::UpToDate);
+        return Ok(Integration::default());
     };
     check_format(repo, Some(remote))?;
-    let outcome = integrate_commit(repo, workspace, remote, &HashMap::new())?;
-    if let Integration::Conflicted(_) = outcome {
-        repo.reference(&incoming_ref(workspace), remote, true, "Noetic: conflict")
-            .map_err(|e| format!("Failed to prepare the conflict: {}", e))?;
-    } else if let Ok(mut r) = repo.find_reference(&incoming_ref(workspace)) {
-        let _ = r.delete();
-    }
-    Ok(outcome)
+    integrate_commit(repo, workspace, remote, open_note)
 }
 
 type TreeFiles = BTreeMap<String, (git2::Oid, i32)>;
@@ -553,139 +905,252 @@ fn other_device_name(path: &str, taken: impl Fn(&str) -> bool) -> String {
     }
 }
 
-/// Brings `theirs` into the workspace. The caller has committed this device's edits. A file
-/// changed on one side takes that side; a note changed differently on both needs an entry in
-/// `chosen`. If one is missing nothing is changed. The result is a merge commit (or a plain
-/// fast-forward), so commits made on this device are always kept.
-fn integrate_commit(
+/// Files moved to a new name between two commits, found by similarity.
+fn renamed(repo: &Repository, from: Option<git2::Oid>, to: git2::Oid) -> Vec<(String, String)> {
+    let tree = |oid: git2::Oid| repo.find_commit(oid).and_then(|c| c.tree()).ok();
+    let (Some(a), Some(b)) = (from.and_then(tree), tree(to)) else { return vec![] };
+    let Ok(mut diff) = repo.diff_tree_to_tree(Some(&a), Some(&b), None) else { return vec![] };
+    let mut opts = git2::DiffFindOptions::new();
+    opts.renames(true);
+    if diff.find_similar(Some(&mut opts)).is_err() {
+        return vec![];
+    }
+    let name = |f: git2::DiffFile| f.path().map(|p| p.to_string_lossy().replace('\\', "/"));
+    diff.deltas()
+        .filter(|d| d.status() == git2::Delta::Renamed)
+        .filter_map(|d| Some((name(d.old_file())?, name(d.new_file())?)))
+        .collect()
+}
+
+type File = Option<(git2::Oid, i32)>;
+
+/// A note renamed on one device and edited on the other: the edit follows it to the new name,
+/// instead of the old name coming back with the edit.
+#[allow(clippy::too_many_arguments)]
+fn follow_renames(
     repo: &Repository,
-    workspace: &str,
-    theirs: git2::Oid,
-    chosen: &HashMap<String, ConflictResolution>,
-) -> Result<Integration, String> {
+    base: Option<git2::Oid>,
+    (ours, theirs): (git2::Oid, git2::Oid),
+    base_files: &TreeFiles,
+    our_files: &TreeFiles,
+    their_files: &TreeFiles,
+    sides: &mut BTreeMap<String, [File; 3]>,
+) {
+    for (old, new) in renamed(repo, base, ours) {
+        let (b, t) = (base_files.get(&old).copied(), their_files.get(&old).copied());
+        if t.is_some() && t != b && !their_files.contains_key(&new) {
+            sides.insert(new.clone(), [b, our_files.get(&new).copied(), t]);
+            sides.insert(old, [b, None, None]);
+        }
+    }
+    for (old, new) in renamed(repo, base, theirs) {
+        let (b, o) = (base_files.get(&old).copied(), our_files.get(&old).copied());
+        if o.is_some() && o != b && !our_files.contains_key(&new) {
+            sides.insert(new.clone(), [b, o, their_files.get(&new).copied()]);
+            sides.insert(old, [b, None, None]);
+        }
+    }
+}
+
+fn index_entry(path: &str, oid: git2::Oid, mode: i32) -> git2::IndexEntry {
+    git2::IndexEntry {
+        ctime: git2::IndexTime::new(0, 0),
+        mtime: git2::IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode: mode as u32,
+        uid: 0,
+        gid: 0,
+        file_size: 0,
+        id: oid,
+        flags: 0,
+        flags_extended: 0,
+        path: path.as_bytes().to_vec(),
+    }
+}
+
+/// Brings `theirs` into the workspace. The caller has committed this device's edits.
+/// - A file changed on one side takes that side.
+/// - A text file changed on both is merged (by line, or by card for a canvas). Where both changed
+///   the same part, the note is held: the commit takes the cloud version and this device's stays
+///   on disk until the user chooses.
+/// - Deleted on one side and changed on the other: the changed version is kept.
+/// - Other files changed on both: both copies are kept.
+/// - `open_note`, if it would change on disk, is held for the banner instead.
+///
+/// The result is a merge commit (or a plain fast-forward), so commits made here are always kept.
+fn integrate_commit(repo: &Repository, workspace: &str, theirs: git2::Oid, open_note: Option<&str>) -> Result<Integration, String> {
     let failed = |e: git2::Error| format!("Failed to combine your notes: {}", e.message());
     let ours = repo.head().ok().and_then(|h| h.target()).ok_or("This workspace has no notes yet.")?;
     let base = repo.merge_base(ours, theirs).ok();
+    let mut result = Integration::default();
     if base == Some(theirs) {
-        return Ok(Integration::UpToDate);
+        return Ok(result);
     }
-    if base == Some(ours) {
-        advance_to(repo, workspace, theirs)?;
-        return Ok(Integration::Updated);
-    }
-
-    let base_files = tree_files(repo, base)?;
+    let held_before = load_held(repo, workspace);
+    let mut held = held_before.clone();
+    let mut merged_notes = load_merged(repo, workspace);
     let our_files = tree_files(repo, Some(ours))?;
-    let their_files = tree_files(repo, Some(theirs))?;
 
-    let mut merged = TreeFiles::new();
-    let mut conflicts = Vec::new();
-    let mut extra_copies: Vec<(String, (git2::Oid, i32))> = Vec::new();
-    let paths: BTreeSet<&String> = our_files.keys().chain(their_files.keys()).collect();
-    for path in paths {
-        let (b, o, t) = (base_files.get(path), our_files.get(path), their_files.get(path));
-        let picked = if o == t || t == b {
-            o.copied()
-        } else if o == b {
-            t.copied()
-        } else if path == FORMAT_PATH {
-            // Never a question for the user. A newer one than this build's was refused already.
-            t.or(o).copied()
-        } else if let Some(res) = chosen.get(path) {
-            match (res.resolution_type.as_str(), &res.custom_content) {
-                ("local", _) => o.copied(),
-                ("remote", _) => t.copied(),
-                (_, Some(text)) => Some((repo.blob(text.as_bytes()).map_err(failed)?, 0o100644)),
-                _ => return Err(format!("No version was chosen for {}.", path)),
-            }
-        } else if let (Some(local), Some(remote)) = (file_text(repo, o), file_text(repo, t)) {
-            let base_text = file_text(repo, b).unwrap_or_default();
-            conflicts.push(ConflictFile {
-                path: path.clone(),
-                hunks: vec![ConflictHunk {
-                    id: format!("hunk_{}", path.replace(['/', '\\', '.'], "_")),
-                    base_lines: base_text.clone(),
-                    local_lines: local.clone(),
-                    remote_lines: remote.clone(),
-                }],
-                base_content: base_text,
-                local_content: local,
-                remote_content: remote,
-                local_deleted: o.is_none(),
-                remote_deleted: t.is_none(),
-            });
-            continue;
-        } else {
-            // An image or similar: there is no text to compare, so both copies are kept.
-            if let (Some(_), Some(t)) = (o, t) {
-                extra_copies.push((path.clone(), *t));
-            }
-            o.or(t).copied()
-        };
-        if let Some(file) = picked {
-            merged.insert(path.clone(), file);
-        }
-    }
-    if !conflicts.is_empty() {
-        return Ok(Integration::Conflicted(conflicts));
-    }
-    for (path, file) in extra_copies {
-        let name = other_device_name(&path, |n| merged.contains_key(n));
-        merged.insert(name, file);
-    }
+    let target = if base == Some(ours) {
+        theirs
+    } else {
+        let base_files = tree_files(repo, base)?;
+        let their_files = tree_files(repo, Some(theirs))?;
+        let mut sides: BTreeMap<String, [File; 3]> = our_files
+            .keys()
+            .chain(their_files.keys())
+            .map(|p| (p.clone(), [base_files.get(p).copied(), our_files.get(p).copied(), their_files.get(p).copied()]))
+            .collect();
+        follow_renames(repo, base, (ours, theirs), &base_files, &our_files, &their_files, &mut sides);
 
-    // A file on one device and a folder of the same name on the other can't both exist.
-    for path in merged.keys() {
-        for (i, _) in path.match_indices('/') {
-            if merged.contains_key(&path[..i]) {
-                return Err(format!(
-                    "\"{}\" is a file on one device and a folder on the other. Rename it, then sync again.",
-                    &path[..i]
-                ));
+        let mut merged = TreeFiles::new();
+        let mut extra_copies: Vec<(String, (git2::Oid, i32))> = Vec::new();
+        for (path, [b, o, t]) in &sides {
+            let picked = if o == t || t == b {
+                *o
+            } else if o == b {
+                *t
+            } else if path == FORMAT_PATH {
+                // Never a question for the user. A newer one than this build's was refused already.
+                t.or(*o)
+            } else if o.is_none() || t.is_none() {
+                result.notices.push(came_back(path));
+                o.or(*t)
+            } else if let (Some(base_text), Some(local), Some(remote)) =
+                (file_text(repo, b.as_ref()), file_text(repo, o.as_ref()), file_text(repo, t.as_ref()))
+            {
+                match crate::merge::merge_text(path, &base_text, &local, &remote) {
+                    Some(text) => {
+                        if Some(path.as_str()) != open_note {
+                            merged_notes.insert(path.clone(), MergedNote { before: Some(local), after: text.clone() });
+                        }
+                        let mode = o.map_or(0o100644, |f| f.1);
+                        Some((repo.blob(text.as_bytes()).map_err(failed)?, mode))
+                    }
+                    None => {
+                        held.insert(path.clone(), HeldNote { waiting: Waiting::Conflict, base: b.map(|_| base_text), local: None });
+                        result.conflicts.push(path.clone());
+                        *t
+                    }
+                }
+            } else {
+                // An image or similar: there is no text to compare, so both copies are kept.
+                if let Some(t) = t {
+                    extra_copies.push((path.clone(), *t));
+                }
+                *o
+            };
+            if let Some(file) = picked {
+                merged.insert(path.clone(), file);
             }
         }
+        for (path, file) in extra_copies {
+            let name = other_device_name(&path, |n| merged.contains_key(n));
+            merged.insert(name, file);
+        }
+
+        // A file on one device and a folder of the same name on the other can't both exist.
+        for path in merged.keys() {
+            for (i, _) in path.match_indices('/') {
+                if merged.contains_key(&path[..i]) {
+                    return Err(format!(
+                        "\"{}\" is a file on one device and a folder on the other. Rename it, then sync again.",
+                        &path[..i]
+                    ));
+                }
+            }
+        }
+
+        let mut index = git2::Index::new().map_err(failed)?;
+        for (path, (oid, mode)) in &merged {
+            index.add(&index_entry(path, *oid, *mode)).map_err(failed)?;
+        }
+        let tree = index.write_tree_to(repo).and_then(|oid| repo.find_tree(oid)).map_err(failed)?;
+        let our_commit = repo.find_commit(ours).map_err(failed)?;
+        let their_commit = repo.find_commit(theirs).map_err(failed)?;
+        let sig = signature(repo);
+        repo.commit(None, &sig, &sig, "Combined changes from your devices", &tree, &[&our_commit, &their_commit])
+            .map_err(failed)?
+    };
+
+    // The open note isn't changed under the user's hands: the update waits for the banner.
+    if let Some(note) = open_note.filter(|n| !held.contains_key(*n)) {
+        let after = tree_files(repo, Some(target))?.get(note).copied();
+        let before = our_files.get(note).copied();
+        if before.is_some() && after.is_some() && before != after {
+            if let Some(text) = file_text(repo, before.as_ref()) {
+                held.insert(note.to_string(), HeldNote { waiting: Waiting::Update, base: Some(text), local: None });
+                merged_notes.remove(note);
+            }
+        }
     }
 
-    let mut index = git2::Index::new().map_err(failed)?;
-    for (path, (oid, mode)) in &merged {
-        index
-            .add(&git2::IndexEntry {
-                ctime: git2::IndexTime::new(0, 0),
-                mtime: git2::IndexTime::new(0, 0),
-                dev: 0,
-                ino: 0,
-                mode: *mode as u32,
-                uid: 0,
-                gid: 0,
-                file_size: 0,
-                id: *oid,
-                flags: 0,
-                flags_extended: 0,
-                path: path.clone().into_bytes(),
-            })
-            .map_err(failed)?;
+    // Recorded first, so a held note is never taken for an ordinary edit and uploaded.
+    save_held(repo, workspace, &held)?;
+    if let Err(e) = advance_to(repo, workspace, target, &held) {
+        let _ = save_held(repo, workspace, &held_before);
+        return Err(e);
     }
-    let tree = index.write_tree_to(repo).and_then(|oid| repo.find_tree(oid)).map_err(failed)?;
-    let our_commit = repo.find_commit(ours).map_err(failed)?;
-    let their_commit = repo.find_commit(theirs).map_err(failed)?;
-    let sig = signature(repo);
-    let merge = repo
-        .commit(None, &sig, &sig, "Combined changes from your devices", &tree, &[&our_commit, &their_commit])
-        .map_err(failed)?;
-    advance_to(repo, workspace, merge)?;
-    Ok(Integration::Updated)
+    save_merged(repo, workspace, &merged_notes)?;
+    result.changed = true;
+    Ok(result)
 }
 
 /// Updates the folder and the workspace to a commit that contains everything already committed
-/// here. Never forced: a file edited since the last commit stops it instead of being overwritten.
-fn advance_to(repo: &Repository, workspace: &str, target: git2::Oid) -> Result<(), String> {
-    let commit = repo
-        .find_commit(target)
-        .map_err(|e| format!("Failed to find target commit: {}", e))?;
-    let mut opts = git2::build::CheckoutBuilder::new();
-    opts.safe();
-    repo.checkout_tree(commit.as_object(), Some(&mut opts))
-        .map_err(|e| format!("A note was being edited while syncing, so nothing was changed. Try again. ({})", e.message()))?;
+/// here. Only files that differ are written, and held notes are left as they are on disk. Never
+/// forced: if a file was edited since the last commit nothing is written at all.
+fn advance_to(repo: &Repository, workspace: &str, target: git2::Oid, held: &Held) -> Result<(), String> {
+    let head = repo.head().ok().and_then(|h| h.target());
+    let (old_files, new_files) = (tree_files(repo, head)?, tree_files(repo, Some(target))?);
+    let paths: BTreeSet<&String> = old_files
+        .keys()
+        .chain(new_files.keys())
+        .filter(|p| old_files.get(*p) != new_files.get(*p) && !held.contains_key(*p))
+        .collect();
+
+    let edited = || "A note was being edited while syncing, so nothing was changed. Try again.".to_string();
+    for path in &paths {
+        let clean = match repo.status_file(Path::new(path.as_str())) {
+            Ok(s) => s.is_empty(),
+            Err(e) => e.code() == git2::ErrorCode::NotFound,
+        };
+        if !clean {
+            return Err(edited());
+        }
+    }
+
+    let root = repo.workdir().ok_or("The notes folder can't be found.")?.to_path_buf();
+    let failed = |e: String| format!("Failed to update your notes: {}", e);
+    let mut index = repo.index().map_err(|e| failed(e.to_string()))?;
+    for path in &paths {
+        let full = disk_path(repo, path)?;
+        match new_files.get(*path) {
+            Some((oid, _)) => {
+                let blob = repo.find_blob(*oid).map_err(|e| failed(e.to_string()))?;
+                if let Some(dir) = full.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| failed(e.to_string()))?;
+                }
+                std::fs::write(&full, blob.content()).map_err(|e| failed(e.to_string()))?;
+                index.add_path(Path::new(path.as_str())).map_err(|e| failed(e.to_string()))?;
+            }
+            None => {
+                if full.exists() {
+                    std::fs::remove_file(&full).map_err(|e| failed(e.to_string()))?;
+                }
+                let _ = index.remove_path(Path::new(path.as_str()));
+                // Like git, a folder left empty goes too.
+                let mut dir = full.parent();
+                while let Some(d) = dir.filter(|d| *d != root.as_path()) {
+                    if std::fs::remove_dir(d).is_err() {
+                        break;
+                    }
+                    dir = d.parent();
+                }
+            }
+        }
+    }
+    index.write().map_err(|e| failed(e.to_string()))?;
 
     let ref_name = format!("refs/heads/{}", workspace);
     repo.reference(&ref_name, target, true, "Noetic: synced")
@@ -964,6 +1429,14 @@ fn workspace_branch_name(name: &str) -> Result<String, String> {
 /// they are not carried into, or overwritten by, the workspace being opened. Updates waiting from
 /// other devices don't prevent this: they are combined at the next save or sync of that workspace.
 fn save_before_leaving(repo: &Repository, repo_path: &str, workspace: &str) -> Result<(), String> {
+    // Held notes aren't committed, so this device's versions are kept aside until it comes back.
+    let mut held = load_held(repo, workspace);
+    if !held.is_empty() {
+        for (path, note) in held.iter_mut() {
+            note.local = read_disk(repo, path);
+        }
+        save_held(repo, workspace, &held)?;
+    }
     let status = get_repo_status(repo_path)?;
     if status.dirty_count == 0 {
         return Ok(());
@@ -1109,6 +1582,10 @@ pub fn switch_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload
 
     if current.is_some() {
         checkout_workspace(&repo, workspace, true).map_err(failed)?;
+        // This device's versions of the workspace's held notes go back where they were.
+        for (path, note) in load_held(&repo, workspace) {
+            write_disk(&repo, &path, note.local.as_deref())?;
+        }
         if let Some(root) = repo.workdir() {
             remove_empty_folders(root);
         }
@@ -1157,7 +1634,7 @@ mod tests {
         create_workspace(path(&mac), "Personal").unwrap();
         write(&mac, "a.md", "a\n");
         write(&mac, "b.md", "b\n");
-        sync_now(path(&mac)).unwrap();
+        sync_now(path(&mac), None).unwrap();
         connect_vault(path(&phone), path(&cloud), None, None, None).unwrap();
         switch_workspace(path(&phone), "Personal").unwrap();
         assert_eq!(read(&phone, "b.md"), "b\n");
@@ -1168,33 +1645,42 @@ mod tests {
     fn different_notes_changed_on_two_devices_are_both_kept() {
         let d = devices("different");
         write(&d.mac, "a.md", "a from mac\n");
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
 
         // The phone hasn't checked the cloud since, so it doesn't know it is behind.
         write(&d.phone, "b.md", "b from phone\n");
-        let _ = sync_now(path(&d.phone));
-        let _ = sync_now(path(&d.phone)).unwrap();
+        let _ = sync_now(path(&d.phone), None);
+        let _ = sync_now(path(&d.phone), None).unwrap();
         assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
         assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
     }
 
-    /// Same note edited on both devices; the phone has saved, which must ask rather than upload.
+    /// The same line of a note edited on both devices. The phone syncs second: its version is
+    /// held on disk, the rest syncs, and the cloud keeps the Mac's version until a choice is made.
     fn conflicted(name: &str) -> Devices {
         let d = devices(name);
         write(&d.mac, "a.md", "a from mac\n");
         write(&d.mac, "b.md", "b from mac\n");
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         write(&d.phone, "a.md", "a from phone\n");
-        let result = sync_now(path(&d.phone)).unwrap();
-        assert!(!result.success);
+        write(&d.phone, "c.md", "c from phone\n");
+        let result = sync_now(path(&d.phone), None).unwrap();
+        assert!(result.success);
         assert_eq!(result.conflicts.len(), 1);
-        assert_eq!(result.conflicts[0].base_content, "a\n");
-        assert_eq!(result.conflicts[0].local_content, "a from phone\n");
-        assert_eq!(result.conflicts[0].remote_content, "a from mac\n");
-        // Asking changes nothing on disk.
+        let c = &result.conflicts[0];
+        assert_eq!(
+            (c.base_content.as_str(), c.local_content.as_str(), c.remote_content.as_str()),
+            ("a\n", "a from phone\n", "a from mac\n")
+        );
         assert_eq!(read(&d.phone, "a.md"), "a from phone\n");
-        assert_eq!(read(&d.phone, "b.md"), "b\n");
-        assert!(get_repo_status(path(&d.phone)).unwrap().has_conflict);
+        assert_eq!(read(&d.phone, "b.md"), "b from mac\n");
+        let status = get_repo_status(path(&d.phone)).unwrap();
+        assert!(status.has_conflict);
+        assert_eq!(status.state, SyncState::CleanSynced);
+        assert!(status.files.iter().any(|f| f.path == "a.md" && f.conflict && !f.not_uploaded));
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "a.md"), "a from mac\n");
+        assert_eq!(read(&d.mac, "c.md"), "c from phone\n");
         d
     }
 
@@ -1203,40 +1689,42 @@ mod tests {
             path: note.into(),
             resolution_type: kind.into(),
             custom_content: text.map(Into::into),
+            remote_id: None,
         }]
     }
 
     #[test]
-    fn saving_combines_different_notes_and_uploads_them() {
-        let d = devices("save");
-        write(&d.mac, "a.md", "a from mac\n");
-        sync_now(path(&d.mac)).unwrap();
-        write(&d.phone, "b.md", "b from phone\n");
-        write(&d.phone, "new.md", "new\n");
-        assert!(sync_now(path(&d.phone)).unwrap().success);
-        assert!(sync_now(path(&d.mac)).unwrap().success);
-        for dir in [&d.mac, &d.phone] {
-            assert_eq!(read(dir, "a.md"), "a from mac\n");
-            assert_eq!(read(dir, "b.md"), "b from phone\n");
-            assert_eq!(read(dir, "new.md"), "new\n");
-            assert_eq!(get_repo_status(path(dir)).unwrap().state, SyncState::CleanSynced);
-        }
+    fn edits_to_different_lines_of_a_note_are_merged_and_can_be_undone() {
+        let d = devices("lines");
+        write(&d.mac, "a.md", "one\ntwo\nthree\n");
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
+        write(&d.mac, "a.md", "ONE\ntwo\nthree\n");
+        sync_now(path(&d.mac), None).unwrap();
+        write(&d.phone, "a.md", "one\ntwo\nTHREE\n");
+        let result = sync_now(path(&d.phone), None).unwrap();
+        assert!(result.conflicts.is_empty());
+        assert_eq!(read(&d.phone, "a.md"), "ONE\ntwo\nTHREE\n");
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "a.md"), "ONE\ntwo\nTHREE\n");
+
+        let merged = |dir: &Path| get_repo_status(path(dir)).unwrap().files.iter().any(|f| f.path == "a.md" && f.merged);
+        assert!(merged(&d.phone) && !merged(&d.mac));
+        settle_merge(path(&d.phone), "a.md", true).unwrap();
+        assert_eq!(read(&d.phone, "a.md"), "one\ntwo\nTHREE\n");
+        assert!(!merged(&d.phone));
     }
 
     #[test]
-    fn syncing_keeps_unsaved_edits_and_commits_that_failed_to_upload() {
-        let d = devices("offline");
-        write(&d.mac, "a.md", "a from mac\n");
-        sync_now(path(&d.mac)).unwrap();
-        let phone = Repository::open(&d.phone).unwrap();
-        write(&d.phone, "b.md", "b committed\n");
-        commit_all(&phone, "offline").unwrap();
-        write(&d.phone, "c.md", "c unsaved\n");
-        assert!(sync_now(path(&d.phone)).unwrap().success);
-        assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
-        assert_eq!(read(&d.phone, "b.md"), "b committed\n");
-        assert_eq!(read(&d.phone, "c.md"), "c unsaved\n");
-        assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::CleanSynced);
+    fn a_held_note_is_left_out_until_a_version_is_chosen() {
+        let d = conflicted("held");
+        write(&d.phone, "a.md", "a from phone, more\n");
+        write(&d.phone, "b.md", "b from phone\n");
+        assert!(sync_now(path(&d.phone), None).unwrap().success);
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "a.md"), "a from mac\n");
+        assert_eq!(read(&d.mac, "b.md"), "b from phone\n");
+        assert_eq!(get_conflicts(path(&d.phone)).unwrap()[0].local_content, "a from phone, more\n");
     }
 
     #[test]
@@ -1250,52 +1738,133 @@ mod tests {
             resolve_conflicts(path(&d.phone), choose("a.md", kind, text)).unwrap();
             assert_eq!(read(&d.phone, "a.md"), expected);
             assert!(!get_repo_status(path(&d.phone)).unwrap().has_conflict);
-            assert_eq!(read(&d.phone, "b.md"), "b from mac\n");
-            assert!(sync_now(path(&d.phone)).unwrap().success);
-            sync_now(path(&d.mac)).unwrap();
+            assert!(sync_now(path(&d.phone), None).unwrap().success);
+            sync_now(path(&d.mac), None).unwrap();
             assert_eq!(read(&d.mac, "a.md"), expected);
         }
     }
 
     #[test]
-    fn closing_the_resolver_loses_nothing_and_syncing_asks_again() {
+    fn closing_the_resolver_loses_nothing() {
         let d = conflicted("cancel");
-        assert_eq!(sync_now(path(&d.phone)).unwrap().conflicts.len(), 1);
-        assert!(resolve_conflicts(path(&d.phone), vec![]).is_err());
+        assert_eq!(sync_now(path(&d.phone), None).unwrap().conflicts.len(), 1);
+        resolve_conflicts(path(&d.phone), vec![]).unwrap();
         assert_eq!(read(&d.phone, "a.md"), "a from phone\n");
+        assert!(get_repo_status(path(&d.phone)).unwrap().has_conflict);
     }
 
     #[test]
     fn a_newer_update_than_the_one_shown_is_not_resolved_unseen() {
         let d = conflicted("newer");
+        let shown = get_conflicts(path(&d.phone)).unwrap()[0].remote_id.clone();
         write(&d.mac, "a.md", "a from mac again\n");
-        sync_now(path(&d.mac)).unwrap();
-        fetch_remote(path(&d.phone)).unwrap();
-        resolve_conflicts(path(&d.phone), choose("a.md", "local", None)).unwrap();
-        let next = sync_now(path(&d.phone)).unwrap();
-        assert_eq!(next.conflicts.len(), 1);
-        assert_eq!(next.conflicts[0].remote_content, "a from mac again\n");
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
+        let mut res = choose("a.md", "local", None);
+        res[0].remote_id = Some(shown);
+        assert!(resolve_conflicts(path(&d.phone), res).unwrap_err().contains("changed again"));
+        let now = &get_conflicts(path(&d.phone)).unwrap()[0];
+        assert_eq!((now.local_content.as_str(), now.remote_content.as_str()), ("a from phone\n", "a from mac again\n"));
     }
 
     #[test]
-    fn deleting_a_note_edited_elsewhere_asks() {
+    fn a_note_deleted_on_one_device_and_edited_on_the_other_is_kept() {
         let d = devices("delete");
         write(&d.mac, "a.md", "a from mac\n");
-        sync_now(path(&d.mac)).unwrap();
+        std::fs::remove_file(d.mac.join("b.md")).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         std::fs::remove_file(d.phone.join("a.md")).unwrap();
-        let result = sync_now(path(&d.phone)).unwrap();
-        assert!(result.conflicts[0].local_deleted && !result.conflicts[0].remote_deleted);
-        resolve_conflicts(path(&d.phone), choose("a.md", "local", None)).unwrap();
+        write(&d.phone, "b.md", "b from phone\n");
+        let result = sync_now(path(&d.phone), None).unwrap();
+        assert_eq!(result.notices.len(), 2);
+        assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "b.md"), "b from phone\n");
+    }
+
+    #[test]
+    fn an_edit_follows_a_rename_made_on_the_other_device() {
+        let d = devices("rename");
+        write(&d.mac, "a.md", "a longer note\nwith a few lines\nso it can be recognised\n");
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
+        std::fs::rename(d.mac.join("a.md"), d.mac.join("renamed.md")).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
+        write(&d.phone, "a.md", "a longer note\nwith a few lines\nso it can be recognised\nand an edit\n");
+        sync_now(path(&d.phone), None).unwrap();
         assert!(!d.phone.join("a.md").exists());
+        assert!(read(&d.phone, "renamed.md").ends_with("and an edit\n"));
+    }
+
+    #[test]
+    fn canvas_cards_changed_on_two_devices_are_merged() {
+        let d = devices("canvas");
+        let board = |a: &str, b: &str| format!("{{\"nodes\":[{{\"id\":\"a\",\"text\":\"{}\"}},{{\"id\":\"b\",\"text\":\"{}\"}}],\"edges\":[]}}", a, b);
+        write(&d.mac, "board.canvas", &board("a", "b"));
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
+        write(&d.mac, "board.canvas", &board("a mac", "b"));
+        sync_now(path(&d.mac), None).unwrap();
+        write(&d.phone, "board.canvas", &board("a", "b phone"));
+        assert!(sync_now(path(&d.phone), None).unwrap().conflicts.is_empty());
+        let merged: serde_json::Value = serde_json::from_str(&read(&d.phone, "board.canvas")).unwrap();
+        assert_eq!((merged["nodes"][0]["text"].as_str(), merged["nodes"][1]["text"].as_str()), (Some("a mac"), Some("b phone")));
+    }
+
+    #[test]
+    fn an_update_to_the_open_note_waits_for_the_banner() {
+        let d = devices("banner");
+        write(&d.mac, "a.md", "a\nmac\n");
+        write(&d.mac, "b.md", "b from mac\n");
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), Some("a.md")).unwrap();
+        assert_eq!(read(&d.phone, "a.md"), "a\n");
+        assert_eq!(read(&d.phone, "b.md"), "b from mac\n");
+        let waiting = |dir: &Path| get_repo_status(path(dir)).unwrap().files.iter().any(|f| f.path == "a.md" && f.update_waiting);
+        assert!(waiting(&d.phone));
+
+        // Typed meanwhile: kept on this device, then merged with the update.
+        write(&d.phone, "a.md", "phone\na\n");
+        sync_now(path(&d.phone), Some("a.md")).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "a.md"), "a\nmac\n");
+        assert!(apply_update(path(&d.phone), "a.md").unwrap().success);
+        assert_eq!(read(&d.phone, "a.md"), "phone\na\nmac\n");
+        assert!(!waiting(&d.phone));
+        sync_now(path(&d.phone), None).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "a.md"), "phone\na\nmac\n");
+    }
+
+    #[test]
+    fn closing_the_note_brings_in_its_update() {
+        let d = devices("closed");
+        write(&d.mac, "a.md", "a from mac\n");
+        sync_now(path(&d.mac), None).unwrap();
+        sync_now(path(&d.phone), Some("a.md")).unwrap();
+        assert_eq!(read(&d.phone, "a.md"), "a\n");
+        sync_now(path(&d.phone), Some("b.md")).unwrap();
+        assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
+        assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::CleanSynced);
+    }
+
+    #[test]
+    fn held_notes_survive_a_workspace_switch() {
+        let d = conflicted("held-switch");
+        create_workspace(path(&d.phone), "Work").unwrap();
+        assert!(!d.phone.join("a.md").exists());
+        switch_workspace(path(&d.phone), "Personal").unwrap();
+        assert_eq!(read(&d.phone, "a.md"), "a from phone\n");
+        assert!(get_repo_status(path(&d.phone)).unwrap().has_conflict);
     }
 
     #[test]
     fn images_changed_on_both_devices_are_both_kept() {
         let d = devices("images");
         std::fs::write(d.mac.join("p.png"), [0xff, 1]).unwrap();
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         std::fs::write(d.phone.join("p.png"), [0xff, 2]).unwrap();
-        assert!(sync_now(path(&d.phone)).unwrap().success);
+        assert!(sync_now(path(&d.phone), None).unwrap().success);
         assert_eq!(std::fs::read(d.phone.join("p.png")).unwrap(), [0xff, 2]);
         assert_eq!(std::fs::read(d.phone.join("p (other device).png")).unwrap(), [0xff, 1]);
     }
@@ -1304,11 +1873,11 @@ mod tests {
     fn an_edit_made_while_syncing_is_not_overwritten() {
         let d = devices("race");
         write(&d.mac, "a.md", "a from mac\n");
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         let phone = Repository::open(&d.phone).unwrap();
         fetch_origin(&phone).unwrap();
         write(&d.phone, "a.md", "typed just now\n");
-        assert!(integrate_remote(&phone, "Personal").is_err());
+        assert!(integrate_remote(&phone, "Personal", None).is_err());
         assert_eq!(read(&d.phone, "a.md"), "typed just now\n");
     }
 
@@ -1332,7 +1901,7 @@ mod tests {
         assert_eq!(read(&d.phone, "w.md"), "work\n");
         let back = switch_workspace(path(&d.phone), "Personal").unwrap();
         assert_eq!((back.dirty_count, back.ahead_count), (0, 1));
-        assert!(sync_now(path(&d.phone)).unwrap().success);
+        assert!(sync_now(path(&d.phone), None).unwrap().success);
         assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
         assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
     }
@@ -1348,7 +1917,7 @@ mod tests {
         assert_eq!(marked(), ["b.md"]);
         commit_all(&Repository::open(&d.phone).unwrap(), "offline").unwrap();
         assert_eq!(marked(), ["b.md"]);
-        sync_now(path(&d.phone)).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
         assert!(marked().is_empty());
     }
 
@@ -1357,7 +1926,7 @@ mod tests {
         let d = devices("idle");
         let head = || Repository::open(&d.mac).unwrap().head().unwrap().target();
         let before = head();
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         assert_eq!(head(), before);
     }
 
@@ -1368,12 +1937,48 @@ mod tests {
         let away = d.mac.parent().unwrap().join("away.git");
         std::fs::rename(&cloud, &away).unwrap();
         write(&d.phone, "b.md", "offline\n");
-        assert!(sync_now(path(&d.phone)).is_err());
+        assert!(sync_now(path(&d.phone), None).is_err());
         assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::AheadOffline);
         std::fs::rename(&away, &cloud).unwrap();
-        sync_now(path(&d.phone)).unwrap();
-        sync_now(path(&d.mac)).unwrap();
+        sync_now(path(&d.phone), None).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
         assert_eq!(read(&d.mac, "b.md"), "offline\n");
+    }
+
+    #[test]
+    fn commits_waiting_in_other_workspaces_are_uploaded_too() {
+        let d = devices("others");
+        let cloud = d.mac.parent().unwrap().join("cloud.git");
+        let away = d.mac.parent().unwrap().join("away.git");
+        create_workspace(path(&d.mac), "Work").unwrap();
+        std::fs::rename(&cloud, &away).unwrap();
+        write(&d.mac, "w.md", "written offline\n");
+        switch_workspace(path(&d.mac), "Personal").unwrap();
+        assert_eq!(get_repo_status(path(&d.mac)).unwrap().other_workspaces_not_uploaded, ["Work"]);
+        std::fs::rename(&away, &cloud).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
+        assert!(get_repo_status(path(&d.mac)).unwrap().other_workspaces_not_uploaded.is_empty());
+        list_workspaces(path(&d.phone), true).unwrap();
+        switch_workspace(path(&d.phone), "Work").unwrap();
+        assert_eq!(read(&d.phone, "w.md"), "written offline\n");
+    }
+
+    #[test]
+    fn the_background_job_uploads_only_when_something_is_waiting() {
+        let d = devices("background");
+        let cloud = d.mac.parent().unwrap().join("cloud.git");
+        let away = d.mac.parent().unwrap().join("away.git");
+        std::fs::rename(&cloud, &away).unwrap();
+        // Nothing waiting: done without trying to reach the (missing) cloud.
+        upload_waiting(path(&d.phone), None).unwrap();
+        write(&d.phone, "b.md", "offline\n");
+        let offline = upload_waiting(path(&d.phone), None).unwrap_err();
+        assert!(worth_retrying(&offline));
+        std::fs::rename(&away, &cloud).unwrap();
+        upload_waiting(path(&d.phone), None).unwrap();
+        sync_now(path(&d.mac), None).unwrap();
+        assert_eq!(read(&d.mac, "b.md"), "offline\n");
+        assert!(!worth_retrying("Your sign-in was not accepted. It may have expired or been revoked: sign in again from Settings."));
     }
 
     #[test]
@@ -1392,7 +1997,7 @@ mod tests {
         push_workspace(&mac, "Personal").unwrap();
 
         write(&d.phone, "b.md", "b from phone\n");
-        assert!(sync_now(path(&d.phone)).unwrap_err().contains("newer version"));
+        assert!(sync_now(path(&d.phone), None).unwrap_err().contains("newer version"));
         assert_eq!(read(&d.phone, "a.md"), "a\n");
         assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
     }
@@ -1416,7 +2021,7 @@ mod tests {
         let runs: Vec<_> = (0..4)
             .map(|_| {
                 let p = d.phone.clone();
-                std::thread::spawn(move || sync_now(path(&p)).map(|r| r.success))
+                std::thread::spawn(move || sync_now(path(&p), None).map(|r| r.success))
             })
             .collect();
         for run in runs {

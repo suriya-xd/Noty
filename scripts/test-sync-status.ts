@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { describeSync, failingForADay, problemFrom } from "../src/utils/syncStatus";
+import { describeSync, failingForADay, hasWaitingUploads, mayAutoSync, problemFrom, RETURN_SYNC_GAP_MS } from "../src/utils/syncStatus";
 import type { RepoStatusPayload } from "../src/types/noetic";
 
-const file = (not_uploaded: boolean) => ({ path: "a.md", is_modified: false, is_untracked: false, has_remote_update: false, not_uploaded });
+const file = (not_uploaded: boolean) => ({ path: "a.md", is_modified: false, is_untracked: false, has_remote_update: false, not_uploaded, conflict: false, update_waiting: false, merged: false });
 const status = (over: Partial<RepoStatusPayload> = {}): RepoStatusPayload => ({
-  state: "CleanSynced", dirty_count: 0, behind_count: 0, ahead_count: 0, has_conflict: false,
+  state: "CleanSynced", dirty_count: 0, behind_count: 0, ahead_count: 0, has_conflict: false, other_workspaces_not_uploaded: [],
   branch: "w", remote_name: "origin", remote_url: "u", files: [], ...over,
 });
 const offline = problemFrom("Couldn't reach your cloud storage: x", false, null, 0);
@@ -25,4 +25,19 @@ assert.equal(describeSync(status({ has_conflict: true }), offline).kind, "confli
 assert.equal(describeSync(status({ has_conflict: true }), signIn).kind, "sign-in");
 assert.match(describeSync(status({ files: [file(true)] }), offline, 24 * 3600 * 1000).detail, /over a day/);
 assert.doesNotMatch(describeSync(status({ files: [file(true)] }), offline, 1000).detail, /over a day/);
+// Automatic syncs.
+assert.equal(mayAutoSync("launch", status(), null, 0), true);
+assert.equal(mayAutoSync("launch", status({ branch: "" }), null, 0), false, "no workspace yet");
+assert.equal(mayAutoSync("launch", status({ remote_url: null }), null, 0), false, "not signed in");
+assert.equal(mayAutoSync("reconnect", status(), signIn, 0), false, "a refused sign-in would fail every time");
+assert.equal(mayAutoSync("reconnect", status(), offline, 0), true, "offline is retried");
+assert.equal(mayAutoSync("return", status(), null, 1000, 1000 + RETURN_SYNC_GAP_MS - 1), false, "a quick switch back");
+assert.equal(mayAutoSync("return", status(), null, 1000, 1000 + RETURN_SYNC_GAP_MS), true);
+assert.equal(mayAutoSync("leave", status(), null, 1000, 1001), true, "leaving always uploads");
+assert.equal(hasWaitingUploads(status()), false);
+assert.equal(hasWaitingUploads(status({ dirty_count: 1 })), true);
+assert.equal(hasWaitingUploads(status({ ahead_count: 1 })), true);
+assert.equal(hasWaitingUploads(status({ other_workspaces_not_uploaded: ["Work"] })), true);
+assert.equal(describeSync(status({ other_workspaces_not_uploaded: ["Work"] }), null).kind, "waiting");
+
 console.log("All sync status checks passed.");

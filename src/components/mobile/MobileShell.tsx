@@ -122,6 +122,10 @@ interface MobileShellProps {
   onRenameFile: RenameHandler;
   syncProblem: SyncProblem | null;
   onSync: () => void;
+  /** Opens the resolver on the notes waiting for a version to be chosen (`path`: just that one). */
+  onOpenConflicts: (path?: string) => void;
+  /** Shown above the open note: updates from other devices, conflicts and merges. */
+  noteBanner?: ReactNode;
   onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onOpenAccountSettings: () => void;
@@ -187,7 +191,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // Sync state → what to tell the user and which single action to offer
 // ---------------------------------------------------------------------------
 type SyncTone = "ok" | "warn" | "info" | "ahead" | "off";
-type SyncAction = "sync" | "connect";
+type SyncAction = "sync" | "connect" | "conflicts";
 
 interface SyncSummary {
   tone: SyncTone;
@@ -217,8 +221,8 @@ function summarizeSync(status: RepoStatusPayload | null, problem: SyncProblem | 
     chip: label,
     headline,
     detail,
-    action: needsSignIn ? "connect" : "sync",
-    actionLabel: needsSignIn ? "Sign in" : "Sync now",
+    action: needsSignIn ? "connect" : kind === "conflict" ? "conflicts" : "sync",
+    actionLabel: needsSignIn ? "Sign in" : kind === "conflict" ? "Choose versions" : "Sync now",
   };
 }
 
@@ -323,6 +327,8 @@ export const MobileShell: FC<MobileShellProps> = ({
   onRenameFile,
   syncProblem,
   onSync,
+  onOpenConflicts,
+  noteBanner,
   onOpenWorkspaces,
   onOpenOnboarding,
   onOpenAccountSettings,
@@ -429,9 +435,11 @@ export const MobileShell: FC<MobileShellProps> = ({
   const account = useMemo(() => GitHubService.getStoredGitHubAuth(), [status?.remote_url, tab]);
 
   const fileStatus = useMemo(() => {
-    const map = new Map<string, "modified" | "new" | "waiting" | "incoming">();
+    const map = new Map<string, "conflict" | "update" | "modified" | "new" | "waiting" | "incoming">();
     for (const f of status?.files ?? []) {
-      if (f.has_remote_update) map.set(f.path, "incoming");
+      if (f.conflict) map.set(f.path, "conflict");
+      else if (f.update_waiting) map.set(f.path, "update");
+      else if (f.has_remote_update) map.set(f.path, "incoming");
       else if (f.is_untracked) map.set(f.path, "new");
       else if (f.is_modified) map.set(f.path, "modified");
       else if (f.not_uploaded) map.set(f.path, "waiting");
@@ -506,6 +514,7 @@ export const MobileShell: FC<MobileShellProps> = ({
 
   const runSyncAction = (action: SyncAction) => {
     if (action === "sync") onSync();
+    else if (action === "conflicts") onOpenConflicts();
     else onOpenOnboarding();
   };
 
@@ -623,6 +632,8 @@ export const MobileShell: FC<MobileShellProps> = ({
     const s = fileStatus.get(path);
     if (!s) return null;
     const cfg = {
+      conflict: { cls: "bg-orange-500 ring-2 ring-orange-500/30", label: "Changed here and on another device: open it to choose a version" },
+      update: { cls: "bg-sky-400", label: "Updated on another device" },
       modified: { cls: "bg-amber-400", label: "Edited, not uploaded yet" },
       waiting: { cls: "bg-amber-400", label: "Not uploaded yet" },
       new: { cls: "bg-emerald-400", label: "New, not uploaded yet" },
@@ -1154,6 +1165,17 @@ export const MobileShell: FC<MobileShellProps> = ({
             {isLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
             <span>{isLoading ? "Working…" : sync.actionLabel}</span>
           </button>
+          {sync.action === "conflicts" && (
+            // Everything else keeps syncing while a note waits for its choice.
+            <button
+              type="button"
+              disabled={isLoading}
+              onClick={onSync}
+              className="mt-2 w-full h-12 rounded-xl text-[15px] font-semibold flex items-center justify-center gap-2 disabled:opacity-60 bg-[#21262d] text-[#f0f6fc] active:bg-[#30363d] transition-colors"
+            >
+              Sync now
+            </button>
+          )}
         </section>
 
         {changedFiles.length > 0 && (
@@ -1339,6 +1361,7 @@ export const MobileShell: FC<MobileShellProps> = ({
         </div>
       </header>
 
+      {noteBanner}
       <div className="flex-1 min-h-0 relative overflow-hidden">
         {activeIsCanvas ? (
           <CanvasView

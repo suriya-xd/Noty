@@ -308,32 +308,24 @@ export function noeticPlugin(): Plugin {
             }
 
             case "sync_now": {
+              // Like the app's backend, except an update to the open note isn't held for its
+              // banner, and merges can't be undone.
               const before = await getGitStatus(vaultPath);
               if (!before.remote_url) {
                 return sendError("Your notes are kept on this device. Sign in to back them up and sync them.");
               }
               if (!before.branch) return sendError("Choose or create a workspace first.");
               const branch = safeBranch(before.branch);
+              await git(["update-ref", "-d", `refs/noetic/incoming/${branch}`], vaultPath).catch(() => {});
+              await settleHeld(vaultPath, branch);
               await commitAll(vaultPath, `Notes update: ${new Date().toISOString()}`);
               await git(["fetch", "--prune", "origin"], vaultPath).catch((e) => {
                 throw new Error(`Kept on this device, not uploaded yet: Couldn't reach your cloud storage: ${e.message}`);
               });
 
               const fetched = await getGitStatus(vaultPath);
-              if (fetched.behind_count > 0) {
-                const conflicts = await mergeWorkspace(vaultPath, `origin/${branch}`);
-                if (conflicts) {
-                  await git(["merge", "--abort"], vaultPath);
-                  await git(["update-ref", `refs/noetic/incoming/${branch}`, `refs/remotes/origin/${branch}`], vaultPath);
-                  return sendJson({
-                    success: false,
-                    message: `${conflicts.length} note(s) changed both here and on another device. Choose which version to keep.`,
-                    state: (await getGitStatus(vaultPath)).state,
-                    conflicts,
-                  });
-                }
-              }
-              await git(["update-ref", "-d", `refs/noetic/incoming/${branch}`], vaultPath);
+              let notices: string[] = [];
+              if (fetched.behind_count > 0) notices = await mergeWorkspace(vaultPath, branch, `origin/${branch}`);
               const merged = await getGitStatus(vaultPath);
               if (merged.ahead_count > 0) {
                 try {
@@ -342,12 +334,40 @@ export function noeticPlugin(): Plugin {
                   return sendError(`Kept on this device, not uploaded yet: ${pushErr.message}`);
                 }
               }
+              // Commits made in other workspaces go up too; updates for them wait until they are opened.
+              for (const w of await otherWorkspacesWaiting(vaultPath, branch)) {
+                if (w.ready) await git(["push", "origin", w.name], vaultPath).catch(() => {});
+              }
+              const conflicts = await conflictFiles(vaultPath, branch);
               sendJson({
                 success: true,
-                message: fetched.behind_count + merged.ahead_count > 0 ? "Synced. Your notes are up to date." : "Everything is up to date.",
+                message:
+                  conflicts.length > 0
+                    ? `Synced, except ${conflicts.length} note(s) changed in the same place here and on another device. Open the marked note to choose a version.`
+                    : fetched.behind_count + merged.ahead_count > 0
+                    ? "Synced. Your notes are up to date."
+                    : "Everything is up to date.",
                 state: (await getGitStatus(vaultPath)).state,
-                conflicts: [],
+                conflicts,
+                notices,
               });
+              break;
+            }
+
+            case "get_conflicts": {
+              const workspace = await currentWorkspace(vaultPath);
+              sendJson(workspace ? await conflictFiles(vaultPath, safeBranch(workspace)) : []);
+              break;
+            }
+
+            case "apply_update": {
+              // Updates to the open note aren't held here, so there is never one waiting.
+              sendJson({ success: true, message: "Updated.", state: (await getGitStatus(vaultPath)).state, conflicts: [], notices: [] });
+              break;
+            }
+
+            case "settle_merge": {
+              sendJson(await getGitStatus(vaultPath));
               break;
             }
 
@@ -665,6 +685,7 @@ export function noeticPlugin(): Plugin {
               }
               if (list.current) {
                 await git(["checkout", "-f", target], vaultPath);
+                for (const [p, note] of Object.entries(loadHeld(vaultPath, target))) writeDisk(vaultPath, p, note.local ?? null);
                 removeEmptyFolders(vaultPath);
               } else {
                 // Notes in the folder belong to no workspace yet: keep them, refuse on a name clash.
@@ -685,34 +706,23 @@ export function noeticPlugin(): Plugin {
               const resolutions: any[] = body.resolutions || [];
               const workspace = await currentWorkspace(vaultPath);
               if (!workspace) return sendError("Choose or create a workspace first.", 400);
-              const incoming = `refs/noetic/incoming/${safeBranch(workspace)}`;
-              if (!(await refExists(vaultPath, incoming))) {
-                return sendError("There is nothing left to resolve. Sync again.", 400);
-              }
-              await commitAll(vaultPath, `Saved before syncing: ${new Date().toISOString()}`);
-              const open = (await mergeWorkspace(vaultPath, incoming)) ?? [];
-              const missing = open.some((c) => !resolutions.some((r) => r.path === c.path));
-              if (missing) {
-                await git(["merge", "--abort"], vaultPath);
-                return sendError("Some notes changed in the meantime. Sync again to choose their versions.", 400);
-              }
-              for (const c of open) {
-                const r = resolutions.find((x) => x.path === c.path);
-                const target = path.join(vaultPath, c.path);
-                const deleted = r.resolution_type === "local" ? c.local_deleted : r.resolution_type === "remote" && c.remote_deleted;
-                const text =
-                  r.resolution_type === "local" ? c.local_content : r.resolution_type === "remote" ? c.remote_content : r.custom_content;
-                if (deleted) fs.rmSync(target, { force: true });
-                else {
-                  fs.mkdirSync(path.dirname(target), { recursive: true });
-                  fs.writeFileSync(target, text ?? "", "utf-8");
+              const branch = safeBranch(workspace);
+              const held = loadHeld(vaultPath, branch);
+              for (const r of resolutions) {
+                const p = vaultRelative(vaultPath, r.path);
+                if (held[p]?.waiting !== "conflict") return sendError(`"${p}" no longer needs a choice. Sync again.`, 400);
+                if (r.remote_id && r.remote_id !== (await headId(vaultPath, p))) {
+                  return sendError(`"${p}" changed again on another device. Open it again to see the newest version.`, 400);
                 }
               }
-              if (open.length > 0) {
-                await git(["add", "-A"], vaultPath);
-                await git(["commit", "-q", "--no-edit"], vaultPath);
+              for (const r of resolutions) {
+                const p = vaultRelative(vaultPath, r.path);
+                if (r.resolution_type === "remote") writeDisk(vaultPath, p, await headText(vaultPath, p));
+                else if (r.resolution_type !== "local") writeDisk(vaultPath, p, r.custom_content ?? "");
+                delete held[p];
               }
-              await git(["update-ref", "-d", incoming], vaultPath);
+              saveHeld(vaultPath, branch, held);
+              await commitAll(vaultPath, `Chose versions: ${new Date().toISOString()}`);
               sendJson(await getGitStatus(vaultPath));
               break;
             }
@@ -795,26 +805,149 @@ async function workspaceBase(cwd: string): Promise<string> {
 }
 
 /** Stages and commits everything; does nothing when there is nothing new. */
+/** Other workspaces whose commits the cloud doesn't have, and whether they can go up as they are. */
+async function otherWorkspacesWaiting(cwd: string, current: string): Promise<{ name: string; ready: boolean }[]> {
+  const out: { name: string; ready: boolean }[] = [];
+  let names: string[] = [];
+  try {
+    names = (await git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd)).stdout.split("\n").filter(Boolean);
+  } catch {
+    return out;
+  }
+  const isAncestor = (a: string, b: string) =>
+    git(["merge-base", "--is-ancestor", a, b], cwd).then(() => true, () => false);
+  for (const name of names) {
+    if (name === current || name === STORAGE_BRANCH) continue;
+    const remote = `refs/remotes/origin/${name}`;
+    if (!(await refExists(cwd, remote))) out.push({ name, ready: true });
+    else if (!(await isAncestor(`refs/heads/${name}`, remote))) {
+      out.push({ name, ready: await isAncestor(remote, `refs/heads/${name}`) });
+    }
+  }
+  return out;
+}
+
 async function commitAll(cwd: string, message: string): Promise<void> {
   await git(["add", "-A"], cwd);
-  const { stdout } = await git(["status", "--porcelain"], cwd);
+  // Held notes keep their committed (cloud) version until they are brought together.
+  const workspace = await currentWorkspace(cwd);
+  const held = workspace ? Object.keys(loadHeld(cwd, safeBranch(workspace))) : [];
+  if (held.length > 0) await git(["reset", "-q", "HEAD", "--", ...held], cwd).catch(() => {});
+  const { stdout } = await git(["diff", "--cached", "--name-only"], cwd);
   if (stdout.trim()) await git(["commit", "-q", "-m", String(message)], cwd);
 }
 
-/**
- * Merges without ever combining two edits of one file, like the app's own backend. Returns the
- * files to choose a version for, with the merge left open, or null when it is complete.
- */
-async function mergeWorkspace(cwd: string, theirs: string): Promise<any[] | null> {
-  const attributes = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "noetic-attributes-")), "attributes");
-  fs.writeFileSync(attributes, "* -merge\n");
+// Held notes, in the same file as the app's backend: `.git/noetic/held-<workspace>.json`.
+type HeldNote = { waiting: "conflict" | "update"; base: string | null; local?: string | null };
+
+function heldFile(cwd: string, workspace: string): string {
+  return path.join(cwd, ".git", "noetic", `held-${workspace}.json`);
+}
+
+function loadHeld(cwd: string, workspace: string): Record<string, HeldNote> {
   try {
-    await git(["-c", `core.attributesFile=${attributes}`, "merge", "--no-edit", "-X", "no-renames", theirs], cwd);
+    return JSON.parse(fs.readFileSync(heldFile(cwd, workspace), "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveHeld(cwd: string, workspace: string, held: Record<string, HeldNote>): void {
+  const file = heldFile(cwd, workspace);
+  if (Object.keys(held).length === 0) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(held, null, 2));
+}
+
+/** A path from git or a request, refused if it would leave the notes folder. */
+function vaultRelative(cwd: string, p: string): string {
+  const full = path.resolve(cwd, p);
+  const rel = path.relative(cwd, full);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel) || rel.split(path.sep)[0] === ".git") {
+    throw new Error("That file is outside the notes folder.");
+  }
+  return rel.split(path.sep).join("/");
+}
+
+function readDisk(cwd: string, p: string): string | null {
+  try {
+    return fs.readFileSync(path.join(cwd, p), "utf-8");
+  } catch {
     return null;
+  }
+}
+
+function writeDisk(cwd: string, p: string, text: string | null): void {
+  const full = path.join(cwd, vaultRelative(cwd, p));
+  if (text === null) return fs.rmSync(full, { force: true });
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, text, "utf-8");
+}
+
+async function headText(cwd: string, p: string): Promise<string | null> {
+  try {
+    return (await git(["show", `HEAD:${p}`], cwd)).stdout;
+  } catch {
+    return null;
+  }
+}
+
+async function headId(cwd: string, p: string): Promise<string> {
+  try {
+    return (await git(["rev-parse", `HEAD:${p}`], cwd)).stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+/** Lets go of conflicts where both versions have become the same. */
+async function settleHeld(cwd: string, workspace: string): Promise<void> {
+  const held = loadHeld(cwd, workspace);
+  for (const p of Object.keys(held)) {
+    if (readDisk(cwd, p) === (await headText(cwd, p))) delete held[p];
+  }
+  saveHeld(cwd, workspace, held);
+}
+
+async function conflictFiles(cwd: string, workspace: string): Promise<any[]> {
+  const held = loadHeld(cwd, workspace);
+  const out: any[] = [];
+  for (const [p, note] of Object.entries(held)) {
+    if (note.waiting !== "conflict") continue;
+    const local = readDisk(cwd, p);
+    const remote = await headText(cwd, p);
+    const base = note.base ?? "";
+    out.push({
+      path: p,
+      base_content: base,
+      local_content: local ?? "",
+      remote_content: remote ?? "",
+      local_deleted: local === null,
+      remote_deleted: remote === null,
+      remote_id: await headId(cwd, p),
+      hunks: [{ id: `hunk_${p}`, base_lines: base, local_lines: local ?? "", remote_lines: remote ?? "" }],
+    });
+  }
+  return out;
+}
+
+/**
+ * Merges the cloud copy into the workspace with git's line merge. A note changed in the same
+ * lines on both is held: the merge takes the cloud version and this device's stays on disk. A note
+ * deleted on one side and changed on the other is kept. Returns notices for the user.
+ */
+async function mergeWorkspace(cwd: string, workspace: string, theirs: string): Promise<string[]> {
+  const notices: string[] = [];
+  try {
+    await git(["merge", "--no-edit", theirs], cwd);
+    return notices;
   } catch (e) {
     const { stdout } = await git(["diff", "--name-only", "--diff-filter=U", "-z"], cwd);
     const paths = stdout.split("\0").filter(Boolean);
-    if (paths.length === 0) throw e;
+    if (paths.length === 0) {
+      await git(["merge", "--abort"], cwd).catch(() => {});
+      throw e;
+    }
     const stage = async (n: number, p: string) => {
       try {
         return (await git(["show", `:${n}:${p}`], cwd)).stdout;
@@ -822,28 +955,34 @@ async function mergeWorkspace(cwd: string, theirs: string): Promise<any[] | null
         return null;
       }
     };
-    return Promise.all(
-      paths.map(async (p) => {
-        const [base, local, remote] = await Promise.all([stage(1, p), stage(2, p), stage(3, p)]);
-        const texts = { base: base ?? "", local: local ?? "", remote: remote ?? "" };
-        return {
-          path: p,
-          base_content: texts.base,
-          local_content: texts.local,
-          remote_content: texts.remote,
-          local_deleted: local === null,
-          remote_deleted: remote === null,
-          hunks: [{ id: `hunk_${p}`, base_lines: texts.base, local_lines: texts.local, remote_lines: texts.remote }],
-        };
-      })
-    );
-  } finally {
-    fs.rmSync(path.dirname(attributes), { recursive: true, force: true });
+    const held = loadHeld(cwd, workspace);
+    const keepOnDisk: [string, string][] = [];
+    for (const p of paths) {
+      const [base, local, remote] = await Promise.all([stage(1, p), stage(2, p), stage(3, p)]);
+      if (local === null || remote === null) {
+        notices.push(`"${p.replace(/\.md$/, "")}" was deleted on one device and changed on another, so it was kept.`);
+        writeDisk(cwd, p, local ?? remote);
+        await git(["add", "--", p], cwd);
+        continue;
+      }
+      held[p] = { waiting: "conflict", base };
+      keepOnDisk.push([p, local]);
+      writeDisk(cwd, p, remote);
+      await git(["add", "--", p], cwd);
+    }
+    saveHeld(cwd, workspace, held);
+    await git(["commit", "-q", "--no-edit"], cwd);
+    for (const [p, local] of keepOnDisk) writeDisk(cwd, p, local);
+    return notices;
   }
 }
 
 /** Commits the open workspace before another is opened, and uploads it when possible. */
 async function saveBeforeLeaving(cwd: string, workspace: string): Promise<void> {
+  // Held notes aren't committed, so this device's versions are kept aside until it comes back.
+  const held = loadHeld(cwd, safeBranch(workspace));
+  for (const p of Object.keys(held)) held[p].local = readDisk(cwd, p);
+  saveHeld(cwd, safeBranch(workspace), held);
   const status = await getGitStatus(cwd);
   if (status.dirty_count === 0) return;
   await commitAll(cwd, `Saved before leaving workspace: ${new Date().toISOString()}`);
@@ -897,6 +1036,14 @@ async function getGitStatus(vaultPath: string) {
   }
 
   const branchName = (await currentWorkspace(vaultPath)) ?? "";
+  // Held notes differ from what is committed on purpose; they are marked, not counted as edits.
+  const held = branchName ? loadHeld(vaultPath, safeBranch(branchName)) : {};
+  for (let i = fileStatuses.length - 1; i >= 0; i--) {
+    if (held[fileStatuses[i].path]) {
+      fileStatuses.splice(i, 1);
+      dirtyCount--;
+    }
+  }
   const upstream = branchName ? `refs/remotes/origin/${branchName}` : "";
   const hasUpstream = Boolean(upstream) && (await refExists(vaultPath, upstream));
 
@@ -951,6 +1098,18 @@ async function getGitStatus(vaultPath: string) {
     } catch {}
   }
 
+  for (const [p, note] of Object.entries(held)) {
+    const existing = fileStatuses.find((f) => f.path === p);
+    const marks = { not_uploaded: false, conflict: note.waiting === "conflict", update_waiting: note.waiting === "update" };
+    if (existing) Object.assign(existing, marks);
+    else fileStatuses.push({ path: p, is_modified: false, is_untracked: false, has_remote_update: false, ...marks });
+  }
+  for (const f of fileStatuses) {
+    f.conflict ??= false;
+    f.update_waiting ??= false;
+    f.merged = false;
+  }
+
   let remoteUrl: string | null = null;
   try {
     const { stdout: rUrl } = await execAsync("git remote get-url origin", { cwd: vaultPath });
@@ -973,7 +1132,8 @@ async function getGitStatus(vaultPath: string) {
     dirty_count: dirtyCount,
     behind_count: behindCount,
     ahead_count: aheadCount,
-    has_conflict: Boolean(branchName) && (await refExists(vaultPath, `refs/noetic/incoming/${branchName}`)),
+    has_conflict: Object.values(held).some((n) => n.waiting === "conflict"),
+    other_workspaces_not_uploaded: (await otherWorkspacesWaiting(vaultPath, branchName)).map((w) => w.name),
     branch: branchName,
     remote_name: remoteUrl ? "origin" : null,
     remote_url: remoteUrl,

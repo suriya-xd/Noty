@@ -522,7 +522,15 @@ export const Dashboard: FC<DashboardProps> = ({
                         </div>
 
                         {/* Sync status indicator */}
-                        {fileStat?.is_modified ? (
+                        {fileStat?.conflict ? (
+                          <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300 border border-orange-500/40">
+                            Conflict
+                          </span>
+                        ) : fileStat?.update_waiting ? (
+                          <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                            Update
+                          </span>
+                        ) : fileStat?.is_modified ? (
                           <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                             Modified
                           </span>

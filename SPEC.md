@@ -93,7 +93,7 @@ pub struct ConflictFile {
 
 ---
 
-## 4. Autosave and Autosync (step 1 of 4.11 is built)
+## 4. Autosave and Autosync (steps 1 to 4 of 4.11 are built)
 Replaces manual Save and Sync. Decided 2026-11-25. Where this differs from section 2, this section is the target.
 
 ### 4.1 Saving and uploading
@@ -102,10 +102,16 @@ Replaces manual Save and Sync. Decided 2026-11-25. Where this differs from secti
 - The commit comes first and works offline. Nothing is committed when nothing changed.
 - A failed upload is retried on launch, on return and on reconnect. On Android a native **background job** also retries it when internet returns, even if the app is closed.
 - Retries use increasing random delays and must be safe to repeat (a push may have succeeded without its reply arriving).
+- The Android job (`SyncJobService.kt`, calling `src-tauri/src/background.rs`) is scheduled whenever the app leaves the screen and runs once the phone is online. It checks locally first and only syncs when something is waiting; Android retries it with growing delays after a connection failure. A refused sign-in or a newer notes format stops it until the app is opened. It does not survive a restart of the phone; the next launch uploads instead.
+- `tauri android init` doesn't register services, so `scripts/patch-android-manifest.mjs` adds the job to the generated manifest (CI and `npm run android:init`).
 
 ### 4.2 Receiving
 - The app fetches and combines on launch, on return (including returning to the app's window) and on reconnect. There is no interval polling.
 - Commits waiting in **every** workspace are uploaded; updates are brought in only for the **open** one. A closed workspace that has diverged waits until it is opened.
+- Opening another workspace counts as a launch: it is brought up to date.
+- Returning within 15 seconds of the last sync doesn't check again, so quick window switches don't sync twice. Leaving syncs only when something is waiting to upload.
+- Automatic syncs are quiet: they report new conflicts, notes that came back, a refused sign-in or an unexpected error once, and being offline only after a day. The pill always shows the state.
+- Quitting the desktop app doesn't wait for an upload. Nothing is lost (typing is on disk within 500ms); it is committed and uploaded at the next launch.
 - **Sync now** replaces the Save and Sync buttons: commit, fetch, combine, upload.
 
 ### 4.3 Combining
@@ -119,7 +125,9 @@ Replaces manual Save and Sync. Decided 2026-11-25. Where this differs from secti
 | Canvas | Merged by card and connection ID; conflict only if the same one changed on both |
 | Image or other binary changed on both | Both kept, one named `(other device)` |
 
-- Before an automatic merge rewrites a note, this device's version is kept locally so the merge can be undone from the app.
+- Before an automatic merge rewrites a note, this device's version is kept locally so the merge can be undone from the app. The open note shows "Combined with changes from another device" with Undo and Keep; undo is offered only while the note is still as the merge left it.
+- Neighbouring lines changed on both sides, with no unchanged line between them, count as the same lines (a conflict).
+- Held notes and pre-merge versions are kept per workspace in `.git/noetic/held-<workspace>.json` and `merged-<workspace>.json`, so they never sync.
 - Checkout is never forced, and commits made on a device are never dropped.
 
 ### 4.4 Conflicts
@@ -128,7 +136,7 @@ Replaces manual Save and Sync. Decided 2026-11-25. Where this differs from secti
 - Held versions are per workspace and survive a restart and a workspace switch.
 
 ### 4.5 The open note
-- An incoming change to the open note shows an **"Updated on another device"** banner and is applied when tapped. Typing is not paused.
+- An incoming change to the open note shows an **"Updated on another device"** banner and is applied when tapped. Typing is not paused. A sync never rewrites the open note; one deleted on another device is still removed.
 - Until then the note is held as in 4.4. Text typed meanwhile is merged with the update by the rules in 4.3, when the banner is tapped or the note is closed.
 
 ### 4.6 Recovery
@@ -162,3 +170,5 @@ Replaces manual Save and Sync. Decided 2026-11-25. Where this differs from secti
 5. Deleted notes and large files
 
 The version check (4.10) ships with step 1. Autosave is not turned on before step 2 is done.
+
+The dev-server backend (`vite-noetic-plugin.ts`) follows step 2 with git's own merge: it holds conflicts the same way, but merges a canvas by line, doesn't hold updates to the open note and can't undo merges.

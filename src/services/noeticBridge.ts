@@ -114,7 +114,7 @@ const MOCK_FOLDERS = new Set<string>();
 
 let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
-let mockConflict = false;
+let mockConflict: ConflictFile | null = null;
 let mockDirtySet = new Set<string>();
 let mockRemoteUrl: string | null = null;
 let mockWorkspaces: string[] = [];
@@ -132,11 +132,14 @@ function computeMockStatus(): RepoStatusPayload {
       is_modified: isModified,
       is_untracked: false,
       has_remote_update: hasRemote,
-      not_uploaded: isModified,
+      not_uploaded: isModified && mockConflict?.path !== path,
+      conflict: mockConflict?.path === path,
+      update_waiting: false,
+      merged: false,
     };
   });
 
-  const dirtyCount = mockDirtySet.size;
+  const dirtyCount = [...mockDirtySet].filter((p) => p !== mockConflict?.path).length;
 
   let state: RepoStatusPayload["state"] = "CleanSynced";
   if (mockRemoteAhead > 0) {
@@ -154,7 +157,8 @@ function computeMockStatus(): RepoStatusPayload {
     dirty_count: dirtyCount,
     behind_count: mockRemoteAhead,
     ahead_count: mockAheadOffline,
-    has_conflict: mockConflict,
+    has_conflict: mockConflict !== null,
+    other_workspaces_not_uploaded: [],
     branch: mockWorkspace ?? "",
     remote_name: mockRemoteUrl ? "origin" : null,
     remote_url: mockRemoteUrl,
@@ -310,26 +314,43 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
             },
           ],
         };
-        mockConflict = true;
+        // Held: this device's version stays, everything else syncs.
+        mockConflict = conflict;
+        mockRemoteAhead = 0;
+        mockAheadOffline = 0;
         const res: SyncResult = {
-          success: false,
-          message: "1 note(s) changed both here and on another device. Choose which version to keep.",
-          state: "DirtyBehind",
+          success: true,
+          message: "Synced, except 1 note(s) changed in the same place here and on another device. Open the marked note to choose a version.",
+          state: "CleanSynced",
           conflicts: [conflict],
+          notices: [],
         };
         return res as unknown as T;
       }
       mockRemoteAhead = 0;
       mockAheadOffline = 0;
-      mockConflict = false;
-      mockDirtySet.clear();
+      for (const p of [...mockDirtySet]) if (p !== mockConflict?.path) mockDirtySet.delete(p);
       const res: SyncResult = {
         success: true,
         message: "Synced. Your changes are backed up.",
         state: "CleanSynced",
-        conflicts: [],
+        conflicts: mockConflict ? [mockConflict] : [],
+        notices: [],
       };
       return res as unknown as T;
+    }
+
+    case "get_conflicts": {
+      return (mockConflict ? [mockConflict] : []) as unknown as T;
+    }
+
+    case "apply_update": {
+      const res: SyncResult = { success: true, message: "Updated.", state: computeMockStatus().state, conflicts: [], notices: [] };
+      return res as unknown as T;
+    }
+
+    case "settle_merge": {
+      return computeMockStatus() as unknown as T;
     }
 
     case "resolve_conflicts": {
@@ -339,9 +360,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
           MOCK_FILES[res.path] = res.custom_content;
         }
       }
-      mockRemoteAhead = 0;
-      mockConflict = false;
-      mockDirtySet.delete("ConflictTest.md");
+      mockConflict = null;
       return computeMockStatus() as unknown as T;
     }
 
@@ -434,8 +453,25 @@ export const NoeticBridge = {
     return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("fetch_remote", { repo_path: repoPath }));
   },
 
-  syncNow: (repoPath: string): Promise<SyncResult> => {
-    return viaCloud(repoPath, () => invokeTauri<SyncResult>("sync_now", { repo_path: repoPath }));
+  /** `openNote` is the note on screen: changes to it wait for the user to tap the banner. */
+  syncNow: (repoPath: string, openNote: string | null = null): Promise<SyncResult> => {
+    return viaCloud(repoPath, () =>
+      invokeTauri<SyncResult>("sync_now", { repo_path: repoPath, open_note: openNote })
+    );
+  },
+
+  getConflicts: (repoPath: string): Promise<ConflictFile[]> => {
+    return invokeTauri<ConflictFile[]>("get_conflicts", { repo_path: repoPath });
+  },
+
+  /** Brings the update waiting for a note into it, merged with what was typed meanwhile. */
+  applyUpdate: (repoPath: string, path: string): Promise<SyncResult> => {
+    return invokeTauri<SyncResult>("apply_update", { repo_path: repoPath, path });
+  },
+
+  /** After an automatic merge: put back this device's version (`undo`), or keep the merge. */
+  settleMerge: (repoPath: string, path: string, undo: boolean): Promise<RepoStatusPayload> => {
+    return invokeTauri<RepoStatusPayload>("settle_merge", { repo_path: repoPath, path, undo });
   },
 
   resolveConflicts: (
@@ -563,7 +599,7 @@ export const NoeticBridge = {
     mockDirtySet.clear();
   },
   resetMockState: () => {
-    mockConflict = false;
+    mockConflict = null;
     mockRemoteAhead = 0;
     mockAheadOffline = 0;
     mockDirtySet.clear();

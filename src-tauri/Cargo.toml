@@ -18,7 +18,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 base64 = "0.22"
 # Only the local clock is used (save messages carry the time).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -53,6 +53,8 @@ git2 = { version = "0.19", default-features = false, features = ["https", "vendo
 # OpenSSL the system's trusted certificates (trust_android_system_certificates in src/lib.rs).
 libgit2-sys = "0.17"
 openssl-sys = "0.9"
+# Called by the background job (src/background.rs) from Android's JobScheduler.
+jni = "0.21"
 
 [profile.release]
 codegen-units = 1

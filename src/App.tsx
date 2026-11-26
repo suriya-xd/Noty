@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback, useL
 import { Editor } from "./components/Editor";
 import type { OpenFileOptions } from "./components/Editor";
 import { CanvasView } from "./components/canvas/LazyCanvasView";
+import { NoteSyncBanner } from "./components/NoteSyncBanner";
 import { NoeticBridge } from "./services/noeticBridge";
 import { GitHubService, isAuthError, SIGN_IN_AGAIN_MESSAGE } from "./services/githubService";
 import {
@@ -15,8 +16,17 @@ import { recordOpened, removeFromQuickAccess, renameInQuickAccess, setQuickAcces
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
 import { flushPendingEdits } from "./utils/pendingEdits";
-import { failingForADay, loadProblem, problemFrom, storeProblem } from "./utils/syncStatus";
-import type { SyncProblem } from "./utils/syncStatus";
+import {
+  IDLE_SYNC_MS,
+  LEAVING,
+  failingForADay,
+  hasWaitingUploads,
+  loadProblem,
+  mayAutoSync,
+  problemFrom,
+  storeProblem,
+} from "./utils/syncStatus";
+import type { SyncProblem, SyncReason } from "./utils/syncStatus";
 import { isAssetPath, withoutAssets } from "./utils/assets";
 
 // Only what every start needs is in the first script. A device uses one of the two layouts, and
@@ -58,6 +68,9 @@ export default function App() {
   // The notes list leaves out the assets folder; uploaded files are browsed from Settings.
   const notesOnly = useMemo(() => withoutAssets(files), [files]);
   const [status, setStatus] = useState<RepoStatusPayload | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [activeFileContent, setActiveFileContent] = useState<string>("");
   // Notes open as tabs (desktop). A normal open reuses the current tab; "new tab" adds one.
@@ -89,13 +102,23 @@ export default function App() {
     setSyncProblemState(problem);
     storeProblem(problem);
   };
-  /** A sync is running; another request would only wait behind it and then find nothing to do. */
+  /** A sync is running. A request meanwhile runs once after it, since it may have new edits. */
   const syncingRef = useRef(false);
+  const queuedSyncRef = useRef<SyncReason | null>(null);
+  /** An automatic sync is running: the sync button spins, nothing else is blocked. */
+  const [autoSyncing, setAutoSyncing] = useState(false);
+  const lastSyncAtRef = useRef(0);
+  /** Notes waiting for a choice after the last sync, so an automatic sync only mentions new ones. */
+  const knownConflictsRef = useRef(0);
+  /** The over-a-day warning has been shown in this session. */
+  const warnedOverdueRef = useRef(false);
   /** Advances when a sync changed the open note on disk, so its editor is rebuilt from the file. */
   const [editorVersion, setEditorVersion] = useState(0);
 
   // Onboarding wizard state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
+  const isOnboardingOpenRef = useRef(isOnboardingOpen);
+  isOnboardingOpenRef.current = isOnboardingOpen;
   /** The sign-in screen was opened because the saved sign-in lapsed, not for a new account. */
   const reSigningInRef = useRef(false);
   const [isAccountSettingsOpen, setIsAccountSettingsOpen] = useState<boolean>(false);
@@ -304,6 +327,9 @@ export default function App() {
       await NoeticBridge.writeFileContent(fullPath, newContent);
       if (activeFilePathRef.current === relPath) setActiveFileContent(newContent);
       backlinksGraph.updateFileLinks(relPath, newContent);
+      // A note left open is committed and uploaded after 5 minutes without typing.
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => void autoSyncRef.current("idle"), IDLE_SYNC_MS);
       // Refresh the status so the unsaved indicator (`•`) shows right away
       await refreshStatus();
     } catch (err) {
@@ -344,38 +370,127 @@ export default function App() {
     }
   };
 
-  // 6. Sync now: commits, brings in updates from other devices, combines and uploads.
-  const handleSyncNow = async () => {
-    if (syncingRef.current) return;
+  const showNotices = (notices: string[]) => {
+    if (notices.length > 0) showToast(notices.join(" "), "info");
+  };
+
+  // 6. Sync: commits, brings in updates from other devices, combines and uploads. Typing isn't
+  // paused: the open note is never changed by a sync (an update to it waits for its banner).
+  // Started by the Sync now button, or automatically (see `autoSync`), which stays quiet unless
+  // there is something new to say.
+  const handleSyncNow = async (reason: SyncReason = "manual") => {
+    if (syncingRef.current) {
+      if (reason === "manual" || !queuedSyncRef.current) queuedSyncRef.current = reason;
+      return;
+    }
+    const manual = reason === "manual";
     syncingRef.current = true;
-    setIsLoading(true);
+    if (manual) setIsLoading(true);
+    else setAutoSyncing(true);
     try {
-      // Checked first so typing is only paused when there is something to bring in.
-      const current = await NoeticBridge.fetchRemote(vaultPath).catch(() => null);
-      const incoming = (current?.behind_count ?? 0) > 0;
-      const result = await withNotesOnDisk(incoming, () => NoeticBridge.syncNow(vaultPath));
+      const result = await withNotesOnDisk(false, () => NoeticBridge.syncNow(vaultPath, activeFilePathRef.current));
       // Reaching the cloud is what counts here: a conflict is not a connection problem.
       setSyncProblem(null);
-      if (result.conflicts.length > 0) {
-        setConflictedFiles(result.conflicts);
-        setIsConflictModalOpen(true);
-        // No toast here: the resolver that just opened is its own announcement.
-      } else {
-        showToast(result.message, "success");
-      }
+      warnedOverdueRef.current = false;
+      // A conflict doesn't open the resolver: the note is marked and the user opens it from there.
+      const newConflicts = result.conflicts.length > knownConflictsRef.current;
+      knownConflictsRef.current = result.conflicts.length;
+      if (manual) showToast(result.message, result.conflicts.length > 0 ? "info" : "success");
+      else if (newConflicts) showToast(result.message, "info");
+      showNotices(result.notices);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (status?.remote_url && status.branch) {
+      if (statusRef.current?.remote_url && statusRef.current.branch) {
+        const previous = syncProblemRef.current;
         const signInRefused = isAuthError(err) || msg === SIGN_IN_AGAIN_MESSAGE;
-        const problem = problemFrom(msg, signInRefused, syncProblemRef.current);
+        const problem = problemFrom(msg, signInRefused, previous);
         setSyncProblem(problem);
-        showToast(failingForADay(problem) ? `${msg} Nothing has been uploaded for over a day.` : msg, "error");
-      } else {
+        const overdue = failingForADay(problem);
+        if (manual) {
+          showToast(overdue ? `${msg} Nothing has been uploaded for over a day.` : msg, "error");
+        } else if (overdue && !warnedOverdueRef.current) {
+          // Offline now and then is normal; only a day of it is worth interrupting for.
+          warnedOverdueRef.current = true;
+          showToast(`Nothing has been uploaded for over a day. ${msg}`, "error");
+        } else if (problem.kind === "sign-in" ? previous?.kind !== "sign-in" : problem.kind === "other" && previous?.message !== msg && !/being edited while syncing/.test(msg)) {
+          showToast(msg, "error");
+        }
+      } else if (manual) {
         showToast(msg, "error");
       }
     } finally {
       syncingRef.current = false;
-      setIsLoading(false);
+      lastSyncAtRef.current = Date.now();
+      if (manual) setIsLoading(false);
+      else setAutoSyncing(false);
+      const next = queuedSyncRef.current;
+      queuedSyncRef.current = null;
+      // An automatic one checks again whether it is still needed (two leave events, say).
+      if (next) void (next === "manual" ? handleSyncNow(next) : autoSyncRef.current(next));
+    }
+  };
+
+  /**
+   * Syncs without being asked (SPEC 4.1, 4.2): on launch, on returning to the app or its window,
+   * when the connection comes back, and on leaving (a note, the app or its window, or 5 minutes
+   * without typing). Leaving only syncs when something is waiting to upload.
+   */
+  const autoSync = async (reason: SyncReason) => {
+    if (!vaultPath || isOnboardingOpenRef.current) return;
+    if (!mayAutoSync(reason, statusRef.current, syncProblemRef.current, lastSyncAtRef.current)) return;
+    if (LEAVING.has(reason)) {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      await flushPendingEdits();
+      if (!hasWaitingUploads(await NoeticBridge.getRepoStatus(vaultPath).catch(() => null))) return;
+    }
+    await handleSyncNow(reason);
+  };
+  const autoSyncRef = useRef(autoSync);
+  autoSyncRef.current = autoSync;
+
+  // On launch, and whenever another workspace is opened: bring it up to date.
+  const syncedWorkspaceRef = useRef("");
+  useEffect(() => {
+    const key = status?.remote_url && status.branch ? `${vaultPath}:${status.branch}` : "";
+    if (!key || key === syncedWorkspaceRef.current) return;
+    syncedWorkspaceRef.current = key;
+    void autoSyncRef.current("launch");
+  }, [vaultPath, status?.remote_url, status?.branch]);
+
+  // Leaving and returning: the app going to the background (or its window losing focus), and the
+  // connection coming back.
+  useEffect(() => {
+    const onVisibility = () => void autoSyncRef.current(document.hidden ? "leave" : "return");
+    const onBlur = () => void autoSyncRef.current("leave");
+    const onFocus = () => void autoSyncRef.current("return");
+    const onOnline = () => void autoSyncRef.current("reconnect");
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
+
+  /** Opens the resolver on the notes waiting for a version to be chosen (`path`: just that one). */
+  const handleOpenConflicts = async (path?: string) => {
+    try {
+      await flushPendingEdits();
+      const all = await NoeticBridge.getConflicts(vaultPath);
+      const shown = path ? all.filter((c) => c.path === path) : all;
+      if (shown.length === 0) {
+        showToast("Nothing needs a choice any more.", "info");
+        await refreshStatus();
+        return;
+      }
+      setConflictedFiles(shown);
+      setIsConflictModalOpen(true);
+    } catch (err) {
+      showToast(`Couldn't open the conflict: ${err}`, "error");
     }
   };
 
@@ -383,17 +498,70 @@ export default function App() {
   const handleApplyResolutions = async (resolutions: ConflictResolution[]) => {
     setIsLoading(true);
     try {
-      await withNotesOnDisk(true, () => NoeticBridge.resolveConflicts(vaultPath, resolutions));
+      // Tied to the versions that were shown, so a newer one is never replaced unseen.
+      const shown = new Map(conflictedFiles.map((c) => [c.path, c.remote_id]));
+      const tied = resolutions.map((r) => ({ ...r, remote_id: r.remote_id ?? shown.get(r.path) }));
+      await withNotesOnDisk(true, () => NoeticBridge.resolveConflicts(vaultPath, tied));
       setIsConflictModalOpen(false);
       setConflictedFiles([]);
-      // Continue the sync that asked, so the chosen versions are uploaded.
+      // Upload the chosen versions.
       await handleSyncNow();
     } catch (err) {
-      showToast(`Failed to resolve conflicts: ${err}`, "error");
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(msg, "error");
+      setIsConflictModalOpen(false);
     } finally {
       setIsLoading(false);
     }
   };
+
+  /** Brings a waiting update into a note, merged with what was typed meanwhile. */
+  const handleApplyUpdate = async (path: string) => {
+    try {
+      // Locked when it is the open note, so no keystroke lands between reading and rewriting it.
+      const result = await withNotesOnDisk(path === activeFilePathRef.current, () => NoeticBridge.applyUpdate(vaultPath, path));
+      if (!result.success) showToast(result.message, "info");
+      showNotices(result.notices);
+    } catch (err) {
+      showToast(`Couldn't bring in the update: ${err}`, "error");
+    }
+  };
+
+  const handleSettleMerge = async (path: string, undo: boolean) => {
+    try {
+      await withNotesOnDisk(undo, () => NoeticBridge.settleMerge(vaultPath, path, undo));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  };
+
+  // An update waiting for a note is brought in once the note is closed.
+  const statusFilesRef = useRef(status?.files ?? []);
+  statusFilesRef.current = status?.files ?? [];
+  const previousNoteRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousNoteRef.current;
+    previousNoteRef.current = activeFilePath;
+    if (!previous || previous === activeFilePath) return;
+    const updateWaiting = statusFilesRef.current.some((f) => f.path === previous && f.update_waiting);
+    void (async () => {
+      if (updateWaiting) await handleApplyUpdate(previous);
+      await autoSyncRef.current("note-closed");
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFilePath]);
+
+  const activeNoteStatus = activeFilePath ? status?.files.find((f) => f.path === activeFilePath) : undefined;
+  const noteBanner = (
+    <NoteSyncBanner
+      status={activeNoteStatus}
+      busy={isLoading}
+      onApplyUpdate={() => activeFilePath && handleApplyUpdate(activeFilePath)}
+      onChooseVersion={() => activeFilePath && handleOpenConflicts(activeFilePath)}
+      onUndoMerge={() => activeFilePath && handleSettleMerge(activeFilePath, true)}
+      onKeepMerge={() => activeFilePath && handleSettleMerge(activeFilePath, false)}
+    />
+  );
 
   // 10. File & Folder Management (Create, Delete, Rename)
   const handleCreateFile = async (name: string, options?: OpenFileOptions) => {
@@ -585,7 +753,7 @@ export default function App() {
               activeFilePath={activeFilePath}
               activeFileContent={activeFileContent}
               editorVersion={editorVersion}
-              isLoading={isLoading}
+              isLoading={isLoading || autoSyncing}
               onSelectFile={handleSelectFile}
               onDebouncedSave={handleDebouncedSave}
               onCreateFile={handleCreateFile}
@@ -593,7 +761,9 @@ export default function App() {
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
               syncProblem={syncProblem}
-              onSync={handleSyncNow}
+              onSync={() => void handleSyncNow()}
+              onOpenConflicts={handleOpenConflicts}
+              noteBanner={noteBanner}
               onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
               onOpenOnboarding={() => setIsOnboardingOpen(true)}
               onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
@@ -635,9 +805,10 @@ export default function App() {
             {/* Top Bar with live sync status and Sync now */}
             <TopBar
               status={status}
-              isLoading={isLoading}
+              isLoading={isLoading || autoSyncing}
               syncProblem={syncProblem}
-              onSync={handleSyncNow}
+              onSync={() => void handleSyncNow()}
+              onOpenConflicts={() => handleOpenConflicts()}
               onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
               onOpenOnboarding={() => setIsOnboardingOpen(true)}
               onSimulateState={handleSimulateState}
@@ -661,6 +832,7 @@ export default function App() {
                 onDeleteFile={handleDeleteFile}
                 onRenameFile={handleRenameFile}
                 onOpenSettings={() => setIsAccountSettingsOpen(true)}
+                onOpenConflict={handleOpenConflicts}
                 isConnected={!!status?.remote_url}
               />
 
@@ -672,6 +844,7 @@ export default function App() {
                   onSelect={(path) => handleSelectFile(path)}
                   onClose={handleCloseTab}
                 />
+                {activeFilePath ? noteBanner : null}
                 {activeFilePath ? (
                   activeFilePath.endsWith(".canvas") ? (
                     <CanvasView

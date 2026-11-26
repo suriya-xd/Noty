@@ -33,6 +33,8 @@ interface TopBarProps {
   isLoading: boolean;
   syncProblem: SyncProblem | null;
   onSync: () => void;
+  /** Opens the resolver on the notes waiting for a version to be chosen. */
+  onOpenConflicts: () => void;
   onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onSimulateState?: (stateType: string) => void;
@@ -44,6 +46,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   isLoading,
   syncProblem,
   onSync,
+  onOpenConflicts,
   onOpenWorkspaces,
   onOpenOnboarding,
   onSimulateState,
@@ -91,10 +94,10 @@ export const TopBar: React.FC<TopBarProps> = ({
       <div className="flex items-center gap-1.5 shrink-0">
         <button
           type="button"
-          onClick={sync.kind === "sign-in" ? onOpenOnboarding : undefined}
+          onClick={sync.kind === "sign-in" ? onOpenOnboarding : sync.kind === "conflict" ? onOpenConflicts : undefined}
           title={sync.detail}
           className={`flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium transition-all duration-300 ${badge.bg} ${
-            sync.kind === "sign-in" ? "cursor-pointer" : "cursor-default"
+            sync.kind === "sign-in" || sync.kind === "conflict" ? "cursor-pointer" : "cursor-default"
           }`}
         >
           <span className={`w-2 h-2 rounded-full ${badge.dot}`} />

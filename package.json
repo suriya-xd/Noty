@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-desktop.ps1",
-    "android:init": "tauri android init",
+    "android:init": "tauri android init && node scripts/patch-android-manifest.mjs",
     "android:dev": "tauri android dev",
     "android:build": "powershell -ExecutionPolicy Bypass -File ./scripts/build-android.ps1",
     "setup:desktop": "powershell -ExecutionPolicy Bypass -File ./scripts/setup-desktop.ps1",

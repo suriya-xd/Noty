@@ -4,12 +4,15 @@
 // connection can't freeze the UI (on Android that would be an "app not responding" dialog).
 pub mod fs_engine;
 pub mod git_engine;
+pub mod merge;
+#[cfg(target_os = "android")]
+mod background;
 pub mod github_auth;
 pub mod models;
 
 use github_auth::{DeviceCodeResponse, DeviceTokenResponse};
 use models::{
-    ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo, WorkspaceList,
+    ConflictFile, ConflictResolution, RepoStatusPayload, SyncResult, VaultConfig, VaultConfigInput, VaultEntry, VaultInfo, WorkspaceList,
 };
 
 /// The notes folder this run of the app opened (`init_or_open_vault`). Every command names the
@@ -54,8 +57,25 @@ fn fetch_remote(vault: Vault, repo_path: String) -> Result<RepoStatusPayload, St
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn sync_now(vault: Vault, repo_path: String) -> Result<SyncResult, String> {
-    git_engine::sync_now(opened(&vault, &repo_path)?)
+fn sync_now(vault: Vault, repo_path: String, open_note: Option<String>) -> Result<SyncResult, String> {
+    #[cfg(target_os = "android")]
+    background::remember_open_note(open_note.as_deref());
+    git_engine::sync_now(opened(&vault, &repo_path)?, open_note.as_deref())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn get_conflicts(vault: Vault, repo_path: String) -> Result<Vec<ConflictFile>, String> {
+    git_engine::get_conflicts(opened(&vault, &repo_path)?)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn apply_update(vault: Vault, repo_path: String, path: String) -> Result<SyncResult, String> {
+    git_engine::apply_update(opened(&vault, &repo_path)?, &path)
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+fn settle_merge(vault: Vault, repo_path: String, path: String, undo: bool) -> Result<RepoStatusPayload, String> {
+    git_engine::settle_merge(opened(&vault, &repo_path)?, &path, undo)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
@@ -176,6 +196,8 @@ fn init_or_open_vault(app: tauri::AppHandle, vault: Vault) -> Result<VaultInfo, 
     if let Ok(mut open) = vault.0.lock() {
         *open = Some(info.path.clone());
     }
+    #[cfg(target_os = "android")]
+    background::remember_vault(&info.path);
     Ok(info)
 }
 
@@ -252,7 +274,7 @@ fn trust_android_system_certificates() -> Result<String, String> {
         return Err(format!("no system certificates could be read ({})", read_errors.join("; ")));
     }
 
-    // Safety: runs once during start-up, before any command (and so any git connection) can run.
+    // Safety: runs once per process (`certificates_ready`), before any git connection is made.
     // libgit2_sys::init starts libgit2, which creates git__ssl_ctx; libgit2 is never shut down, so
     // the context lives as long as the app. The store keeps its own reference to each certificate
     // added, so ours is freed straight after.
@@ -290,6 +312,13 @@ fn trust_android_system_certificates() -> Result<String, String> {
     Ok(format!("{} of {} certificates added from {}", added, certs.len(), source))
 }
 
+/// Sets up https certificates once per process: at start-up, or first in a background job when
+/// Android started the process just for that. Whichever comes second waits for the first.
+#[cfg(target_os = "android")]
+pub(crate) fn certificates_ready() {
+    git_engine::CERT_SETUP.get_or_init(|| trust_android_system_certificates().unwrap_or_else(|e| format!("failed, {}", e)));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -297,16 +326,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             #[cfg(target_os = "android")]
-            {
-                let outcome = trust_android_system_certificates().unwrap_or_else(|e| format!("failed, {}", e));
-                let _ = git_engine::CERT_SETUP.set(outcome);
-            }
+            certificates_ready();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_repo_status,
             fetch_remote,
             sync_now,
+            get_conflicts,
+            apply_update,
+            settle_merge,
             resolve_conflicts,
             get_vault_config,
             set_vault_config,

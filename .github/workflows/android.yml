@@ -65,6 +65,10 @@ jobs:
       - name: Initialize Tauri Android project
         run: npx tauri android init --ci
 
+      # Registers the background upload job (SyncJobService.kt), which init leaves out.
+      - name: Register the app's Android services
+        run: node scripts/patch-android-manifest.mjs
+
       - name: Build Android APK (Debug / Installable)
         run: npx tauri android build --apk --debug --target aarch64
         env:

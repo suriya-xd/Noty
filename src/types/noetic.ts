@@ -12,6 +12,12 @@ export interface FileStatus {
   has_remote_update: boolean;
   /** Changed here and not in the cloud copy yet. */
   not_uploaded: boolean;
+  /** Changed in the same place here and on another device; held until a version is chosen. */
+  conflict: boolean;
+  /** The note was open when another device changed it; the update waits for the banner. */
+  update_waiting: boolean;
+  /** Combined automatically with another device's changes; this device's version can be restored. */
+  merged: boolean;
 }
 
 export interface RepoStatusPayload {
@@ -21,6 +27,8 @@ export interface RepoStatusPayload {
   ahead_count: usize;
   /** A note changed here and on another device; a version has to be chosen. */
   has_conflict: boolean;
+  /** Other workspaces with commits that aren't in the cloud yet. */
+  other_workspaces_not_uploaded: string[];
   /** The open workspace. Empty until one is created or chosen. */
   branch: string;
   remote_name: string | null;
@@ -45,6 +53,8 @@ export interface ConflictFile {
   remote_content: string;
   local_deleted?: boolean;
   remote_deleted?: boolean;
+  /** Which cloud version was shown, so a newer one is never resolved unseen. */
+  remote_id?: string;
   hunks: ConflictHunk[];
 }
 
@@ -52,13 +62,18 @@ export interface SyncResult {
   success: boolean;
   message: string;
   state: SyncState;
+  /** Notes waiting for a version to be chosen. The resolver opens only when the user asks. */
   conflicts: ConflictFile[];
+  /** Things worth telling the user, such as a deleted note that came back. */
+  notices: string[];
 }
 
 export interface ConflictResolution {
   path: string;
   resolution_type: "local" | "remote" | "custom";
   custom_content?: string;
+  /** The `remote_id` of the conflict that was shown. */
+  remote_id?: string;
 }
 
 export interface VaultEntry {
