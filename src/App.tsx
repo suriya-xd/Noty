@@ -3,7 +3,7 @@ import { Editor } from "./components/Editor";
 import type { OpenFileOptions } from "./components/Editor";
 import { CanvasView } from "./components/canvas/LazyCanvasView";
 import { NoeticBridge } from "./services/noeticBridge";
-import { GitHubService } from "./services/githubService";
+import { GitHubService, isAuthError, SIGN_IN_AGAIN_MESSAGE } from "./services/githubService";
 import {
   ConflictFile,
   ConflictResolution,
@@ -15,6 +15,8 @@ import { recordOpened, removeFromQuickAccess, renameInQuickAccess, setQuickAcces
 import { backlinksGraph } from "./utils/wikilinks/backlinksGraph";
 import { renameFileWithWikilinks } from "./utils/wikilinks/refactorLinks";
 import { flushPendingEdits } from "./utils/pendingEdits";
+import { failingForADay, loadProblem, problemFrom, storeProblem } from "./utils/syncStatus";
+import type { SyncProblem } from "./utils/syncStatus";
 import { isAssetPath, withoutAssets } from "./utils/assets";
 
 // Only what every start needs is in the first script. A device uses one of the two layouts, and
@@ -79,8 +81,16 @@ export default function App() {
   // Conflict modal state
   const [isConflictModalOpen, setIsConflictModalOpen] = useState<boolean>(false);
   const [conflictedFiles, setConflictedFiles] = useState<ConflictFile[]>([]);
-  /** The resolver was opened by Save, so the upload continues once the versions are chosen. */
-  const saveAfterResolvingRef = useRef(false);
+  /** Why the last sync didn't get through; null once one does. */
+  const [syncProblem, setSyncProblemState] = useState<SyncProblem | null>(loadProblem);
+  const syncProblemRef = useRef(syncProblem);
+  const setSyncProblem = (problem: SyncProblem | null) => {
+    syncProblemRef.current = problem;
+    setSyncProblemState(problem);
+    storeProblem(problem);
+  };
+  /** A sync is running; another request would only wait behind it and then find nothing to do. */
+  const syncingRef = useRef(false);
   /** Advances when a sync changed the open note on disk, so its editor is rebuilt from the file. */
   const [editorVersion, setEditorVersion] = useState(0);
 
@@ -334,17 +344,19 @@ export default function App() {
     }
   };
 
-  const runSync = async (kind: "save" | "sync") => {
+  // 6. Sync now: commits, brings in updates from other devices, combines and uploads.
+  const handleSyncNow = async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     setIsLoading(true);
     try {
       // Checked first so typing is only paused when there is something to bring in.
       const current = await NoeticBridge.fetchRemote(vaultPath).catch(() => null);
       const incoming = (current?.behind_count ?? 0) > 0;
-      const result = await withNotesOnDisk(incoming, () =>
-        kind === "save" ? NoeticBridge.saveAndPush(vaultPath) : NoeticBridge.syncAndPull(vaultPath)
-      );
+      const result = await withNotesOnDisk(incoming, () => NoeticBridge.syncNow(vaultPath));
+      // Reaching the cloud is what counts here: a conflict is not a connection problem.
+      setSyncProblem(null);
       if (result.conflicts.length > 0) {
-        saveAfterResolvingRef.current = kind === "save";
         setConflictedFiles(result.conflicts);
         setIsConflictModalOpen(true);
         // No toast here: the resolver that just opened is its own announcement.
@@ -353,31 +365,16 @@ export default function App() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      showToast(kind === "save" ? msg : `Sync failed: ${msg}`, "error");
+      if (status?.remote_url && status.branch) {
+        const signInRefused = isAuthError(err) || msg === SIGN_IN_AGAIN_MESSAGE;
+        const problem = problemFrom(msg, signInRefused, syncProblemRef.current);
+        setSyncProblem(problem);
+        showToast(failingForADay(problem) ? `${msg} Nothing has been uploaded for over a day.` : msg, "error");
+      } else {
+        showToast(msg, "error");
+      }
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 6. Manual Save (brings in updates if there are any, then uploads the workspace)
-  const handleSaveAndPush = () => runSync("save");
-
-  // 7. Manual Sync (brings in changes from other devices)
-  const handleSyncAndPull = () => runSync("sync");
-
-  // 8. Check for updates
-  const handleFetchRemote = async () => {
-    setIsLoading(true);
-    try {
-      const updatedStatus = await NoeticBridge.fetchRemote(vaultPath);
-      setStatus(updatedStatus);
-      showToast(
-        updatedStatus.behind_count > 0 ? "Updates are available. Sync to get them." : "Everything is up to date.",
-        "info"
-      );
-    } catch (err) {
-      showToast(`Couldn't check for updates: ${err}`, "error");
-    } finally {
+      syncingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -389,12 +386,8 @@ export default function App() {
       await withNotesOnDisk(true, () => NoeticBridge.resolveConflicts(vaultPath, resolutions));
       setIsConflictModalOpen(false);
       setConflictedFiles([]);
-      if (saveAfterResolvingRef.current) {
-        saveAfterResolvingRef.current = false;
-        await runSync("save");
-      } else {
-        showToast("Conflicts resolved. Save to upload the result.", "success");
-      }
+      // Continue the sync that asked, so the chosen versions are uploaded.
+      await handleSyncNow();
     } catch (err) {
       showToast(`Failed to resolve conflicts: ${err}`, "error");
     } finally {
@@ -522,6 +515,7 @@ export default function App() {
 
   const handleSignedIn = () => {
     setIsOnboardingOpen(false);
+    if (syncProblemRef.current?.kind === "sign-in") setSyncProblem(null);
     if (reSigningInRef.current) {
       // Same account, same storage: just carry on with the renewed sign-in.
       reSigningInRef.current = false;
@@ -565,7 +559,7 @@ export default function App() {
           `${vaultPath}/ConflictTest.md`,
           "# Project Roadmap\n- Milestone 1: Core Engine\n- Milestone 2: LOCAL UPDATE (Added Offline Local-First Worktree)\n- Milestone 3: Platform Release"
         );
-        await handleSyncAndPull();
+        await handleSyncNow();
         break;
     }
     await refreshStatus();
@@ -598,9 +592,8 @@ export default function App() {
               onCreateFolder={handleCreateFolder}
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
-              onSave={handleSaveAndPush}
-              onSync={handleSyncAndPull}
-              onFetch={handleFetchRemote}
+              syncProblem={syncProblem}
+              onSync={handleSyncNow}
               onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
               onOpenOnboarding={() => setIsOnboardingOpen(true)}
               onOpenAccountSettings={() => setIsAccountSettingsOpen(true)}
@@ -639,13 +632,12 @@ export default function App() {
         ) : (
           // ================= DESKTOP WORKSPACE LAYOUT =================
           <>
-            {/* Top Bar with live sync status and Save/Sync actions */}
+            {/* Top Bar with live sync status and Sync now */}
             <TopBar
               status={status}
               isLoading={isLoading}
-              onSave={handleSaveAndPush}
-              onSync={handleSyncAndPull}
-              onFetch={handleFetchRemote}
+              syncProblem={syncProblem}
+              onSync={handleSyncNow}
               onOpenWorkspaces={() => setIsWorkspaceOpen(true)}
               onOpenOnboarding={() => setIsOnboardingOpen(true)}
               onSimulateState={handleSimulateState}

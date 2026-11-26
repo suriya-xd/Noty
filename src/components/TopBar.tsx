@@ -1,15 +1,12 @@
 import {
-  Save,
   RefreshCw,
   Layers,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
   Sparkles,
-  WifiOff,
   ChevronDown,
 } from "lucide-react";
-import { RepoStatusPayload, SyncState } from "../types/noetic";
+import { describeSync } from "../utils/syncStatus";
+import type { SyncKind, SyncProblem } from "../utils/syncStatus";
+import { RepoStatusPayload } from "../types/noetic";
 
 const GithubIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -21,12 +18,21 @@ const GithubIcon: React.FC<{ className?: string }> = ({ className = "w-3.5 h-3.5
   </svg>
 );
 
+const BADGE: Record<SyncKind, { bg: string; dot: string }> = {
+  synced: { bg: "bg-emerald-950/60 border-emerald-500/40 text-emerald-400", dot: "bg-emerald-400" },
+  waiting: { bg: "bg-amber-950/60 border-amber-500/40 text-amber-400", dot: "bg-amber-400 animate-pulse" },
+  updates: { bg: "bg-sky-950/60 border-sky-500/40 text-sky-400", dot: "bg-sky-400" },
+  conflict: { bg: "bg-orange-950/60 border-orange-500/40 text-orange-400", dot: "bg-orange-400 animate-pulse" },
+  offline: { bg: "bg-purple-950/60 border-purple-500/40 text-purple-400", dot: "bg-purple-400" },
+  "sign-in": { bg: "bg-red-950/60 border-red-500/40 text-red-400", dot: "bg-red-400" },
+  "signed-out": { bg: "bg-[#21262d] border-[#30363d] text-zinc-300", dot: "bg-zinc-500" },
+};
+
 interface TopBarProps {
   status: RepoStatusPayload | null;
   isLoading: boolean;
-  onSave: () => void;
+  syncProblem: SyncProblem | null;
   onSync: () => void;
-  onFetch: () => void;
   onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onSimulateState?: (stateType: string) => void;
@@ -36,74 +42,18 @@ interface TopBarProps {
 export const TopBar: React.FC<TopBarProps> = ({
   status,
   isLoading,
-  onSave,
+  syncProblem,
   onSync,
-  onFetch,
   onOpenWorkspaces,
   onOpenOnboarding,
   onSimulateState,
   onGoToDashboard,
 }) => {
-  const syncState: SyncState = status?.state || "CleanSynced";
-
   const isSignedOut = !!status && !status.remote_url;
   const workspaceName = status?.branch || (isSignedOut ? "My notes" : "Choose workspace");
 
-  // Derive Status Pill appearance based on the 5 distinct states
-  const getStatusBadge = () => {
-    switch (syncState) {
-      case "CleanSynced":
-        return {
-          bg: "bg-emerald-950/60 border-emerald-500/40 text-emerald-400",
-          dot: "bg-emerald-400 shadow-[0_0_8px_#34d399]",
-          icon: <CheckCircle2 className="w-3.5 h-3.5" />,
-          label: "Synced",
-          desc: "This device matches your backup",
-        };
-      case "DirtySynced":
-        return {
-          bg: "bg-amber-950/60 border-amber-500/40 text-amber-400",
-          dot: "bg-amber-400 shadow-[0_0_8px_#fbbf24] animate-pulse",
-          icon: <Clock className="w-3.5 h-3.5" />,
-          label: `Unsaved (${status?.dirty_count || 1})`,
-          desc: "Edits are on this device. Click Save to back them up.",
-        };
-      case "CleanBehind":
-        return {
-          bg: "bg-sky-950/60 border-sky-500/40 text-sky-400",
-          dot: "bg-sky-400 shadow-[0_0_8px_#38bdf8]",
-          icon: <RefreshCw className="w-3.5 h-3.5" />,
-          label: `Updates available (${status?.behind_count || 1})`,
-          desc: "Changes from your other devices are waiting. Click Sync to get them.",
-        };
-      case "DirtyBehind":
-        return {
-          bg: "bg-orange-950/60 border-orange-500/40 text-orange-400",
-          dot: "bg-orange-400 shadow-[0_0_8px_#fb923c] animate-pulse",
-          icon: <AlertTriangle className="w-3.5 h-3.5" />,
-          label: "Sync needed",
-          desc: "There are updates waiting and you have unsaved edits. Save or Sync combines them; if the same note changed in both places you choose which version to keep.",
-        };
-      case "AheadOffline":
-        return {
-          bg: "bg-purple-950/60 border-purple-500/40 text-purple-400",
-          dot: "bg-purple-400 shadow-[0_0_8px_#c084fc]",
-          icon: <WifiOff className="w-3.5 h-3.5" />,
-          label: `Waiting to upload (${status?.ahead_count || 1})`,
-          desc: "Saved while offline. Click Save to upload when you are online.",
-        };
-    }
-  };
-
-  const badge = getStatusBadge();
-
-  // Button active / disabled states per SPEC.md
-  const canSave =
-    syncState === "DirtySynced" ||
-    syncState === "AheadOffline" ||
-    syncState === "DirtyBehind" ||
-    (syncState === "CleanBehind" && (status?.ahead_count ?? 0) > 0);
-  const canSync = syncState === "CleanBehind" || syncState === "DirtyBehind";
+  const sync = describeSync(status, syncProblem);
+  const badge = BADGE[sync.kind];
 
   return (
     <header className="h-14 border-b border-[#30363d]/70 bg-[#161b22]/95 backdrop-blur-xl px-4 flex items-center justify-between z-20 select-none">
@@ -137,53 +87,30 @@ export const TopBar: React.FC<TopBarProps> = ({
         </button>
       </div>
 
-      {/* Middle: Live Sync Status Pill Flanked by Sync & Save Icon Buttons */}
+      {/* Middle: sync status and Sync now */}
       <div className="flex items-center gap-1.5 shrink-0">
-        {/* Sync Icon Button (Left of Pill) */}
         <button
-          id="btn-sync"
-          onClick={canSync ? onSync : onFetch}
-          disabled={isLoading}
-          title={
-            canSync
-              ? "Sync: get the changes from your other devices"
-              : "Check for updates"
-          }
-          className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-            canSync
-              ? "text-sky-400 hover:text-sky-300 hover:bg-sky-500/15"
-              : "text-zinc-400 hover:text-zinc-200 hover:bg-[#21262d]"
+          type="button"
+          onClick={sync.kind === "sign-in" ? onOpenOnboarding : undefined}
+          title={sync.detail}
+          className={`flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium transition-all duration-300 ${badge.bg} ${
+            sync.kind === "sign-in" ? "cursor-pointer" : "cursor-default"
           }`}
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-        </button>
-
-        {/* Live Sync Status Pill */}
-        <div
-          title={badge.desc}
-          className={`flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-medium transition-all duration-300 ${badge.bg}`}
         >
           <span className={`w-2 h-2 rounded-full ${badge.dot}`} />
-          <span>{badge.label}</span>
-        </div>
+          <span>{sync.label}</span>
+        </button>
 
-        {/* Save Icon Button (Right of Pill) */}
         <button
-          id="btn-save"
-          onClick={onSave}
-          disabled={!canSave || isLoading}
-          className={`p-1.5 rounded-md transition-colors ${
-            canSave
-              ? "text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/15 cursor-pointer active:scale-95"
-              : "text-zinc-600 hover:text-zinc-600 cursor-not-allowed"
-          }`}
-          title={
-            canSave
-              ? "Save: back up your changes and send them to your other devices"
-              : "Nothing to save"
-          }
+          id="btn-sync"
+          type="button"
+          onClick={onSync}
+          disabled={isLoading || isSignedOut}
+          title="Sync now: upload your changes and get the ones from your other devices"
+          aria-label="Sync now"
+          className="p-1.5 rounded-md transition-colors cursor-pointer text-sky-400 hover:text-sky-300 hover:bg-sky-500/15 disabled:text-zinc-600 disabled:hover:bg-transparent disabled:cursor-not-allowed"
         >
-          <Save className="w-3.5 h-3.5" />
+          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
         </button>
       </div>
 

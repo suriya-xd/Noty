@@ -8,7 +8,6 @@ import {
   ArrowLeftRight,
   ArrowUp,
   ArrowUpDown,
-  ArrowUpFromLine,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -48,6 +47,8 @@ import { assetFiles, withoutAssets } from "../../utils/assets";
 import { Editor, FORMAT_BUTTONS } from "../Editor";
 import type { EditorHandle, RenameHandler } from "../Editor";
 import { CanvasView } from "../canvas/LazyCanvasView";
+import { describeSync } from "../../utils/syncStatus";
+import type { SyncKind, SyncProblem } from "../../utils/syncStatus";
 import { GitHubService } from "../../services/githubService";
 import { backlinksGraph } from "../../utils/wikilinks/backlinksGraph";
 import {
@@ -119,9 +120,8 @@ interface MobileShellProps {
   onCreateFolder: (path: string) => void;
   onDeleteFile: (path: string) => void;
   onRenameFile: RenameHandler;
-  onSave: () => void;
+  syncProblem: SyncProblem | null;
   onSync: () => void;
-  onFetch: () => void;
   onOpenWorkspaces: () => void;
   onOpenOnboarding: () => void;
   onOpenAccountSettings: () => void;
@@ -187,7 +187,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // Sync state → what to tell the user and which single action to offer
 // ---------------------------------------------------------------------------
 type SyncTone = "ok" | "warn" | "info" | "ahead" | "off";
-type SyncAction = "save" | "pull" | "fetch" | "connect";
+type SyncAction = "sync" | "connect";
 
 interface SyncSummary {
   tone: SyncTone;
@@ -199,74 +199,26 @@ interface SyncSummary {
   icon: LucideIcon;
 }
 
-function summarizeSync(status: RepoStatusPayload | null): SyncSummary {
-  const dirty = status?.dirty_count ?? 0;
-  const behind = status?.behind_count ?? 0;
-  const ahead = status?.ahead_count ?? 0;
+const SYNC_LOOK: Record<SyncKind, { tone: SyncTone; icon: LucideIcon }> = {
+  synced: { tone: "ok", icon: CheckCircle2 },
+  waiting: { tone: "warn", icon: UploadCloud },
+  updates: { tone: "info", icon: ArrowDownToLine },
+  conflict: { tone: "warn", icon: AlertTriangle },
+  offline: { tone: "ahead", icon: CloudOff },
+  "sign-in": { tone: "warn", icon: AlertTriangle },
+  "signed-out": { tone: "off", icon: CloudOff },
+};
 
-  if (status && !status.remote_url) {
-    return {
-      tone: "off",
-      chip: dirty > 0 ? `${dirty} local` : "Local only",
-      headline: "Not signed in",
-      detail: "Your notes are saved on this device only. Sign in to back them up and sync across devices.",
-      action: "connect",
-      actionLabel: "Sign in",
-      icon: CloudOff,
-    };
-  }
-  if (behind > 0 && (dirty > 0 || ahead > 0)) {
-    return {
-      tone: "warn",
-      chip: `${behind} incoming`,
-      headline: "Changes here and elsewhere",
-      detail: `There ${behind === 1 ? "is" : "are"} ${plural(behind, "update")} from your other devices and you have changes to upload. Saving keeps both; if the same note changed in both places you choose which version to keep.`,
-      action: "save",
-      actionLabel: "Save and sync",
-      icon: AlertTriangle,
-    };
-  }
-  if (behind > 0) {
-    return {
-      tone: "info",
-      chip: `${behind} incoming`,
-      headline: `${plural(behind, "update")} available`,
-      detail: "Changes from your other devices are waiting. Sync to bring this device up to date.",
-      action: "pull",
-      actionLabel: "Sync now",
-      icon: ArrowDownToLine,
-    };
-  }
-  if (ahead > 0) {
-    return {
-      tone: "ahead",
-      chip: `${ahead} to upload`,
-      headline: `${plural(ahead, "save")} waiting to upload`,
-      detail: "These were saved while offline. Upload them when you have a connection.",
-      action: "save",
-      actionLabel: "Upload now",
-      icon: ArrowUpFromLine,
-    };
-  }
-  if (dirty > 0) {
-    return {
-      tone: "warn",
-      chip: `${dirty} unsaved`,
-      headline: `${plural(dirty, "unsaved change")}`,
-      detail: "Edits are on this device but not backed up yet.",
-      action: "save",
-      actionLabel: "Save",
-      icon: UploadCloud,
-    };
-  }
+function summarizeSync(status: RepoStatusPayload | null, problem: SyncProblem | null): SyncSummary {
+  const { kind, label, headline, detail } = describeSync(status, problem);
+  const needsSignIn = kind === "signed-out" || kind === "sign-in";
   return {
-    tone: "ok",
-    chip: "Synced",
-    headline: "Everything is up to date",
-    detail: "This device matches your backup.",
-    action: "fetch",
-    actionLabel: "Check for updates",
-    icon: CheckCircle2,
+    ...SYNC_LOOK[kind],
+    chip: label,
+    headline,
+    detail,
+    action: needsSignIn ? "connect" : "sync",
+    actionLabel: needsSignIn ? "Sign in" : "Sync now",
   };
 }
 
@@ -369,9 +321,8 @@ export const MobileShell: FC<MobileShellProps> = ({
   onCreateFolder,
   onDeleteFile,
   onRenameFile,
-  onSave,
+  syncProblem,
   onSync,
-  onFetch,
   onOpenWorkspaces,
   onOpenOnboarding,
   onOpenAccountSettings,
@@ -471,18 +422,19 @@ export const MobileShell: FC<MobileShellProps> = ({
   const [, setLinksVersion] = useState(0);
   useEffect(() => backlinksGraph.subscribe(() => setLinksVersion((v) => v + 1)), []);
 
-  const sync = summarizeSync(status);
+  const sync = summarizeSync(status, syncProblem);
   const tone = TONE[sync.tone];
   const isSignedOut = !!status && !status.remote_url;
   const workspaceName = status?.branch || (isSignedOut ? "My notes" : "Choose workspace");
   const account = useMemo(() => GitHubService.getStoredGitHubAuth(), [status?.remote_url, tab]);
 
   const fileStatus = useMemo(() => {
-    const map = new Map<string, "modified" | "new" | "incoming">();
+    const map = new Map<string, "modified" | "new" | "waiting" | "incoming">();
     for (const f of status?.files ?? []) {
       if (f.has_remote_update) map.set(f.path, "incoming");
       else if (f.is_untracked) map.set(f.path, "new");
       else if (f.is_modified) map.set(f.path, "modified");
+      else if (f.not_uploaded) map.set(f.path, "waiting");
     }
     return map;
   }, [status]);
@@ -553,9 +505,7 @@ export const MobileShell: FC<MobileShellProps> = ({
     });
 
   const runSyncAction = (action: SyncAction) => {
-    if (action === "save") onSave();
-    else if (action === "pull") onSync();
-    else if (action === "fetch") onFetch();
+    if (action === "sync") onSync();
     else onOpenOnboarding();
   };
 
@@ -673,8 +623,9 @@ export const MobileShell: FC<MobileShellProps> = ({
     const s = fileStatus.get(path);
     if (!s) return null;
     const cfg = {
-      modified: { cls: "bg-amber-400", label: "Unsaved changes" },
-      new: { cls: "bg-emerald-400", label: "New, not backed up yet" },
+      modified: { cls: "bg-amber-400", label: "Edited, not uploaded yet" },
+      waiting: { cls: "bg-amber-400", label: "Not uploaded yet" },
+      new: { cls: "bg-emerald-400", label: "New, not uploaded yet" },
       incoming: { cls: "bg-sky-400", label: "Update available" },
     }[s];
     return <span role="img" aria-label={cfg.label} className={`w-2 h-2 rounded-full shrink-0 ${cfg.cls}`} />;
@@ -1175,7 +1126,7 @@ export const MobileShell: FC<MobileShellProps> = ({
   );
 
   // ---- sync tab ----------------------------------------------------------
-  const changedFiles = (status?.files ?? []).filter((f) => f.is_modified || f.is_untracked || f.has_remote_update);
+  const changedFiles = (status?.files ?? []).filter((f) => f.not_uploaded || f.has_remote_update);
   const syncTab = (
     <>
       <header className="pt-safe bg-[#0d1117] shrink-0">
@@ -1195,7 +1146,7 @@ export const MobileShell: FC<MobileShellProps> = ({
             disabled={isLoading}
             onClick={() => runSyncAction(sync.action)}
             className={`mt-5 w-full h-12 rounded-xl text-[15px] font-semibold flex items-center justify-center gap-2 disabled:opacity-60 transition-colors ${
-              sync.action === "fetch"
+              sync.tone === "ok"
                 ? "bg-[#21262d] text-[#f0f6fc] active:bg-[#30363d]"
                 : "bg-sky-500 text-[#04121d] active:bg-sky-400"
             }`}
@@ -1203,16 +1154,6 @@ export const MobileShell: FC<MobileShellProps> = ({
             {isLoading && <RefreshCw className="w-4 h-4 animate-spin" />}
             <span>{isLoading ? "Working…" : sync.actionLabel}</span>
           </button>
-          {sync.action !== "fetch" && sync.action !== "connect" && (
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={onFetch}
-              className="mt-1 w-full h-11 text-[14px] font-medium text-[#8b949e] active:text-[#f0f6fc] disabled:opacity-60"
-            >
-              Check for updates
-            </button>
-          )}
         </section>
 
         {changedFiles.length > 0 && (
@@ -1231,7 +1172,7 @@ export const MobileShell: FC<MobileShellProps> = ({
                         {displayName(f.path.split("/").pop() || f.path)}
                       </span>
                       <span className="block text-[13px] text-[#8b949e]">
-                        {f.has_remote_update ? "Update waiting" : f.is_untracked ? "New" : "Edited"}
+                        {f.has_remote_update ? "Update waiting" : f.is_untracked ? "New" : f.is_modified ? "Edited" : "Not uploaded yet"}
                       </span>
                     </span>
                     <StatusDot path={f.path} />

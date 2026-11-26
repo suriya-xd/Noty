@@ -8,9 +8,9 @@ Local-first Markdown notes for desktop (Windows, macOS, Linux) and Android, buil
 - Signing in with GitHub creates one private repository named `noetic-notes` in the user's account. The app always uses that repository; there is nothing to choose.
 - The repository's `main` branch is kept empty. Each **workspace** is a branch that starts from it, so one account can hold several separate sets of notes (for example Personal and Work).
 - The first time a device signs in, the user names a workspace or opens an existing one. Workspaces are switched and added from the workspace menu in the top bar.
-- **Save** uploads the open workspace. **Sync** brings in changes saved from other devices. Switching workspaces saves the open one first.
+- **Sync now** uploads the open workspace and brings in changes from other devices. Notes changed in only one place are combined; if the same note changed in both, the app asks which version to keep. Switching workspaces saves the open one first.
 
-The interface says "workspace", "save" and "sync"; repository and branch names do not appear in it.
+The interface says "workspace" and "sync"; repository and branch names do not appear in it.
 
 ## Development
 

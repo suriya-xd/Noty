@@ -804,7 +804,7 @@ export const Editor: FC<EditorProps> = ({
           <div className="h-3 w-[1px] bg-[#30363d] hidden md:block" />
 
           <div
-            title={saveStatus === "saving" ? "Saving to this device…" : "Saved on this device. Use Save in the top bar to back it up."}
+            title={saveStatus === "saving" ? "Saving to this device…" : "Saved on this device. Use Sync now to back it up."}
             className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono border transition-all ${
               saveStatus === "saving"
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-400"

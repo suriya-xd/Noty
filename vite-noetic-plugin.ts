@@ -307,27 +307,47 @@ export function noeticPlugin(): Plugin {
               break;
             }
 
-            case "save_and_push": {
-              const preStatus = await getGitStatus(vaultPath);
-              if (!preStatus.remote_url) {
+            case "sync_now": {
+              const before = await getGitStatus(vaultPath);
+              if (!before.remote_url) {
                 return sendError("Your notes are kept on this device. Sign in to back them up and sync them.");
               }
-              if (!preStatus.branch) {
-                return sendError("Choose or create a workspace first.");
-              }
-              if (preStatus.behind_count > 0) {
-                return sendError("There are updates waiting from your other devices. Sync first, then save.");
-              }
-              await commitAll(vaultPath, body.commit_message || `Notes update: ${new Date().toISOString()}`);
+              if (!before.branch) return sendError("Choose or create a workspace first.");
+              const branch = safeBranch(before.branch);
+              await commitAll(vaultPath, `Notes update: ${new Date().toISOString()}`);
+              await git(["fetch", "--prune", "origin"], vaultPath).catch((e) => {
+                throw new Error(`Kept on this device, not uploaded yet: Couldn't reach your cloud storage: ${e.message}`);
+              });
 
-              try {
-                await git(["push", "-u", "origin", safeBranch(preStatus.branch)], vaultPath);
-              } catch (pushErr: any) {
-                return sendError(`Saved on this device, but it couldn't be uploaded: ${pushErr.message}. It will be sent the next time you save while online.`);
+              const fetched = await getGitStatus(vaultPath);
+              if (fetched.behind_count > 0) {
+                const conflicts = await mergeWorkspace(vaultPath, `origin/${branch}`);
+                if (conflicts) {
+                  await git(["merge", "--abort"], vaultPath);
+                  await git(["update-ref", `refs/noetic/incoming/${branch}`, `refs/remotes/origin/${branch}`], vaultPath);
+                  return sendJson({
+                    success: false,
+                    message: `${conflicts.length} note(s) changed both here and on another device. Choose which version to keep.`,
+                    state: (await getGitStatus(vaultPath)).state,
+                    conflicts,
+                  });
+                }
               }
-
-              const postStatus = await getGitStatus(vaultPath);
-              sendJson(postStatus);
+              await git(["update-ref", "-d", `refs/noetic/incoming/${branch}`], vaultPath);
+              const merged = await getGitStatus(vaultPath);
+              if (merged.ahead_count > 0) {
+                try {
+                  await git(["push", "-u", "origin", branch], vaultPath);
+                } catch (pushErr: any) {
+                  return sendError(`Kept on this device, not uploaded yet: ${pushErr.message}`);
+                }
+              }
+              sendJson({
+                success: true,
+                message: fetched.behind_count + merged.ahead_count > 0 ? "Synced. Your notes are up to date." : "Everything is up to date.",
+                state: (await getGitStatus(vaultPath)).state,
+                conflicts: [],
+              });
               break;
             }
 
@@ -605,8 +625,7 @@ export function noeticPlugin(): Plugin {
 
               if (existing.current) {
                 // A later workspace starts blank; the open one is saved first.
-                const blocked = await saveBeforeLeaving(vaultPath, existing.current);
-                if (blocked) return sendError(blocked, 400);
+                await saveBeforeLeaving(vaultPath, existing.current);
                 await git(["branch", name, await workspaceBase(vaultPath)], vaultPath);
                 await git(["checkout", "-f", name], vaultPath);
                 removeEmptyFolders(vaultPath);
@@ -639,8 +658,7 @@ export function noeticPlugin(): Plugin {
               const target = safeBranch(name);
 
               if (list.current) {
-                const blocked = await saveBeforeLeaving(vaultPath, list.current);
-                if (blocked) return sendError(blocked, 400);
+                await saveBeforeLeaving(vaultPath, list.current);
               }
               if (!(await refExists(vaultPath, `refs/heads/${target}`))) {
                 await git(["branch", target, `origin/${target}`], vaultPath);
@@ -663,92 +681,38 @@ export function noeticPlugin(): Plugin {
               break;
             }
 
-            case "sync_and_pull": {
-              await git(["fetch", "--prune", "origin"], vaultPath).catch((e) => {
-                throw new Error(`Couldn't reach your cloud storage: ${e.message}`);
-              });
-
-              const status = await getGitStatus(vaultPath);
-              if (!status.branch || status.behind_count === 0) {
-                return sendJson({
-                  success: true,
-                  message: "Everything is up to date.",
-                  state: status.state,
-                  conflicts: [],
-                });
-              }
-              const upstream = `origin/${safeBranch(status.branch)}`;
-
-              const dirtyFiles = status.files.filter((f: any) => f.is_modified || f.is_untracked).map((f: any) => f.path);
-              const remoteFiles = status.files.filter((f: any) => f.has_remote_update).map((f: any) => f.path);
-              const overlapping = dirtyFiles.filter((p: string) => remoteFiles.includes(p));
-
-              if (overlapping.length > 0) {
-                const conflicts = [];
-                for (const p of overlapping) {
-                  let base = "";
-                  let remote = "";
-                  try {
-                    const { stdout: b } = await git(["show", `HEAD:${p}`], vaultPath);
-                    base = b;
-                  } catch {}
-                  try {
-                    const { stdout: r } = await git(["show", `${upstream}:${p}`], vaultPath);
-                    remote = r;
-                  } catch {}
-                  const local = fs.existsSync(path.join(vaultPath, p)) ? fs.readFileSync(path.join(vaultPath, p), "utf-8") : "";
-
-                  conflicts.push({
-                    path: p,
-                    base_content: base,
-                    local_content: local,
-                    remote_content: remote,
-                    hunks: [{ id: `hunk_${p}`, base_lines: base, local_lines: local, remote_lines: remote }],
-                  });
-                }
-
-                return sendJson({
-                  success: false,
-                  message: `${conflicts.length} note(s) changed both here and on another device. Choose which version to keep.`,
-                  state: "DirtyBehind",
-                  conflicts,
-                });
-              }
-
-              // Non-overlapping: stash if dirty, fast-forward, pop stash
-              const hadDirty = dirtyFiles.length > 0;
-              if (hadDirty) {
-                try { await git(["stash", "push", "-u", "-m", "Noetic sync"], vaultPath); } catch {}
-              }
-              await git(["merge", "--ff-only", upstream], vaultPath);
-              if (hadDirty) {
-                try { await git(["stash", "pop"], vaultPath); } catch {}
-              }
-
-              const postStatus = await getGitStatus(vaultPath);
-              sendJson({
-                success: true,
-                message: "Synced. Your notes are up to date.",
-                state: postStatus.state,
-                conflicts: [],
-              });
-              break;
-            }
-
             case "resolve_conflicts": {
-              // Take the incoming version of everything, then put the chosen text on top of it,
-              // left as unsaved edits (the same result as the app's own backend).
-              const resolutions = body.resolutions || [];
+              const resolutions: any[] = body.resolutions || [];
               const workspace = await currentWorkspace(vaultPath);
               if (!workspace) return sendError("Choose or create a workspace first.", 400);
-              await git(["reset", "--hard", `origin/${safeBranch(workspace)}`], vaultPath);
-              for (const resItem of resolutions) {
-                if (resItem.custom_content !== undefined) {
-                  const targetPath = path.join(vaultPath, resItem.path);
-                  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-                  fs.writeFileSync(targetPath, resItem.custom_content, "utf-8");
+              const incoming = `refs/noetic/incoming/${safeBranch(workspace)}`;
+              if (!(await refExists(vaultPath, incoming))) {
+                return sendError("There is nothing left to resolve. Sync again.", 400);
+              }
+              await commitAll(vaultPath, `Saved before syncing: ${new Date().toISOString()}`);
+              const open = (await mergeWorkspace(vaultPath, incoming)) ?? [];
+              const missing = open.some((c) => !resolutions.some((r) => r.path === c.path));
+              if (missing) {
+                await git(["merge", "--abort"], vaultPath);
+                return sendError("Some notes changed in the meantime. Sync again to choose their versions.", 400);
+              }
+              for (const c of open) {
+                const r = resolutions.find((x) => x.path === c.path);
+                const target = path.join(vaultPath, c.path);
+                const deleted = r.resolution_type === "local" ? c.local_deleted : r.resolution_type === "remote" && c.remote_deleted;
+                const text =
+                  r.resolution_type === "local" ? c.local_content : r.resolution_type === "remote" ? c.remote_content : r.custom_content;
+                if (deleted) fs.rmSync(target, { force: true });
+                else {
+                  fs.mkdirSync(path.dirname(target), { recursive: true });
+                  fs.writeFileSync(target, text ?? "", "utf-8");
                 }
               }
+              if (open.length > 0) {
+                await git(["add", "-A"], vaultPath);
+                await git(["commit", "-q", "--no-edit"], vaultPath);
+              }
+              await git(["update-ref", "-d", incoming], vaultPath);
               sendJson(await getGitStatus(vaultPath));
               break;
             }
@@ -766,7 +730,7 @@ export function noeticPlugin(): Plugin {
 }
 
 const WELCOME_NOTE =
-  "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Save** uploads your changes so your other devices can get them.\n- **Sync** brings in changes made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
+  "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Sync now** uploads your changes and brings in the ones made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
 
 async function refExists(cwd: string, ref: string): Promise<boolean> {
   try {
@@ -837,18 +801,55 @@ async function commitAll(cwd: string, message: string): Promise<void> {
   if (stdout.trim()) await git(["commit", "-q", "-m", String(message)], cwd);
 }
 
-/** Saves the open workspace before another is opened. Returns a message when that isn't safe. */
-async function saveBeforeLeaving(cwd: string, workspace: string): Promise<string | null> {
-  const status = await getGitStatus(cwd);
-  if (status.dirty_count === 0) return null;
-  if (status.behind_count > 0) {
-    return "This workspace has unsaved changes and updates waiting from your other devices. Sync it first, then switch.";
+/**
+ * Merges without ever combining two edits of one file, like the app's own backend. Returns the
+ * files to choose a version for, with the merge left open, or null when it is complete.
+ */
+async function mergeWorkspace(cwd: string, theirs: string): Promise<any[] | null> {
+  const attributes = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "noetic-attributes-")), "attributes");
+  fs.writeFileSync(attributes, "* -merge\n");
+  try {
+    await git(["-c", `core.attributesFile=${attributes}`, "merge", "--no-edit", "-X", "no-renames", theirs], cwd);
+    return null;
+  } catch (e) {
+    const { stdout } = await git(["diff", "--name-only", "--diff-filter=U", "-z"], cwd);
+    const paths = stdout.split("\0").filter(Boolean);
+    if (paths.length === 0) throw e;
+    const stage = async (n: number, p: string) => {
+      try {
+        return (await git(["show", `:${n}:${p}`], cwd)).stdout;
+      } catch {
+        return null;
+      }
+    };
+    return Promise.all(
+      paths.map(async (p) => {
+        const [base, local, remote] = await Promise.all([stage(1, p), stage(2, p), stage(3, p)]);
+        const texts = { base: base ?? "", local: local ?? "", remote: remote ?? "" };
+        return {
+          path: p,
+          base_content: texts.base,
+          local_content: texts.local,
+          remote_content: texts.remote,
+          local_deleted: local === null,
+          remote_deleted: remote === null,
+          hunks: [{ id: `hunk_${p}`, base_lines: texts.base, local_lines: texts.local, remote_lines: texts.remote }],
+        };
+      })
+    );
+  } finally {
+    fs.rmSync(path.dirname(attributes), { recursive: true, force: true });
   }
+}
+
+/** Commits the open workspace before another is opened, and uploads it when possible. */
+async function saveBeforeLeaving(cwd: string, workspace: string): Promise<void> {
+  const status = await getGitStatus(cwd);
+  if (status.dirty_count === 0) return;
   await commitAll(cwd, `Saved before leaving workspace: ${new Date().toISOString()}`);
   try {
     await git(["push", "-u", "origin", safeBranch(workspace)], cwd);
   } catch {}
-  return null;
 }
 
 function hasNotes(dir: string): boolean {
@@ -887,6 +888,7 @@ async function getGitStatus(vaultPath: string) {
         is_modified: isModified,
         is_untracked: isUntracked,
         has_remote_update: false,
+        not_uploaded: true,
       });
       dirtyCount++;
     }
@@ -916,7 +918,7 @@ async function getGitStatus(vaultPath: string) {
   // Check diff against the cloud copy
   if (behindCount > 0) {
     try {
-      const { stdout: diffFiles } = await git(["diff", "--name-only", "HEAD", upstream], vaultPath);
+      const { stdout: diffFiles } = await git(["diff", "--name-only", `HEAD...${upstream}`], vaultPath);
       const changed = diffFiles.split("\n").map((s) => s.trim().replace(/\\/g, "/")).filter(Boolean);
       for (const p of changed) {
         const existing = fileStatuses.find((f) => f.path === p);
@@ -928,8 +930,23 @@ async function getGitStatus(vaultPath: string) {
             is_modified: false,
             is_untracked: false,
             has_remote_update: true,
+            not_uploaded: false,
           });
         }
+      }
+    } catch {}
+  }
+
+  // Committed here, but not in the cloud copy yet.
+  if (aheadCount > 0) {
+    try {
+      const { stdout } = hasUpstream
+        ? await git(["diff", "--name-only", `${upstream}...HEAD`], vaultPath)
+        : await git(["ls-tree", "-r", "--name-only", "HEAD"], vaultPath);
+      for (const p of stdout.split("\n").map((s) => s.trim()).filter(Boolean)) {
+        const existing = fileStatuses.find((f) => f.path === p);
+        if (existing) existing.not_uploaded = true;
+        else fileStatuses.push({ path: p, is_modified: false, is_untracked: false, has_remote_update: false, not_uploaded: true });
       }
     } catch {}
   }
@@ -956,6 +973,7 @@ async function getGitStatus(vaultPath: string) {
     dirty_count: dirtyCount,
     behind_count: behindCount,
     ahead_count: aheadCount,
+    has_conflict: Boolean(branchName) && (await refExists(vaultPath, `refs/noetic/incoming/${branchName}`)),
     branch: branchName,
     remote_name: remoteUrl ? "origin" : null,
     remote_url: remoteUrl,

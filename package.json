@@ -27,6 +27,7 @@
     "test:quick": "npx tsx ./scripts/test-quick-access.ts",
     "test:images": "npx tsx ./scripts/test-image-upload.ts",
     "test:auth": "npx tsx ./scripts/test-device-flow.ts",
+    "test:sync": "npx tsx ./scripts/test-sync-status.ts",
     "test:workspaces": "npx tsx ./scripts/test-workspaces.ts"
   },
   "dependencies": {

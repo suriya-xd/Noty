@@ -14,6 +14,7 @@ pub struct FileStatus {
     pub path: String,
     pub is_modified: bool,      // Local worktree modified (• badge)
     pub is_untracked: bool,     // New local file (+ badge)
+    pub not_uploaded: bool,     // Changed here and not in the cloud copy yet
     pub has_remote_update: bool, // Changed between HEAD and the cloud copy (↓ badge)
 }
 
@@ -23,6 +24,8 @@ pub struct RepoStatusPayload {
     pub dirty_count: usize,
     pub behind_count: usize,
     pub ahead_count: usize,
+    /// A note changed here and on another device; a version has to be chosen.
+    pub has_conflict: bool,
     /// The open workspace (a branch). Empty until one is created or chosen.
     pub branch: String,
     pub remote_name: Option<String>,

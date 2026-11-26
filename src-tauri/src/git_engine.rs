@@ -10,6 +10,88 @@ use crate::models::{
 /// The branch that every notes repository keeps empty. Workspaces are the other branches.
 const STORAGE_BRANCH: &str = "main";
 
+/// The layout of a workspace this build understands. Raised when a change would make older builds
+/// misread or damage it; they then stop syncing and ask to be updated.
+const FORMAT_VERSION: u64 = 1;
+const FORMAT_PATH: &str = ".noetic/format.json";
+
+/// Every operation that changes the repository runs one at a time. The queue is for the whole
+/// process; only public entry points take it, because it can't be taken twice.
+static QUEUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn enter_queue(repo_path: &str) -> std::sync::MutexGuard<'static, ()> {
+    let guard = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    remove_stale_locks(&Path::new(repo_path).join(".git"));
+    guard
+}
+
+/// Removes lock files left behind when the app was killed half-way; git refuses to work until they
+/// are gone. Nothing here holds one for long, so only those over a minute old are taken as stale.
+fn remove_stale_locks(git_dir: &Path) {
+    fn clean(path: &Path) {
+        let stale = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(60));
+        if stale {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    fn clean_refs(dir: &Path) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                clean_refs(&path);
+            } else if path.extension().is_some_and(|e| e == "lock") {
+                clean(&path);
+            }
+        }
+    }
+    for name in ["index.lock", "HEAD.lock", "config.lock", "packed-refs.lock"] {
+        clean(&git_dir.join(name));
+    }
+    clean_refs(&git_dir.join("refs"));
+}
+
+/// The format version saved in a commit; 0 for a workspace from before versions were kept.
+fn format_version(repo: &Repository, commit: git2::Oid) -> u64 {
+    repo.find_commit(commit)
+        .and_then(|c| c.tree())
+        .and_then(|t| t.get_path(Path::new(FORMAT_PATH)))
+        .and_then(|e| repo.find_blob(e.id()))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(b.content()).ok())
+        .and_then(|v| v.get("version").and_then(|n| n.as_u64()))
+        .unwrap_or(0)
+}
+
+fn check_format(repo: &Repository, commit: Option<git2::Oid>) -> Result<(), String> {
+    match commit {
+        Some(oid) if format_version(repo, oid) > FORMAT_VERSION => {
+            Err("These notes were saved by a newer version of Noetic. Update the app on this device to keep syncing.".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Paths that differ between two commits (`None` is an empty workspace).
+fn changed_paths(repo: &Repository, from: Option<git2::Oid>, to: git2::Oid) -> HashSet<String> {
+    let tree = |oid: git2::Oid| repo.find_commit(oid).and_then(|c| c.tree()).ok();
+    let from_tree = from.and_then(tree);
+    let mut paths = HashSet::new();
+    if let Ok(diff) = repo.diff_tree_to_tree(from_tree.as_ref(), tree(to).as_ref(), None) {
+        for delta in diff.deltas() {
+            for file in [delta.old_file(), delta.new_file()] {
+                if let Some(p) = file.path() {
+                    paths.insert(p.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    paths
+}
+
 /// Get the current Git status of the repository, including worktree status
 /// and ahead/behind counts against the workspace's own branch on origin.
 pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
@@ -45,7 +127,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
 
             let is_untracked = s.contains(Status::WT_NEW) || s.contains(Status::INDEX_NEW);
 
-            if is_modified || is_untracked {
+            if (is_modified || is_untracked) && normalized != FORMAT_PATH {
                 dirty_map.insert(normalized, (is_modified, is_untracked));
             }
         }
@@ -59,6 +141,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     let mut ahead_count = 0usize;
     let mut behind_count = 0usize;
     let mut remote_diff_files: HashSet<String> = HashSet::new();
+    let mut not_uploaded: HashSet<String> = HashSet::new();
 
     if let (Some(h_oid), Some(r_oid)) = (head_oid, remote_oid) {
         if let Ok((ahead, behind)) = repo.graph_ahead_behind(h_oid, r_oid) {
@@ -66,28 +149,16 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
             behind_count = behind;
         }
 
-        // Compute files the other devices changed: from the last common save, so saves waiting to
-        // upload on this device don't count as incoming.
-        let base_oid = repo.merge_base(h_oid, r_oid).unwrap_or(h_oid);
-        if let (Ok(head_commit), Ok(remote_commit)) = (repo.find_commit(base_oid), repo.find_commit(r_oid)) {
-            if let (Ok(head_tree), Ok(remote_tree)) = (head_commit.tree(), remote_commit.tree()) {
-                if let Ok(diff) = repo.diff_tree_to_tree(Some(&head_tree), Some(&remote_tree), None) {
-                    for delta in diff.deltas() {
-                        if let Some(p) = delta.new_file().path() {
-                            remote_diff_files.insert(p.to_string_lossy().replace('\\', "/"));
-                        }
-                        if let Some(p) = delta.old_file().path() {
-                            remote_diff_files.insert(p.to_string_lossy().replace('\\', "/"));
-                        }
-                    }
-                }
-            }
-        }
+        // Each side's changes since the last common save.
+        let base_oid = repo.merge_base(h_oid, r_oid).ok();
+        remote_diff_files = changed_paths(&repo, base_oid, r_oid);
+        not_uploaded = changed_paths(&repo, base_oid, h_oid);
     } else if let Some(h_oid) = head_oid {
         // No remote branch yet, but local commits exist
         let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
         revwalk.push(h_oid).ok();
         ahead_count = revwalk.count();
+        not_uploaded = changed_paths(&repo, None, h_oid);
     }
 
     // 4. Combine all known files
@@ -95,9 +166,9 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
     for p in dirty_map.keys() {
         all_paths.insert(p.clone());
     }
-    for p in &remote_diff_files {
-        all_paths.insert(p.clone());
-    }
+    all_paths.extend(remote_diff_files.iter().cloned());
+    all_paths.extend(not_uploaded.iter().cloned());
+    all_paths.remove(FORMAT_PATH);
 
     let mut file_statuses: Vec<FileStatus> = Vec::new();
     for path in all_paths {
@@ -105,6 +176,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         let has_remote = remote_diff_files.contains(&path);
 
         file_statuses.push(FileStatus {
+            not_uploaded: is_mod || is_untracked || not_uploaded.contains(&path),
             path,
             is_modified: is_mod,
             is_untracked,
@@ -141,6 +213,7 @@ pub fn get_repo_status(repo_path: &str) -> Result<RepoStatusPayload, String> {
         dirty_count,
         behind_count,
         ahead_count,
+        has_conflict: conflict_waiting(&repo, &branch_name),
         branch: branch_name,
         remote_name,
         remote_url,
@@ -181,6 +254,7 @@ fn cert_setup_note(e: &git2::Error) -> String {
 /// Fetch from origin remote without modifying worktree. This runs in the background, so a failed
 /// fetch is ignored and offline use keeps working; the explicit Sync and connect actions report it.
 pub fn fetch_remote(repo_path: &str) -> Result<RepoStatusPayload, String> {
+    let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let _ = fetch_origin(&repo);
     get_repo_status(repo_path)
@@ -189,6 +263,16 @@ pub fn fetch_remote(repo_path: &str) -> Result<RepoStatusPayload, String> {
 /// Stages everything (`git add -A`) and commits it to the current branch. Returns false when
 /// there was nothing new to commit.
 fn commit_all(repo: &Repository, message: &str) -> Result<bool, String> {
+    let head = repo.head().ok().and_then(|h| h.target());
+    check_format(repo, head)?;
+    if let Some(root) = repo.workdir() {
+        if head.is_none_or(|oid| format_version(repo, oid) < FORMAT_VERSION) || !root.join(FORMAT_PATH).exists() {
+            let _ = std::fs::create_dir_all(root.join(".noetic"));
+            std::fs::write(root.join(FORMAT_PATH), format!("{{\"version\":{}}}\n", FORMAT_VERSION))
+                .map_err(|e| format!("Failed to save: {}", e))?;
+        }
+    }
+
     let mut index = repo.index().map_err(|e| format!("Failed to get repo index: {}", e))?;
     index
         .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
@@ -264,12 +348,13 @@ fn push_workspace(repo: &Repository, workspace: &str) -> Result<(), String> {
     push_ref(repo, &format!("refs/heads/{}", workspace), workspace)
 }
 
-/// Manual Save:
+/// Sync now:
 /// 1. Commits everything on this device, so nothing that follows can lose it.
 /// 2. Brings in changes from the other devices. Notes changed in only one place are combined;
 ///    a note changed in both is returned for the user to choose a version.
-/// 3. Uploads the workspace (the save stays on this device if that fails, e.g. offline).
-pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<SyncResult, String> {
+/// 3. Uploads the workspace (the commit stays on this device if that fails, e.g. offline).
+pub fn sync_now(repo_path: &str) -> Result<SyncResult, String> {
+    let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
     if repo.find_remote("origin").is_err() {
@@ -279,83 +364,60 @@ pub fn save_and_push(repo_path: &str, commit_message: Option<String>) -> Result<
         return Err("Choose or create a workspace first.".to_string());
     };
 
-    let msg = commit_message.unwrap_or_else(|| {
-        format!("Notes update: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))
-    });
-    commit_all(&repo, &msg)?;
+    commit_all(&repo, &format!("Notes update: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
 
-    let not_uploaded = |e: String| {
-        format!(
-            "Saved on this device, but it couldn't be uploaded: {}. It will be sent the next time you save while online.",
-            e
-        )
-    };
-
-    // Another device can upload between the fetch and the push, so a refused push is retried once.
-    let mut retried = false;
+    let not_uploaded = |e: String| format!("Kept on this device, not uploaded yet: {}", e);
     let mut combined = false;
+    let mut uploaded = false;
+    let mut attempt = 0u32;
     loop {
+        // Fetching first on every attempt also makes a retry safe when an earlier push got through
+        // but its answer didn't: there is then nothing left to upload.
         fetch_origin(&repo).map_err(not_uploaded)?;
         match integrate_remote(&repo, &workspace)? {
             Integration::Conflicted(conflicts) => return conflict_result(repo_path, conflicts),
             Integration::UpToDate => {}
             Integration::Updated => combined = true,
         }
+        let head = repo.head().ok().and_then(|h| h.target());
+        if head == find_remote_tracking_branch(&repo, &workspace).1 {
+            break;
+        }
         match push_workspace(&repo, &workspace) {
-            Ok(()) => break,
-            Err(_) if !retried => retried = true,
+            Ok(()) => {
+                uploaded = true;
+                break;
+            }
+            // Another device may have uploaded in between: wait a little, differently on each
+            // device, and combine again.
+            Err(_) if attempt < 3 => {
+                attempt += 1;
+                std::thread::sleep(retry_delay(attempt));
+            }
             Err(e) => return Err(not_uploaded(e)),
         }
     }
 
     Ok(SyncResult {
         success: true,
-        message: if combined {
-            "Saved, and combined with the updates from your other devices.".to_string()
-        } else {
-            "Saved. Your changes are backed up.".to_string()
-        },
+        message: match (combined, uploaded) {
+            (true, true) => "Synced. Your edits were combined with the updates from your other devices.",
+            (true, false) => "Synced. Updates from your other devices were added.",
+            (false, true) => "Synced. Your changes are backed up.",
+            (false, false) => "Everything is up to date.",
+        }
+        .to_string(),
         state: get_repo_status(repo_path)?.state,
         conflicts: vec![],
     })
 }
 
-/// Manual Sync: brings in the changes from the other devices without uploading anything. When
-/// there are some, edits on this device are committed first, so combining can't lose them.
-pub fn sync_and_pull(repo_path: &str) -> Result<SyncResult, String> {
-    let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    // Sync is an explicit action, so a failed fetch is reported instead of looking like
-    // "already up to date".
-    fetch_origin(&repo)?;
-
-    let status = get_repo_status(repo_path)?;
-    if status.behind_count == 0 {
-        return Ok(SyncResult {
-            success: true,
-            message: "Everything is up to date.".to_string(),
-            state: status.state,
-            conflicts: vec![],
-        });
-    }
-
-    if status.dirty_count > 0 {
-        commit_all(&repo, &format!("Saved before syncing: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")))?;
-    }
-    if let Integration::Conflicted(conflicts) = integrate_remote(&repo, &status.branch)? {
-        return conflict_result(repo_path, conflicts);
-    }
-
-    let post_status = get_repo_status(repo_path)?;
-    Ok(SyncResult {
-        success: true,
-        message: if post_status.ahead_count > 0 {
-            "Synced. Your edits were combined with the updates. Save to upload them.".to_string()
-        } else {
-            "Synced. Your notes are up to date.".to_string()
-        },
-        state: post_status.state,
-        conflicts: vec![],
-    })
+fn retry_delay(attempt: u32) -> std::time::Duration {
+    let step = 250u64 << attempt;
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_nanos()) / 1000 % step);
+    std::time::Duration::from_millis(step / 2 + jitter)
 }
 
 /// Apply user resolutions from the Visual Conflict Resolver Modal
@@ -363,6 +425,7 @@ pub fn resolve_conflicts(
     repo_path: &str,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<RepoStatusPayload, String> {
+    let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open repo: {}", e))?;
     let workspace = current_workspace(&repo).ok_or_else(|| "Choose or create a workspace first.".to_string())?;
     for res in &resolutions {
@@ -378,6 +441,7 @@ pub fn resolve_conflicts(
         .map_err(|_| "There is nothing left to resolve. Sync again.".to_string())?;
     let chosen: HashMap<String, ConflictResolution> =
         resolutions.into_iter().map(|r| (r.path.clone(), r)).collect();
+    check_format(&repo, Some(incoming))?;
     if let Integration::Conflicted(_) = integrate_commit(&repo, &workspace, incoming, &chosen)? {
         return Err("Some notes changed in the meantime. Sync again to choose their versions.".to_string());
     }
@@ -402,6 +466,10 @@ fn incoming_ref(workspace: &str) -> String {
     format!("refs/noetic/incoming/{}", workspace)
 }
 
+fn conflict_waiting(repo: &Repository, workspace: &str) -> bool {
+    !workspace.is_empty() && repo.refname_to_id(&incoming_ref(workspace)).is_ok()
+}
+
 fn conflict_result(repo_path: &str, conflicts: Vec<ConflictFile>) -> Result<SyncResult, String> {
     Ok(SyncResult {
         success: false,
@@ -418,10 +486,13 @@ fn integrate_remote(repo: &Repository, workspace: &str) -> Result<Integration, S
     let (_, Some(remote)) = find_remote_tracking_branch(repo, workspace) else {
         return Ok(Integration::UpToDate);
     };
+    check_format(repo, Some(remote))?;
     let outcome = integrate_commit(repo, workspace, remote, &HashMap::new())?;
     if let Integration::Conflicted(_) = outcome {
         repo.reference(&incoming_ref(workspace), remote, true, "Noetic: conflict")
             .map_err(|e| format!("Failed to prepare the conflict: {}", e))?;
+    } else if let Ok(mut r) = repo.find_reference(&incoming_ref(workspace)) {
+        let _ = r.delete();
     }
     Ok(outcome)
 }
@@ -517,6 +588,9 @@ fn integrate_commit(
             o.copied()
         } else if o == b {
             t.copied()
+        } else if path == FORMAT_PATH {
+            // Never a question for the user. A newer one than this build's was refused already.
+            t.or(o).copied()
         } else if let Some(res) = chosen.get(path) {
             match (res.resolution_type.as_str(), &res.custom_content) {
                 ("local", _) => o.copied(),
@@ -743,6 +817,7 @@ pub fn connect_vault(
     user_name: Option<String>,
     user_email: Option<String>,
 ) -> Result<WorkspaceList, String> {
+    let _queue = enter_queue(repo_path);
     let p = Path::new(repo_path);
     if !p.exists() {
         std::fs::create_dir_all(p).map_err(|e| format!("Failed to create notes folder: {}", e))?;
@@ -861,6 +936,7 @@ fn collect_workspaces(repo: &Repository) -> WorkspaceList {
 pub fn list_workspaces(repo_path: &str, refresh: bool) -> Result<WorkspaceList, String> {
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
     if refresh {
+        let _queue = enter_queue(repo_path);
         let _ = fetch_origin(&repo);
     }
     Ok(collect_workspaces(&repo))
@@ -952,11 +1028,12 @@ fn walkdir_files(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-const WELCOME_NOTE: &str = "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Save** uploads your changes so your other devices can get them.\n- **Sync** brings in changes made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
+const WELCOME_NOTE: &str = "Noetic keeps your notes as plain Markdown files on this device and backs them up to your account.\n\n- **Sync now** uploads your changes and brings in the ones made on your other devices.\n- **Workspaces** keep separate sets of notes apart, for example Personal and Work. Switch or add one from the workspace menu.\n";
 
 /// Creates a workspace and opens it. A new workspace starts blank, except the first one on a
 /// device: notes already in the folder (written before signing in) move into it.
 pub fn create_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload, String> {
+    let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
     let workspace = workspace_branch_name(name)?;
 
@@ -1001,6 +1078,7 @@ pub fn create_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload
 
 /// Opens another workspace: the notes in the folder are replaced with that workspace's notes.
 pub fn switch_workspace(repo_path: &str, name: &str) -> Result<RepoStatusPayload, String> {
+    let _queue = enter_queue(repo_path);
     let repo = Repository::open(repo_path).map_err(|e| format!("Failed to open the notes folder: {}", e))?;
     let workspace = name.trim();
     let current = current_workspace(&repo);
@@ -1079,7 +1157,7 @@ mod tests {
         create_workspace(path(&mac), "Personal").unwrap();
         write(&mac, "a.md", "a\n");
         write(&mac, "b.md", "b\n");
-        save_and_push(path(&mac), None).unwrap();
+        sync_now(path(&mac)).unwrap();
         connect_vault(path(&phone), path(&cloud), None, None, None).unwrap();
         switch_workspace(path(&phone), "Personal").unwrap();
         assert_eq!(read(&phone, "b.md"), "b\n");
@@ -1090,12 +1168,12 @@ mod tests {
     fn different_notes_changed_on_two_devices_are_both_kept() {
         let d = devices("different");
         write(&d.mac, "a.md", "a from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
 
         // The phone hasn't checked the cloud since, so it doesn't know it is behind.
         write(&d.phone, "b.md", "b from phone\n");
-        let _ = save_and_push(path(&d.phone), None);
-        let _ = sync_and_pull(path(&d.phone)).unwrap();
+        let _ = sync_now(path(&d.phone));
+        let _ = sync_now(path(&d.phone)).unwrap();
         assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
         assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
     }
@@ -1105,9 +1183,9 @@ mod tests {
         let d = devices(name);
         write(&d.mac, "a.md", "a from mac\n");
         write(&d.mac, "b.md", "b from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         write(&d.phone, "a.md", "a from phone\n");
-        let result = save_and_push(path(&d.phone), None).unwrap();
+        let result = sync_now(path(&d.phone)).unwrap();
         assert!(!result.success);
         assert_eq!(result.conflicts.len(), 1);
         assert_eq!(result.conflicts[0].base_content, "a\n");
@@ -1116,6 +1194,7 @@ mod tests {
         // Asking changes nothing on disk.
         assert_eq!(read(&d.phone, "a.md"), "a from phone\n");
         assert_eq!(read(&d.phone, "b.md"), "b\n");
+        assert!(get_repo_status(path(&d.phone)).unwrap().has_conflict);
         d
     }
 
@@ -1131,11 +1210,11 @@ mod tests {
     fn saving_combines_different_notes_and_uploads_them() {
         let d = devices("save");
         write(&d.mac, "a.md", "a from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         write(&d.phone, "b.md", "b from phone\n");
         write(&d.phone, "new.md", "new\n");
-        assert!(save_and_push(path(&d.phone), None).unwrap().success);
-        assert!(sync_and_pull(path(&d.mac)).unwrap().success);
+        assert!(sync_now(path(&d.phone)).unwrap().success);
+        assert!(sync_now(path(&d.mac)).unwrap().success);
         for dir in [&d.mac, &d.phone] {
             assert_eq!(read(dir, "a.md"), "a from mac\n");
             assert_eq!(read(dir, "b.md"), "b from phone\n");
@@ -1148,16 +1227,16 @@ mod tests {
     fn syncing_keeps_unsaved_edits_and_commits_that_failed_to_upload() {
         let d = devices("offline");
         write(&d.mac, "a.md", "a from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         let phone = Repository::open(&d.phone).unwrap();
         write(&d.phone, "b.md", "b committed\n");
         commit_all(&phone, "offline").unwrap();
         write(&d.phone, "c.md", "c unsaved\n");
-        assert!(sync_and_pull(path(&d.phone)).unwrap().success);
+        assert!(sync_now(path(&d.phone)).unwrap().success);
         assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
         assert_eq!(read(&d.phone, "b.md"), "b committed\n");
         assert_eq!(read(&d.phone, "c.md"), "c unsaved\n");
-        assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::AheadOffline);
+        assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::CleanSynced);
     }
 
     #[test]
@@ -1170,9 +1249,10 @@ mod tests {
             let d = conflicted(&format!("choose-{}", kind));
             resolve_conflicts(path(&d.phone), choose("a.md", kind, text)).unwrap();
             assert_eq!(read(&d.phone, "a.md"), expected);
+            assert!(!get_repo_status(path(&d.phone)).unwrap().has_conflict);
             assert_eq!(read(&d.phone, "b.md"), "b from mac\n");
-            assert!(save_and_push(path(&d.phone), None).unwrap().success);
-            sync_and_pull(path(&d.mac)).unwrap();
+            assert!(sync_now(path(&d.phone)).unwrap().success);
+            sync_now(path(&d.mac)).unwrap();
             assert_eq!(read(&d.mac, "a.md"), expected);
         }
     }
@@ -1180,7 +1260,7 @@ mod tests {
     #[test]
     fn closing_the_resolver_loses_nothing_and_syncing_asks_again() {
         let d = conflicted("cancel");
-        assert_eq!(sync_and_pull(path(&d.phone)).unwrap().conflicts.len(), 1);
+        assert_eq!(sync_now(path(&d.phone)).unwrap().conflicts.len(), 1);
         assert!(resolve_conflicts(path(&d.phone), vec![]).is_err());
         assert_eq!(read(&d.phone, "a.md"), "a from phone\n");
     }
@@ -1189,10 +1269,10 @@ mod tests {
     fn a_newer_update_than_the_one_shown_is_not_resolved_unseen() {
         let d = conflicted("newer");
         write(&d.mac, "a.md", "a from mac again\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         fetch_remote(path(&d.phone)).unwrap();
         resolve_conflicts(path(&d.phone), choose("a.md", "local", None)).unwrap();
-        let next = save_and_push(path(&d.phone), None).unwrap();
+        let next = sync_now(path(&d.phone)).unwrap();
         assert_eq!(next.conflicts.len(), 1);
         assert_eq!(next.conflicts[0].remote_content, "a from mac again\n");
     }
@@ -1201,9 +1281,9 @@ mod tests {
     fn deleting_a_note_edited_elsewhere_asks() {
         let d = devices("delete");
         write(&d.mac, "a.md", "a from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         std::fs::remove_file(d.phone.join("a.md")).unwrap();
-        let result = save_and_push(path(&d.phone), None).unwrap();
+        let result = sync_now(path(&d.phone)).unwrap();
         assert!(result.conflicts[0].local_deleted && !result.conflicts[0].remote_deleted);
         resolve_conflicts(path(&d.phone), choose("a.md", "local", None)).unwrap();
         assert!(!d.phone.join("a.md").exists());
@@ -1213,9 +1293,9 @@ mod tests {
     fn images_changed_on_both_devices_are_both_kept() {
         let d = devices("images");
         std::fs::write(d.mac.join("p.png"), [0xff, 1]).unwrap();
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         std::fs::write(d.phone.join("p.png"), [0xff, 2]).unwrap();
-        assert!(save_and_push(path(&d.phone), None).unwrap().success);
+        assert!(sync_now(path(&d.phone)).unwrap().success);
         assert_eq!(std::fs::read(d.phone.join("p.png")).unwrap(), [0xff, 2]);
         assert_eq!(std::fs::read(d.phone.join("p (other device).png")).unwrap(), [0xff, 1]);
     }
@@ -1224,7 +1304,7 @@ mod tests {
     fn an_edit_made_while_syncing_is_not_overwritten() {
         let d = devices("race");
         write(&d.mac, "a.md", "a from mac\n");
-        save_and_push(path(&d.mac), None).unwrap();
+        sync_now(path(&d.mac)).unwrap();
         let phone = Repository::open(&d.phone).unwrap();
         fetch_origin(&phone).unwrap();
         write(&d.phone, "a.md", "typed just now\n");
@@ -1252,8 +1332,95 @@ mod tests {
         assert_eq!(read(&d.phone, "w.md"), "work\n");
         let back = switch_workspace(path(&d.phone), "Personal").unwrap();
         assert_eq!((back.dirty_count, back.ahead_count), (0, 1));
-        assert!(save_and_push(path(&d.phone), None).unwrap().success);
+        assert!(sync_now(path(&d.phone)).unwrap().success);
         assert_eq!(read(&d.phone, "a.md"), "a from mac\n");
         assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
+    }
+
+    #[test]
+    fn notes_stay_marked_until_they_are_uploaded() {
+        let d = devices("marks");
+        let marked = || -> Vec<String> {
+            let files = get_repo_status(path(&d.phone)).unwrap().files;
+            files.into_iter().filter(|f| f.not_uploaded).map(|f| f.path).collect()
+        };
+        write(&d.phone, "b.md", "edited\n");
+        assert_eq!(marked(), ["b.md"]);
+        commit_all(&Repository::open(&d.phone).unwrap(), "offline").unwrap();
+        assert_eq!(marked(), ["b.md"]);
+        sync_now(path(&d.phone)).unwrap();
+        assert!(marked().is_empty());
+    }
+
+    #[test]
+    fn syncing_with_nothing_new_makes_no_commits() {
+        let d = devices("idle");
+        let head = || Repository::open(&d.mac).unwrap().head().unwrap().target();
+        let before = head();
+        sync_now(path(&d.mac)).unwrap();
+        assert_eq!(head(), before);
+    }
+
+    #[test]
+    fn offline_edits_are_committed_and_uploaded_later() {
+        let d = devices("later");
+        let cloud = d.mac.parent().unwrap().join("cloud.git");
+        let away = d.mac.parent().unwrap().join("away.git");
+        std::fs::rename(&cloud, &away).unwrap();
+        write(&d.phone, "b.md", "offline\n");
+        assert!(sync_now(path(&d.phone)).is_err());
+        assert_eq!(get_repo_status(path(&d.phone)).unwrap().state, SyncState::AheadOffline);
+        std::fs::rename(&away, &cloud).unwrap();
+        sync_now(path(&d.phone)).unwrap();
+        sync_now(path(&d.mac)).unwrap();
+        assert_eq!(read(&d.mac, "b.md"), "offline\n");
+    }
+
+    #[test]
+    fn notes_from_a_newer_version_are_left_alone() {
+        let d = devices("format");
+        let mac = Repository::open(&d.mac).unwrap();
+        write(&d.mac, ".noetic/format.json", "{\"version\":99}");
+        write(&d.mac, "a.md", "from the future\n");
+        let mut index = mac.index().unwrap();
+        index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree = mac.find_tree(index.write_tree().unwrap()).unwrap();
+        let parent = mac.head().unwrap().peel_to_commit().unwrap();
+        let sig = signature(&mac);
+        mac.commit(Some("HEAD"), &sig, &sig, "newer", &tree, &[&parent]).unwrap();
+        push_workspace(&mac, "Personal").unwrap();
+
+        write(&d.phone, "b.md", "b from phone\n");
+        assert!(sync_now(path(&d.phone)).unwrap_err().contains("newer version"));
+        assert_eq!(read(&d.phone, "a.md"), "a\n");
+        assert_eq!(read(&d.phone, "b.md"), "b from phone\n");
+    }
+
+    #[test]
+    fn only_old_lock_files_are_removed() {
+        let d = devices("locks");
+        let (old, fresh) = (d.mac.join(".git/index.lock"), d.mac.join(".git/HEAD.lock"));
+        std::fs::write(&old, "").unwrap();
+        std::fs::write(&fresh, "").unwrap();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(hour_ago).unwrap();
+        remove_stale_locks(&d.mac.join(".git"));
+        assert!(!old.exists() && fresh.exists());
+    }
+
+    #[test]
+    fn syncs_started_together_wait_for_each_other() {
+        let d = devices("queue");
+        write(&d.phone, "b.md", "once\n");
+        let runs: Vec<_> = (0..4)
+            .map(|_| {
+                let p = d.phone.clone();
+                std::thread::spawn(move || sync_now(path(&p)).map(|r| r.success))
+            })
+            .collect();
+        for run in runs {
+            assert!(run.join().unwrap().unwrap());
+        }
     }
 }

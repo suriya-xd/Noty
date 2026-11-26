@@ -10,6 +10,8 @@ export interface FileStatus {
   is_modified: boolean;
   is_untracked: boolean;
   has_remote_update: boolean;
+  /** Changed here and not in the cloud copy yet. */
+  not_uploaded: boolean;
 }
 
 export interface RepoStatusPayload {
@@ -17,6 +19,8 @@ export interface RepoStatusPayload {
   dirty_count: usize;
   behind_count: usize;
   ahead_count: usize;
+  /** A note changed here and on another device; a version has to be chosen. */
+  has_conflict: boolean;
   /** The open workspace. Empty until one is created or chosen. */
   branch: string;
   remote_name: string | null;

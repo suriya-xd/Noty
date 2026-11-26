@@ -114,6 +114,7 @@ const MOCK_FOLDERS = new Set<string>();
 
 let mockRemoteAhead = 0;
 let mockAheadOffline = 0;
+let mockConflict = false;
 let mockDirtySet = new Set<string>();
 let mockRemoteUrl: string | null = null;
 let mockWorkspaces: string[] = [];
@@ -131,6 +132,7 @@ function computeMockStatus(): RepoStatusPayload {
       is_modified: isModified,
       is_untracked: false,
       has_remote_update: hasRemote,
+      not_uploaded: isModified,
     };
   });
 
@@ -152,6 +154,7 @@ function computeMockStatus(): RepoStatusPayload {
     dirty_count: dirtyCount,
     behind_count: mockRemoteAhead,
     ahead_count: mockAheadOffline,
+    has_conflict: mockConflict,
     branch: mockWorkspace ?? "",
     remote_name: mockRemoteUrl ? "origin" : null,
     remote_url: mockRemoteUrl,
@@ -290,26 +293,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
       return undefined as unknown as T;
     }
 
-    case "save_and_push": {
-      if (mockRemoteAhead > 0 && mockDirtySet.has("ConflictTest.md")) {
-        return mockInvoke<T>("sync_and_pull", args);
-      }
-      const combined = mockRemoteAhead > 0;
-      mockRemoteAhead = 0;
-      mockDirtySet.clear();
-      mockAheadOffline = 0;
-      const saved: SyncResult = {
-        success: true,
-        message: combined
-          ? "Saved, and combined with the updates from your other devices."
-          : "Saved. Your changes are backed up.",
-        state: "CleanSynced",
-        conflicts: [],
-      };
-      return saved as unknown as T;
-    }
-
-    case "sync_and_pull": {
+    case "sync_now": {
       if (mockRemoteAhead > 0 && mockDirtySet.has("ConflictTest.md")) {
         // Return 3-way conflict simulation matching our test scenario
         const conflict: ConflictFile = {
@@ -326,6 +310,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
             },
           ],
         };
+        mockConflict = true;
         const res: SyncResult = {
           success: false,
           message: "1 note(s) changed both here and on another device. Choose which version to keep.",
@@ -335,9 +320,12 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
         return res as unknown as T;
       }
       mockRemoteAhead = 0;
+      mockAheadOffline = 0;
+      mockConflict = false;
+      mockDirtySet.clear();
       const res: SyncResult = {
         success: true,
-        message: "Synced. Your notes are up to date.",
+        message: "Synced. Your changes are backed up.",
         state: "CleanSynced",
         conflicts: [],
       };
@@ -352,6 +340,7 @@ async function mockInvoke<T>(cmd: string, args: Record<string, unknown>): Promis
         }
       }
       mockRemoteAhead = 0;
+      mockConflict = false;
       mockDirtySet.delete("ConflictTest.md");
       return computeMockStatus() as unknown as T;
     }
@@ -445,17 +434,8 @@ export const NoeticBridge = {
     return viaCloud(repoPath, () => invokeTauri<RepoStatusPayload>("fetch_remote", { repo_path: repoPath }));
   },
 
-  saveAndPush: (repoPath: string, commitMessage?: string): Promise<SyncResult> => {
-    return viaCloud(repoPath, () =>
-      invokeTauri<SyncResult>("save_and_push", {
-        repo_path: repoPath,
-        commit_message: commitMessage,
-      })
-    );
-  },
-
-  syncAndPull: (repoPath: string): Promise<SyncResult> => {
-    return viaCloud(repoPath, () => invokeTauri<SyncResult>("sync_and_pull", { repo_path: repoPath }));
+  syncNow: (repoPath: string): Promise<SyncResult> => {
+    return viaCloud(repoPath, () => invokeTauri<SyncResult>("sync_now", { repo_path: repoPath }));
   },
 
   resolveConflicts: (
@@ -583,6 +563,7 @@ export const NoeticBridge = {
     mockDirtySet.clear();
   },
   resetMockState: () => {
+    mockConflict = false;
     mockRemoteAhead = 0;
     mockAheadOffline = 0;
     mockDirtySet.clear();

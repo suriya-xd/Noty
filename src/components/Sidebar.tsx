@@ -472,7 +472,7 @@ export const Sidebar: FC<SidebarProps> = ({
     if (status.is_modified) {
       return (
         <span
-          title="Edited, not saved yet"
+          title="Edited, not uploaded yet"
           className="text-amber-400 font-semibold text-[10px] leading-tight bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono"
         >
           M
@@ -482,10 +482,20 @@ export const Sidebar: FC<SidebarProps> = ({
     if (status.is_untracked) {
       return (
         <span
-          title="New untracked file"
+          title="New, not uploaded yet"
           className="text-emerald-400 font-semibold text-[10px] leading-tight bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 rounded font-mono"
         >
           + New
+        </span>
+      );
+    }
+    if (status.not_uploaded) {
+      return (
+        <span
+          title="Not uploaded yet"
+          className="text-amber-400 font-semibold text-[10px] leading-tight bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono"
+        >
+          ↑
         </span>
       );
     }

@@ -54,13 +54,8 @@ fn fetch_remote(vault: Vault, repo_path: String) -> Result<RepoStatusPayload, St
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
-fn save_and_push(vault: Vault, repo_path: String, commit_message: Option<String>) -> Result<SyncResult, String> {
-    git_engine::save_and_push(opened(&vault, &repo_path)?, commit_message)
-}
-
-#[tauri::command(async, rename_all = "snake_case")]
-fn sync_and_pull(vault: Vault, repo_path: String) -> Result<SyncResult, String> {
-    git_engine::sync_and_pull(opened(&vault, &repo_path)?)
+fn sync_now(vault: Vault, repo_path: String) -> Result<SyncResult, String> {
+    git_engine::sync_now(opened(&vault, &repo_path)?)
 }
 
 #[tauri::command(async, rename_all = "snake_case")]
@@ -311,8 +306,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_repo_status,
             fetch_remote,
-            save_and_push,
-            sync_and_pull,
+            sync_now,
             resolve_conflicts,
             get_vault_config,
             set_vault_config,

@@ -530,6 +530,10 @@ export const Dashboard: FC<DashboardProps> = ({
                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                             New
                           </span>
+                        ) : fileStat?.not_uploaded ? (
+                          <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            Not uploaded
+                          </span>
                         ) : null}
                       </div>
 
